@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -25,7 +26,7 @@ describe("core scaffold writer", () => {
 });
 
 async function scratchNote(content: string): Promise<string> {
-  const directory = await mkdtemp(join(process.cwd(), ".block-writer-test-"));
+  const directory = await mkdtemp(join(tmpdir(), ".block-writer-test-"));
   scratchDirectories.push(directory);
   const path = join(directory, "note.md");
   await writeFile(path, content, "utf8");
@@ -67,7 +68,7 @@ describe("BlockWriter fail-closed behavior", () => {
   });
 
   test("reports a missing note without creating it", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".block-writer-missing-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".block-writer-missing-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "missing.md");
     expect(await writeSections(path, updatedSections, "hash")).toMatchObject({ status: "error", error: { code: "note-missing" } });

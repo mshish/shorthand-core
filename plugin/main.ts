@@ -16,6 +16,7 @@ import { ClaudeAgentClient, detectClaudeExecutable } from "../src/agent/client.j
 import { EnhanceRunner, type EnhanceStatus, type PassOutcome } from "../src/agent/runner.js";
 import { DEFAULT_CONFIG, detectHandyExecutable } from "../src/config.js";
 import { locateAiBlock, transcriptWikilink } from "../src/note/markers.js";
+import { MarkdownNoteSink } from "../src/note/markdown-sink.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
 import { ensureNoteScaffold, linkTranscriptFrontmatter } from "../src/note/writer.js";
 import {
@@ -256,8 +257,7 @@ export default class HandyNotesPlugin extends Plugin {
       throw new Error("claude.exe was not found. Install and log in to Claude CLI, or configure its full path in Handy Notes settings.");
     }
     return new EnhanceRunner({
-      notePath,
-      vaultRoot,
+      sink: new MarkdownNoteSink({ notePath, vaultRoot }),
       agent: new ClaudeAgentClient(),
       minNewChars: this.settings.minNewChars,
       minIntervalMs: this.settings.minIntervalMs,
@@ -325,7 +325,10 @@ export default class HandyNotesPlugin extends Plugin {
       new Notice(status.message, 8_000);
     } else if (status.kind === "error") {
       this.fail(status.message, status.passCount);
-    } else if (status.kind === "requeued" && /locked/i.test(status.message)) {
+    } else if (status.kind === "requeued" && status.retryAfterMs !== undefined) {
+      // Only a target that asked for a backoff is actionable. A plain re-queue means
+      // the note kept changing under the writer — i.e. the user is typing during the
+      // meeting — which self-heals on the next pass and must stay silent.
       this.fail(`${status.message} Close competing file handles; Handy Notes will retry on the next pass.`, status.passCount);
     }
   }
@@ -339,9 +342,9 @@ export default class HandyNotesPlugin extends Plugin {
       this.dispatch({ type: "budget-exhausted", passCount: this.#state.passCount, message });
       new Notice(message, 8_000);
     } else if (outcome.status === "requeued") {
-      this.fail(outcome.reason === "note-locked"
-        ? "The meeting note remained locked. Close competing file handles and run Enhance now again."
-        : `Enhancement was safely re-queued (${outcome.reason}).`);
+      this.fail(outcome.retryAfterMs === undefined
+        ? `Enhancement was safely re-queued (${outcome.reason}).`
+        : "The meeting note was busy. Close competing file handles and run Enhance now again.");
     } else if (outcome.status === "failed") {
       this.fail(outcome.error);
     } else if (outcome.status !== "not-ready" && outcome.status !== "in-flight") {

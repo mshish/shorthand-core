@@ -8,6 +8,7 @@ import { EnhanceRunner, type PassOutcome } from "../src/agent/runner.js";
 import type { AgentClient, AgentTier } from "../src/agent/contract.js";
 import { DEFAULT_CONFIG, detectHandyExecutable } from "../src/config.js";
 import { buildNoteScaffold, transcriptWikilink, type Section } from "../src/note/markers.js";
+import { MarkdownNoteSink } from "../src/note/markdown-sink.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
 import { linkTranscriptFrontmatter, readCurrentBlock, writeSections } from "../src/note/writer.js";
 import { StreamClient, type ExitDiagnosis } from "../src/stream/client.js";
@@ -305,8 +306,7 @@ function createEnhanceRunner(
   const claudeOverride = argumentValue(args, "--claude");
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
   return new EnhanceRunner({
-    notePath: note,
-    vaultRoot: vault,
+    sink: new MarkdownNoteSink({ notePath: note, vaultRoot: vault }),
     agent,
     minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
     minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
@@ -342,9 +342,12 @@ export async function runFinalEnhancementWithRetries(
 ): Promise<PassOutcome> {
   const backoffMs = [200, 500];
   let outcome = await runner.enhanceNow("link");
-  for (const delayMs of backoffMs) {
+  for (const defaultDelayMs of backoffMs) {
     if (outcome.status !== "requeued" && outcome.status !== "timed-out") return outcome;
-    await sleep(delayMs);
+    // A target that named its own backoff (a held lock, a `429` Retry-After) knows
+    // better than a fixed ladder; the ladder is only the fallback.
+    const requested = outcome.status === "requeued" ? outcome.retryAfterMs : undefined;
+    await sleep(requested ?? defaultDelayMs);
     outcome = await runner.enhanceNow("link");
   }
   return outcome;

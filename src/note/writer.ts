@@ -74,7 +74,11 @@ type BlockWriterInternalOptions = Readonly<{
   beforeTemporaryWrite?: () => void | Promise<void>;
 }>;
 
-function hashBlock(body: string): string {
+/**
+ * The block revision used for optimistic concurrency. Exported so an adapter can
+ * derive the same value from a single note read without a second `readCurrentBlock`.
+ */
+export function hashBlock(body: string): string {
   return createHash("sha256").update(body, "utf8").digest("hex");
 }
 

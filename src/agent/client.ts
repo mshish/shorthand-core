@@ -46,15 +46,21 @@ export class ClaudeAgentClient implements AgentClient {
 }
 
 export function buildClaudeAgentOptions(request: AgentQueryRequest) {
+  const { cwd } = request;
   return {
-    cwd: request.cwd,
+    // No cwd means no filesystem context was offered. Inheriting process.cwd() here
+    // would hand the subprocess an arbitrary directory (an app install dir, or
+    // System32 from a Startup shortcut) as its confinement root and its CLAUDE.md
+    // discovery origin — memory discovery walks UP from cwd and settingSources: []
+    // does not cover it. Omit it, and deny every tool outright.
+    ...(cwd === undefined ? {} : { cwd }),
     tools: [...request.tools],
     // Deliberately NO `allowedTools`: bare tool names there auto-approve a call before
     // canUseTool is consulted (the SDK emits CLAUDE_SDK_CAN_USE_TOOL_SHADOWED), which would
     // silently disable vault path confinement. `tools` still bounds availability; every
     // actual call must fall through to the guard below.
     permissionMode: "default" as const,
-    canUseTool: createVaultToolGuard(request.cwd, request.tools),
+    canUseTool: cwd === undefined ? denyAllToolGuard() : createVaultToolGuard(cwd, request.tools),
     systemPrompt: request.systemPrompt,
     settingSources: [...request.settingSources],
     maxTurns: request.maxTurns,
@@ -63,6 +69,18 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
       ? {}
       : { pathToClaudeCodeExecutable: request.pathToClaudeCodeExecutable }),
   };
+}
+
+/**
+ * The guard for a pass with no filesystem context: nothing is confinable, so
+ * nothing is permitted. There is no root to compare a path against, and a pass
+ * that reaches here must succeed from its bounded prompt alone.
+ */
+export function denyAllToolGuard(): CanUseTool {
+  return async (toolName) => ({
+    behavior: "deny",
+    message: `Tool ${toolName} is not permitted: this pass has no filesystem context.`,
+  });
 }
 
 export function createVaultToolGuard(vaultRoot: string, allowedTools: readonly string[]): CanUseTool {

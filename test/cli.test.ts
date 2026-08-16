@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -13,7 +14,7 @@ afterEach(async () => {
 describe("handy-notes CLI", () => {
   test("final enhancement retries requeued and timed-out outcomes with backoff", async () => {
     const outcomes: PassOutcome[] = [
-      { status: "requeued", reason: "note-locked" },
+      { status: "requeued", reason: "busy" },
       { status: "timed-out" },
       { status: "completed", tier: "link", sections: [], costUsd: 0, written: true },
     ];
@@ -24,6 +25,22 @@ describe("handy-notes CLI", () => {
     );
     expect(outcome.status).toBe("completed");
     expect(delays).toEqual([200, 500]);
+  });
+
+  test("final enhancement prefers the target's own retryAfterMs over the fixed ladder", async () => {
+    const outcomes: PassOutcome[] = [
+      { status: "requeued", reason: "busy", retryAfterMs: 1_500 },
+      { status: "requeued", reason: "busy" },
+      { status: "completed", tier: "link", sections: [], costUsd: 0, written: true },
+    ];
+    const delays: number[] = [];
+    const outcome = await runFinalEnhancementWithRetries(
+      { enhanceNow: async () => outcomes.shift()! },
+      async (milliseconds) => { delays.push(milliseconds); },
+    );
+    expect(outcome.status).toBe("completed");
+    // First delay is the target's Retry-After; the second falls back to the ladder.
+    expect(delays).toEqual([1_500, 500]);
   });
 
   test("final enhancement returns the third failure for a non-zero capture exit", async () => {
@@ -37,7 +54,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("enhance dry-run uses an executable agent stub and does not write the note", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-enhance-stub-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-enhance-stub-test-"));
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const transcript = join(vault, "transcript.md");
@@ -54,7 +71,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("capture --enhance keeps capturing and runs the final link pass through the offline stub", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-capture-enhance-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-capture-enhance-test-"));
     scratchDirectories.push(vault);
     const entry = join(process.cwd(), "bin", "handy-notes.ts");
     expect((await run(entry, [
@@ -72,7 +89,7 @@ describe("handy-notes CLI", () => {
   }, 10_000);
 
   test("runs capture with an explicit fake stream and links a pre-existing note without changing its content", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-smoke-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-smoke-test-"));
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const sidecar = join(vault, "transcript.md");
@@ -97,7 +114,7 @@ describe("handy-notes CLI", () => {
   }, 10_000);
 
   test("init-note creates a linked scaffold without overwriting an existing note", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-init-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-init-test-"));
     scratchDirectories.push(vault);
     const entry = join(process.cwd(), "bin", "handy-notes.ts");
     const args = [
@@ -120,7 +137,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("set-sections writes through the block writer and preserves user bytes", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-set-sections-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-set-sections-test-"));
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const json = join(vault, "sections.json");
@@ -136,7 +153,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("read-block supplies a hash and set-sections rejects a stale expected hash without writing", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-stale-hash-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-stale-hash-test-"));
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const json = join(vault, "sections.json");
@@ -161,7 +178,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("set-sections requires an expected hash unless force is explicit", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-force-gate-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-force-gate-test-"));
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const json = join(vault, "sections.json");
@@ -183,7 +200,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("capture inserts only the transcript key in existing frontmatter", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-frontmatter-link-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-frontmatter-link-test-"));
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const originalBody = "# Meeting\n\nUser text with\ttabs and café.\n";
@@ -201,7 +218,7 @@ describe("handy-notes CLI", () => {
   }, 10_000);
 
   test("capture follows the scaffold's sidecar link while leaving the meeting note unchanged", async () => {
-    const vault = await mkdtemp(join(process.cwd(), ".cli-linked-capture-test-"));
+    const vault = await mkdtemp(join(tmpdir(), ".cli-linked-capture-test-"));
     scratchDirectories.push(vault);
     const entry = join(process.cwd(), "bin", "handy-notes.ts");
     expect((await run(entry, [

@@ -37,7 +37,12 @@ export type AgentTier = "tick" | "link";
 export type AgentQueryRequest = Readonly<{
   prompt: string;
   systemPrompt: string;
-  cwd: string;
+  /**
+   * The single directory the pass may look at. Absent means the caller has no
+   * filesystem context to offer (an API-backed sink), and the agent must run
+   * without a working directory and without any tool that can reach a file.
+   */
+  cwd?: string;
   tools: readonly string[];
   settingSources: readonly ("user" | "project" | "local")[];
   maxTurns: number;

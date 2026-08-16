@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -66,7 +67,7 @@ function permissionOptions() {
 }
 
 async function temp(name: string): Promise<string> {
-  const path = await mkdtemp(join(process.cwd(), `.agent-client-${name}-`));
+  const path = await mkdtemp(join(tmpdir(), `.agent-client-${name}-`));
   scratch.push(path);
   return path;
 }

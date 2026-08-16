@@ -1,11 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { AI_BLOCK_START, parseSections, type Section } from "../note/markers.js";
-import {
-  readCurrentBlock,
-  writeSections,
-  type ReadBlockResult,
-  type WriteSectionsResult,
-} from "../note/writer.js";
+import type { Section } from "../note/markers.js";
+import type { NoteSink, SinkReadResult, SinkSnapshot, SinkWriteResult } from "../note/sink.js";
 import {
   ENHANCEMENT_SYSTEM_PROMPT,
   queryForSections,
@@ -15,8 +9,8 @@ import {
 } from "./contract.js";
 
 export type EnhanceRunnerOptions = Readonly<{
-  notePath: string;
-  vaultRoot: string;
+  /** Where enhanced sections are read from and written back to. */
+  sink: NoteSink;
   agent: AgentClient;
   minNewChars?: number;
   minIntervalMs?: number;
@@ -33,15 +27,18 @@ export type EnhanceRunnerOptions = Readonly<{
   now?: () => number;
   logger?: ContractLogger & Pick<Console, "info">;
   onStatus?: (status: EnhanceStatus) => void;
-  readBlock?: (path: string) => Promise<ReadBlockResult>;
-  write?: (path: string, sections: readonly Section[], expectedBlockHash: string) => Promise<WriteSectionsResult>;
-  readNote?: (path: string, encoding: BufferEncoding) => Promise<string>;
 }>;
 
 export type EnhanceStatus = Readonly<{
   kind: "started" | "finished" | "skipped" | "requeued" | "budget-exhausted" | "error";
   message: string;
   tier?: AgentTier;
+  /**
+   * Present only when the target asked to be retried after a delay (a held lock,
+   * a `429`). Its presence — never the wording of `message` — is what tells a UI
+   * that a re-queue is worth surfacing as actionable rather than self-healing.
+   */
+  retryAfterMs?: number;
   passCount: number;
   costUsd: number;
 }>;
@@ -53,7 +50,7 @@ export type PassOutcome =
   | Readonly<{ status: "in-flight" }>
   | Readonly<{ status: "budget-exhausted"; reason: "passes" | "usd" }>
   | Readonly<{ status: "timed-out" }>
-  | Readonly<{ status: "requeued"; reason: "stale" | "note-locked" | "writer-retry" }>
+  | Readonly<{ status: "requeued"; reason: "stale" | "busy"; retryAfterMs?: number }>
   | Readonly<{ status: "failed"; error: string }>;
 
 type PassInput = Readonly<{ transcript: string; requeueCount: number }>;
@@ -66,9 +63,6 @@ export class EnhanceRunner {
     & EnhanceRunnerOptions;
   readonly #now: () => number;
   readonly #logger: ContractLogger & Pick<Console, "info">;
-  readonly #readBlock: (path: string) => Promise<ReadBlockResult>;
-  readonly #write: (path: string, sections: readonly Section[], expectedBlockHash: string) => Promise<WriteSectionsResult>;
-  readonly #readNote: (path: string, encoding: BufferEncoding) => Promise<string>;
   #pendingTranscript = "";
   #requeuedTranscript = "";
   #requeueCount = 0;
@@ -102,9 +96,6 @@ export class EnhanceRunner {
     };
     this.#now = options.now ?? Date.now;
     this.#logger = options.logger ?? console;
-    this.#readBlock = options.readBlock ?? readCurrentBlock;
-    this.#write = options.write ?? writeSections;
-    this.#readNote = options.readNote ?? ((path, encoding) => readFile(path, encoding));
   }
 
   appendTranscript(delta: string): void {
@@ -185,29 +176,40 @@ export class EnhanceRunner {
     return running;
   }
 
-  async #runPass(tier: AgentTier, input: PassInput): Promise<PassOutcome> {
-    let observed: ReadBlockResult;
-    let noteContent: string;
+  async #runPass(requestedTier: AgentTier, input: PassInput): Promise<PassOutcome> {
+    // A "link" pass only earns vault tools when the sink offers somewhere to look.
+    // Without an agent context (an API sink) it degrades to a tick-style pass: no
+    // tools and no cwd at all, rather than an invented one. Resolved up front so
+    // every status this pass reports names the tier that actually ran.
+    const agentContext = this.#options.sink.agentContext;
+    const tier: AgentTier = requestedTier === "link" && agentContext !== undefined ? "link" : "tick";
+    let read: SinkReadResult;
     try {
-      [observed, noteContent] = await Promise.all([
-        this.#readBlock(this.#options.notePath),
-        this.#readNote(this.#options.notePath, "utf8"),
-      ]);
+      read = await this.#options.sink.read();
     } catch (error) {
       this.#requeue(input);
       return this.#readFailure(`Cannot read the meeting note: ${errorMessage(error)}`, tier);
     }
-    if (!observed.ok) {
+    if (!read.ok) {
       this.#requeue(input);
-      return this.#readFailure(observed.error.message, tier);
+      // Unreadable content is a defect in the target, not a transient read failure,
+      // so it must not push the runner toward the read-failure kill switch.
+      if (read.error.code === "invalid-content") {
+        this.#consecutiveReadFailures = 0;
+        return this.#fail(`Cannot parse current AI sections: ${read.error.message}`, tier);
+      }
+      // A rate-limited or lock-contended read is self-healing. Treating it as a
+      // read failure would march an API sink into the kill switch, which is never
+      // reset, and disable enhancement for the rest of the session.
+      if (read.error.code === "busy") {
+        this.#consecutiveReadFailures = 0;
+        return this.#requeueBusyRead(read.error.message, tier, read.error.retryAfterMs);
+      }
+      return this.#readFailure(read.error.message, tier);
     }
     this.#consecutiveReadFailures = 0;
-    const current = parseSections(observed.value.body);
-    if (!current.ok) {
-      this.#requeue(input);
-      return this.#fail(`Cannot parse current AI sections: ${current.error.message}`, tier);
-    }
-    if (tier === "link" && input.transcript.length === 0 && current.value.length > 0) {
+    const observed: SinkSnapshot = read.value;
+    if (requestedTier === "link" && input.transcript.length === 0 && observed.sections.length > 0) {
       return { status: "not-ready", reason: "characters" };
     }
     const allowedAttempts = Math.min(2, this.#options.maxPasses - this.#passCount - this.#reservedAttempts);
@@ -220,9 +222,9 @@ export class EnhanceRunner {
     const remainingUsd = Math.max(0, this.#options.maxUsd - this.#costUsd - this.#reservedUsd);
     const passBudgetUsd = Math.min(remainingUsd, this.#options.maxPassUsd);
     const request = {
-      prompt: buildPassPrompt(current.value, input.transcript, extractUserNotes(noteContent), tier),
+      prompt: buildPassPrompt(observed.sections, input.transcript, observed.userNotes, tier),
       systemPrompt: ENHANCEMENT_SYSTEM_PROMPT,
-      cwd: this.#options.vaultRoot,
+      ...(agentContext === undefined ? {} : { cwd: agentContext.cwd }),
       tools: tier === "tick" ? [] : ["Read", "Glob", "Grep"],
       settingSources: [],
       maxTurns: this.#options.maxTurns,
@@ -234,7 +236,7 @@ export class EnhanceRunner {
       signal: abortController.signal,
     } as const;
 
-    const contractPromise = queryForSections(this.#options.agent, request, current.value, this.#logger);
+    const contractPromise = queryForSections(this.#options.agent, request, observed.sections, this.#logger);
     const result = await raceTimeout(contractPromise, this.#options.timeoutMs);
     if (result === TIMEOUT) {
       abortController.abort();
@@ -262,9 +264,9 @@ export class EnhanceRunner {
       return { status: "completed", tier, sections: result.sections, costUsd: result.costUsd, written: false };
     }
 
-    let writeResult: WriteSectionsResult;
+    let writeResult: SinkWriteResult;
     try {
-      writeResult = await this.#write(this.#options.notePath, result.sections, observed.value.hash);
+      writeResult = await this.#options.sink.write(result.sections, observed.revision);
     } catch (error) {
       this.#requeue(input);
       return this.#fail(`AI block writer threw: ${errorMessage(error)}`, tier);
@@ -274,15 +276,21 @@ export class EnhanceRunner {
       this.#emit("requeued", "AI block changed while the pass ran; transcript re-queued.", tier);
       return { status: "requeued", reason: "stale" };
     }
-    if (writeResult.status === "note-locked") {
+    if (writeResult.status === "busy") {
       this.#requeue(input);
-      this.#emit("requeued", "Meeting note remained locked; transcript re-queued.", tier);
-      return { status: "requeued", reason: "note-locked" };
-    }
-    if (writeResult.status === "retry") {
-      this.#requeue(input);
-      this.#emit("requeued", `Safe writer retry requested (${writeResult.reason}); transcript re-queued.`, tier);
-      return { status: "requeued", reason: "writer-retry" };
+      // `retryAfterMs` is the structured signal that the target wants a real backoff
+      // (a held lock, a `429`) rather than the ordinary contention of a note being
+      // edited while the pass ran. Callers must branch on it, never on this wording.
+      const { retryAfterMs } = writeResult;
+      this.#emit(
+        "requeued",
+        retryAfterMs === undefined
+          ? "The enhancement target was busy; transcript re-queued."
+          : "The enhancement target was busy; it may be locked by another process. Transcript re-queued.",
+        tier,
+        retryAfterMs,
+      );
+      return { status: "requeued", reason: "busy", ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
     }
     if (writeResult.status === "error") {
       this.#requeue(input);
@@ -371,6 +379,15 @@ export class EnhanceRunner {
     try { this.#logger.info("[enhance] WARNING: the agent reported $0 cost; subscription authentication may not report USD usage, so the USD cap is inactive. The model-attempt cap remains enforced."); } catch {}
   }
 
+  /**
+   * A transient read failure: the pass is re-queued and nothing advances toward the
+   * read-failure kill switch, because a target that is merely busy will come back.
+   */
+  #requeueBusyRead(message: string, tier: AgentTier, retryAfterMs?: number): Extract<PassOutcome, { status: "requeued" }> {
+    this.#emit("requeued", `Cannot read the meeting note right now: ${message} Transcript re-queued.`, tier, retryAfterMs);
+    return { status: "requeued", reason: "busy", ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
+  }
+
   #readFailure(message: string, tier: AgentTier): Extract<PassOutcome, { status: "failed" }> {
     this.#consecutiveReadFailures += 1;
     if (this.#consecutiveReadFailures >= this.#options.maxConsecutiveReadFailures) {
@@ -397,25 +414,18 @@ export class EnhanceRunner {
     return { status: "failed", error: message };
   }
 
-  #emit(kind: EnhanceStatus["kind"], message: string, tier?: AgentTier): void {
+  #emit(kind: EnhanceStatus["kind"], message: string, tier?: AgentTier, retryAfterMs?: number): void {
     try {
       this.#options.onStatus?.({
         kind,
         message,
         ...(tier === undefined ? {} : { tier }),
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         passCount: this.#passCount,
         costUsd: this.#costUsd,
       });
     } catch { /* Status UI failures must not kill capture. */ }
   }
-}
-
-export function extractUserNotes(noteContent: string): string {
-  const marker = "<!-- handy:notes -->";
-  const notesStart = noteContent.indexOf(marker);
-  const aiStart = noteContent.indexOf(AI_BLOCK_START);
-  if (notesStart < 0 || aiStart < notesStart) return "";
-  return noteContent.slice(notesStart + marker.length, aiStart).replace(/^\s+|\s+$/g, "");
 }
 
 export function buildPassPrompt(

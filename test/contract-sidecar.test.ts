@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
@@ -41,7 +42,7 @@ describe("documented protocol contract", () => {
 
 describe("SidecarWriter", () => {
   test("coalesces partials, rewrites a resynced tail, reconciles final, and labels commit time", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
     const writer = new SidecarWriter(path, { flushIntervalMs: 10_000 });
@@ -71,7 +72,7 @@ describe("SidecarWriter", () => {
   });
 
   test("preserves a pre-existing sidecar and appends a resumed section", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-resume-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-resume-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
     const existing = "# Handy Transcript\n\n## Earlier capture\n\nNever lose this.\n";
@@ -88,7 +89,7 @@ describe("SidecarWriter", () => {
   });
 
   test("refuses to overwrite an existing file without the sidecar sentinel", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-sentinel-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-sentinel-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "meeting-note.md");
     await writeFile(path, "# User meeting note\n\nDo not overwrite.\n", "utf8");
@@ -98,7 +99,7 @@ describe("SidecarWriter", () => {
   });
 
   test("recovers after one atomic write error and emits writeError", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-recovery-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-recovery-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
     let failNextWrite = true;
@@ -125,7 +126,7 @@ describe("SidecarWriter", () => {
   });
 
   test("syncs and closes an exclusive temporary file before rename", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-fsync-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-fsync-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
     const order: string[] = [];
@@ -145,7 +146,7 @@ describe("SidecarWriter", () => {
   });
 
   test("does not silently recreate a sidecar deleted during capture", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-delete-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-delete-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
     const writer = new SidecarWriter(path, { flushIntervalMs: 10_000 });
@@ -168,7 +169,7 @@ describe("SidecarWriter", () => {
   });
 
   test("renders an incomplete session, inline gap, then the reconnected generation end to end", async () => {
-    const directory = await mkdtemp(join(process.cwd(), ".sidecar-reconnect-test-"));
+    const directory = await mkdtemp(join(tmpdir(), ".sidecar-reconnect-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
     const statePath = join(directory, "fixture-state.txt");

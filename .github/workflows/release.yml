@@ -59,7 +59,12 @@ jobs:
       - name: Build plugin
         run: bun run build:plugin
 
+      # Build provenance is unavailable on user-owned PRIVATE repositories — the API rejects it
+      # with "Feature not available for user-owned private repositories". Skipping rather than
+      # failing keeps releases working while private, and attestation resumes on its own if the
+      # repository is ever made public.
       - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest@v4
         with:
           subject-path: plugin/main.js

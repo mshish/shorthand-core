@@ -33,6 +33,9 @@ export type { Section } from "./note/markers.js";
 export { StreamClient } from "./stream/client.js";
 export type { ExitDiagnosis, StreamClientOptions } from "./stream/client.js";
 
+export { HandyControl } from "./stream/control.js";
+export type { ControlResult, ControlSignal, HandyControlOptions } from "./stream/control.js";
+
 export { enhancementDelta, TranscriptStore } from "./stream/transcript.js";
 export type { TranscriptUpdate } from "./stream/transcript.js";
 

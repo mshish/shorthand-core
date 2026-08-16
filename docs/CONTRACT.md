@@ -24,7 +24,7 @@ frowned upon. There are three entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `handy-notes-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
+| `handy-notes-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `HandyControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
 | `handy-notes-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
 | `handy-notes-core/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
 

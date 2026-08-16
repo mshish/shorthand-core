@@ -182,7 +182,7 @@ export function diagnoseExit(code: number | null, stderr: string): ExitDiagnosis
   return { code, clean: false, message: stderr || `follow-stream exited with code ${String(code)}` };
 }
 
-type SpawnFn = (command: string, args: string[], options: Parameters<typeof spawn>[2]) => ChildProcess;
+export type SpawnFn = (command: string, args: string[], options: Parameters<typeof spawn>[2]) => ChildProcess;
 
 export type StreamClientOptions = {
   command: string;

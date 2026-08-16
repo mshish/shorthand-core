@@ -49,30 +49,38 @@ Download `main.js` and `manifest.json` from the [latest release](../../releases/
 <vault>/.obsidian/plugins/handy-notes/
 ```
 
-Releases are produced by `.github/workflows/release.yml` — push an `obsidian-v<version>` tag
-whose version matches `plugin/manifest.json` and CI typechecks, tests, builds, attests
-provenance, and opens a draft release with both assets:
+Releases are produced by `.github/workflows/release.yml` — push a tag equal to the
+`plugin/manifest.json` version and CI typechecks, tests, builds, attests provenance, and opens
+a draft release with both assets:
 
 ```sh
-git tag obsidian-v0.1.0 && git push origin obsidian-v0.1.0
+git tag 0.1.0 && git push origin 0.1.0
 ```
 
-The tag must match the manifest version or the workflow fails deliberately, because Obsidian
-installs by manifest version and a mismatch would ship a plugin that reports the wrong one.
+The tag must **equal** the manifest version exactly, with no prefix, or the workflow fails
+deliberately. Both [BRAT](https://github.com/TfTHacker/obsidian42-brat) and Obsidian's community
+listing require that, and BRAT treats the tag as the source of truth — on a mismatch it
+overrides the manifest, shipping a plugin that reports the wrong version.
 
 **`plugin/manifest.json` is the single source of truth for the plugin version.** The root
 `package.json` is `private` and pinned to `0.0.0` precisely so it cannot disagree: it is never
 published and never read for a version, so there is no second number to keep in sync.
 
-The tag prefix is scoped so that a sibling tool living in this repo can never cut an Obsidian
-release. It has a cost, recorded here so it is not rediscovered the hard way:
+The workflow is scoped by tag **shape** rather than a prefix, so a sibling tool in this repo
+still cannot cut an Obsidian release — `apisink-v0.1.0` does not match a bare-version glob. An
+earlier `obsidian-v*` scheme gave the same isolation but silently broke BRAT and community
+listing, which is why shape-scoping is used instead.
 
-> **This plugin is manual / [BRAT](https://github.com/TfTHacker/obsidian42-brat) install only.**
-> Obsidian's community-plugin listing requires the release tag to *equal* the manifest version
-> with no prefix (`0.1.0`, not `obsidian-v0.1.0`), plus a `versions.json` at the repository
-> root. The `obsidian-v*` scheme is incompatible with both. If community listing is ever
-> wanted, the tag scheme has to change back to a bare version — and then the trigger, the
-> guard in `release.yml`, and this section all move together.
+### Install from the repo with BRAT
+
+BRAT installs from a **release**, not from the repo tree, so cut one first. This repository is
+private, so BRAT needs a fine-grained personal access token with read-only **Contents**
+permission on it, added in BRAT's settings; then add `mshish/obsidian-handy-notes` as a beta
+plugin.
+
+BRAT is the right path for testing a real build or installing on another machine. For a tight
+edit-build-reload loop, `bun run dev:plugin` below is faster — it skips the release cycle
+entirely.
 
 ### From source, while developing
 

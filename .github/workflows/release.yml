@@ -5,12 +5,17 @@
 # at the repo root.
 name: Release Obsidian plugin
 
-# Tags are scoped to `obsidian-v*` so a sibling tool's tag can never cut an Obsidian
-# release. The guard below must strip the SAME prefix — see README ("Releases").
+# Scoped by tag SHAPE, not by prefix. BRAT and Obsidian's community listing both require the
+# release tag to EQUAL the manifest version with no prefix — BRAT treats the tag as the source
+# of truth and overrides the manifest on a mismatch — so a prefixed scheme silently breaks both.
+# A bare-version glob still excludes a sibling tool's tag (`apisink-v0.1.0` does not match),
+# which is the property the prefix was there to provide.
 on:
   push:
+    # Glob, not regex: `+` is a literal here, so quantifiers do not work. `[0-9]*` is the
+    # correct shape filter. The guard below still enforces exact tag == manifest equality.
     tags:
-      - "obsidian-v*"
+      - "[0-9]*.[0-9]*.[0-9]*"
 
 jobs:
   build:
@@ -36,10 +41,13 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           manifest="$(jq -r .version plugin/manifest.json)"
-          if [ "${tag#obsidian-v}" != "$manifest" ]; then
+          # Exact equality, no prefix stripping: BRAT requires tag == release name == manifest
+          # version, and overrides the manifest with the tag when they differ.
+          if [ "$tag" != "$manifest" ]; then
             echo "Tag ${tag} does not match plugin/manifest.json version ${manifest}." >&2
-            echo "Expected tag obsidian-v${manifest}." >&2
-            echo "Obsidian installs by manifest version, so a mismatch ships a broken release." >&2
+            echo "Expected tag ${manifest}." >&2
+            echo "BRAT and Obsidian both install by manifest version, and BRAT treats the tag" >&2
+            echo "as the source of truth — a mismatch ships a plugin reporting the wrong version." >&2
             exit 1
           fi
 

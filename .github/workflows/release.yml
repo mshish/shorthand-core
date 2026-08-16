@@ -50,6 +50,15 @@ jobs:
             echo "as the source of truth — a mismatch ships a plugin reporting the wrong version." >&2
             exit 1
           fi
+          # versions.json maps plugin version -> minAppVersion so an older Obsidian can resolve
+          # the newest build it can actually run. Obsidian reads it from the repo's default
+          # branch, so it is inert while this repo is private — but a missing entry only shows
+          # up the day the repo goes public, long after the release it describes. Check it now.
+          if [ "$(jq -r --arg v "$tag" '.[$v] // "missing"' plugin/versions.json)" = "missing" ]; then
+            echo "plugin/versions.json has no entry for ${tag}." >&2
+            echo "Run \"bun run version:bump ${tag}\" and commit before tagging." >&2
+            exit 1
+          fi
 
       - name: Typecheck and test
         run: |

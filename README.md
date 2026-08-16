@@ -62,9 +62,12 @@ deliberately. Both [BRAT](https://github.com/TfTHacker/obsidian42-brat) and Obsi
 listing require that, and BRAT treats the tag as the source of truth — on a mismatch it
 overrides the manifest, shipping a plugin that reports the wrong version.
 
-**`plugin/manifest.json` is the single source of truth for the plugin version.** The root
-`package.json` is `private` and pinned to `0.0.0` precisely so it cannot disagree: it is never
-published and never read for a version, so there is no second number to keep in sync.
+**`plugin/manifest.json` is the single source of truth for the plugin version**, and nothing is
+edited by hand. `bun run version:bump <version>` writes the manifest, adds the
+`plugin/versions.json` entry, and syncs the (private, unpublished) root `package.json` together,
+so the three cannot drift. The release guard fails if the tag does not equal the manifest version
+**or** if `versions.json` has no entry for it — a missing entry is invisible until the day the
+repo goes public, long after the release it describes.
 
 The workflow is scoped by tag **shape** rather than a prefix, so a sibling tool in this repo
 still cannot cut an Obsidian release — `apisink-v0.1.0` does not match a bare-version glob. An
@@ -84,22 +87,27 @@ entirely.
 
 ### From source, while developing
 
-Build and install into a vault in one step:
+Start a watch build that reinstalls into a vault on every rebuild:
 
 ```sh
 bun run dev:plugin --vault "C:\path\to\vault"
 ```
 
-Or set `HANDY_NOTES_VAULT` once and drop the flag. `install:local` alone installs without
-rebuilding. Both copy **only** `main.js` and `manifest.json`; `data.json` is your saved settings
-and is never touched.
+Or set `HANDY_NOTES_VAULT` once and drop the flag. This is an esbuild watch — the same
+mechanism as the official sample plugin's `dev` script. `bun run build:plugin` builds once
+without watching; `bun run install:local` copies an existing build without rebuilding. All of
+them copy **only** `main.js` and `manifest.json`; `data.json` is your saved settings and is
+never touched.
 
-Obsidian caches the bundle, so **toggle the plugin off and on** (or reload Obsidian) after
-installing — otherwise you are still running the previous build, which looks exactly like your
+Install the community [Hot Reload](https://github.com/pjeby/hot-reload) plugin in that vault
+and the reload is automatic — the installer drops the `.hotreload` marker it looks for. Without
+it, Obsidian caches the bundle, so **toggle the plugin off and on** (or reload Obsidian) after
+each rebuild; otherwise you are still running the previous build, which looks exactly like your
 change having no effect.
 
-This copies rather than symlinking on purpose. A junction inside a OneDrive-synced vault makes
-OneDrive follow it and re-upload a 6.7 MB bundle on every rebuild.
+Obsidian's docs suggest developing directly inside `<vault>/.obsidian/plugins/<id>/`. This repo
+copies into that directory instead, on purpose: the vault is OneDrive-synced, and either a
+junction or an in-place build makes OneDrive re-upload a 6.7 MB bundle on every rebuild.
 
 ### From source, manually
 
@@ -115,11 +123,12 @@ Copy the contents of `plugin/`—at minimum `manifest.json` and the generated `m
 
 Reload Obsidian, enable **Handy Notes** under Community plugins, and configure the executable paths and budgets in its settings tab.
 
-The plugin provides these commands:
+The plugin provides these commands — Obsidian prefixes them with the plugin name in the palette,
+so they appear as "Handy Notes: Start capture on this note":
 
-- **Handy: start capture on this note**
-- **Handy: stop capture**
-- **Handy: enhance now**
+- **Start capture on this note**
+- **Stop capture**
+- **Enhance now**
 
 Capture starts only on the active Markdown note. If it has no ownership markers, the plugin offers to append the same seeded marker scaffold used by `init-note`. Malformed, duplicate, nested, or inverted markers are never repaired automatically.
 
@@ -177,6 +186,27 @@ Every AI update re-reads the file, verifies the current block hash, splices only
 - Under Claude subscription authentication, `total_cost_usd` is commonly `0`. In that case the configured USD budget is inert, so the pass-count budget is the real hard cap.
 - A stream disconnect cannot replay missed Handy events. Reconnects add a visible transcript-gap warning to the sidecar.
 - The plugin requires a desktop, filesystem-backed vault.
+
+## Cutting a release
+
+Obsidian identifies a release by a bare `x.y.z` tag that equals `plugin/manifest.json`'s
+`version` — no `v` prefix. Bump all three version-bearing files at once:
+
+```sh
+bun run version:bump 0.2.0
+git commit -am "chore: release 0.2.0"
+git tag 0.2.0 && git push origin main 0.2.0
+```
+
+That writes `plugin/manifest.json`, `plugin/versions.json` and `package.json`. `minAppVersion`
+is never bumped for you — raise it by hand in `manifest.json` first if a release needs a newer
+Obsidian, and the bump records that value against the new version.
+
+The release workflow refuses to build unless the tag matches both the manifest version and a
+`versions.json` entry, then attaches `main.js` + `manifest.json` to a **draft** release for you
+to write notes on and publish. `versions.json` lets an older Obsidian resolve the newest build
+it can still run; it is read from the repo's default branch, so it does nothing while this repo
+is private and is maintained purely so the history is correct if that changes.
 
 ## Offline verification
 

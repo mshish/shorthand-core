@@ -69,19 +69,22 @@ export default class HandyNotesPlugin extends Plugin {
     this.#renderStatus();
     this.addSettingTab(new HandyNotesSettingTab(this.app, this));
 
+    // Command names carry no plugin prefix and are sentence case, per Obsidian's plugin
+    // guidelines: the command palette already renders these as "Handy Notes: Start capture
+    // on this note". Spelling it out here produced "Handy Notes: Handy: start capture…".
     this.addCommand({
       id: "start-capture-this-note",
-      name: "Handy: start capture on this note",
+      name: "Start capture on this note",
       callback: () => { void this.startCaptureOnActiveNote(); },
     });
     this.addCommand({
       id: "stop-capture",
-      name: "Handy: stop capture",
+      name: "Stop capture",
       callback: () => { void this.stopCapture(false); },
     });
     this.addCommand({
       id: "enhance-now",
-      name: "Handy: enhance now",
+      name: "Enhance now",
       callback: () => { void this.enhanceActiveNote(); },
     });
 
@@ -405,7 +408,7 @@ export default class HandyNotesPlugin extends Plugin {
       "title",
       this.#state.message ?? (pending === undefined
         ? "Handy Notes status"
-        : `${pending} of ${this.settings.minNewChars} characters toward the next enhancement pass. "Handy: enhance now" runs one immediately.`),
+        : `${pending} of ${this.settings.minNewChars} characters toward the next enhancement pass. "Handy Notes: Enhance now" runs one immediately.`),
     );
   }
 }
@@ -418,7 +421,8 @@ class HandyNotesSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Handy Notes" });
+    // No plugin-name heading at the top: Obsidian already titles this pane "Handy Notes", and
+    // the guidelines reserve headings for separating multiple sections.
     textSetting(containerEl, this.plugin, "Handy executable", "Path to handy.exe, or a command available on PATH.", "handyExecutable");
     textSetting(containerEl, this.plugin, "Claude executable", "Optional path to claude.exe. Leave blank for automatic detection.", "claudeExecutable");
     textSetting(containerEl, this.plugin, "Transcript sidecar directory", "Vault-relative directory used for new transcript notes.", "sidecarDirectory");
@@ -433,10 +437,14 @@ class HandyNotesSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.enableLiveEnhancement)
         .onChange(async (value) => this.plugin.saveSettings({ ...this.plugin.settings, enableLiveEnhancement: value })));
 
-    containerEl.createEl("h3", { text: "Direct-file write limitation" });
-    containerEl.createEl("p", {
-      text: "Handy Notes writes through its core atomic file writer, not Obsidian's vault API. Obsidian detects those writes with its file watcher. If a note has unsaved keystrokes in an editor buffer, that buffer can win on its next save and an AI update may be lost. This is the safe direction: user text is never discarded by Handy Notes.",
-    });
+    // setHeading() rather than a raw <h3>: the guidelines call for it, and it inherits
+    // Obsidian's own settings typography instead of hardcoding a heading level.
+    new Setting(containerEl)
+      .setName("Direct-file write limitation")
+      .setHeading()
+      .setDesc(
+        "Handy Notes writes through its core atomic file writer, not Obsidian's vault API. Obsidian detects those writes with its file watcher. If a note has unsaved keystrokes in an editor buffer, that buffer can win on its next save and an AI update may be lost. This is the safe direction: user text is never discarded by Handy Notes.",
+      );
   }
 }
 

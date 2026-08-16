@@ -1,0 +1,15 @@
+# top-most EditorConfig file
+# Adapted from obsidianmd/obsidian-sample-plugin. The sample ships tabs/width 4/single quotes;
+# this repo is 2-space, double-quoted, so only the file-level invariants are taken verbatim.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

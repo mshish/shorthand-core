@@ -3,16 +3,35 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ClaudeAgentClient, detectClaudeExecutable, ExecutableAgentStub } from "../src/agent/client.js";
-import { EnhanceRunner, type PassOutcome } from "../src/agent/runner.js";
-import type { AgentClient, AgentTier } from "../src/agent/contract.js";
-import { DEFAULT_CONFIG, detectHandyExecutable } from "../src/config.js";
-import { buildNoteScaffold, transcriptWikilink, type Section } from "../src/note/markers.js";
-import { MarkdownNoteSink } from "../src/note/markdown-sink.js";
-import { SidecarWriter } from "../src/note/sidecar.js";
-import { linkTranscriptFrontmatter, readCurrentBlock, writeSections } from "../src/note/writer.js";
-import { StreamClient, type ExitDiagnosis } from "../src/stream/client.js";
-import { enhancementDelta, TranscriptStore } from "../src/stream/transcript.js";
+// bin/ is INTERNAL to core, not a consumer of it, so it may reach past the public
+// entry point. It does so in exactly one place: `read-block` and `set-sections`
+// call `readCurrentBlock`/`writeSections` directly. Consequence to record — those
+// two commands are Markdown-block-format-coupled and cannot follow core out of
+// this repo without the block writer coming with them.
+import { ExecutableAgentStub } from "../src/agent/client.js";
+import { readCurrentBlock, writeSections } from "../src/note/writer.js";
+import {
+  ClaudeAgentClient,
+  DEFAULT_CONFIG,
+  detectClaudeExecutable,
+  detectHandyExecutable,
+  EnhanceRunner,
+  SidecarWriter,
+  StreamClient,
+  TranscriptStore,
+  enhancementDelta,
+  type AgentClient,
+  type AgentTier,
+  type ExitDiagnosis,
+  type PassOutcome,
+  type Section,
+} from "obsidian-handy-notes";
+import {
+  buildNoteScaffold,
+  linkTranscriptFrontmatter,
+  MarkdownNoteSink,
+  transcriptWikilink,
+} from "obsidian-handy-notes/markdown";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);

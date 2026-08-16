@@ -12,26 +12,38 @@ import {
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { ClaudeAgentClient, detectClaudeExecutable } from "../src/agent/client.js";
-import { EnhanceRunner, type EnhanceStatus, type PassOutcome } from "../src/agent/runner.js";
-import { DEFAULT_CONFIG, detectHandyExecutable } from "../src/config.js";
-import { locateAiBlock, transcriptWikilink } from "../src/note/markers.js";
-import { MarkdownNoteSink } from "../src/note/markdown-sink.js";
-import { SidecarWriter } from "../src/note/sidecar.js";
-import { ensureNoteScaffold, linkTranscriptFrontmatter } from "../src/note/writer.js";
+// Core is consumed by package name through its `exports` map — never a deep path.
+// That is what keeps core extractable to its own repo as a move plus a dependency line.
+import {
+  ClaudeAgentClient,
+  DEFAULT_CONFIG,
+  detectClaudeExecutable,
+  detectHandyExecutable,
+  EnhanceRunner,
+  SidecarWriter,
+  StreamClient,
+  TranscriptStore,
+  enhancementDelta,
+  type EnhanceStatus,
+  type ExitDiagnosis,
+  type PassOutcome,
+} from "obsidian-handy-notes";
+import {
+  MarkdownNoteSink,
+  ensureNoteScaffold,
+  linkTranscriptFrontmatter,
+  locateAiBlock,
+  transcriptWikilink,
+} from "obsidian-handy-notes/markdown";
 import {
   DEFAULT_PLUGIN_SETTINGS,
-  normalizePluginSettings,
-  type HandyNotesPluginSettings,
-} from "../src/plugin/settings.js";
-import {
   INITIAL_PLUGIN_STATE,
+  normalizePluginSettings,
   reducePluginState,
+  type HandyNotesPluginSettings,
   type PluginUiEvent,
   type PluginUiState,
-} from "../src/plugin/state.js";
-import { StreamClient, type ExitDiagnosis } from "../src/stream/client.js";
-import { enhancementDelta, TranscriptStore } from "../src/stream/transcript.js";
+} from "obsidian-handy-notes/plugin-ui";
 
 type CaptureRuntime = {
   notePath: string;

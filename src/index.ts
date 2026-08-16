@@ -1,0 +1,52 @@
+/**
+ * The core entry point. Consumers import this package by name — never a deep
+ * path — so extracting core to its own repo stays a directory move plus a
+ * dependency line.
+ *
+ * Explicit named re-exports only. `export *` would pull every incidental module
+ * on the re-exported files' graph into consumers' bundles (the plugin bundle is
+ * already ~6.7 MB), and would silently widen the public surface every time a new
+ * module gains an export.
+ *
+ * Block-format internals and test seams (`readCurrentBlock`, `writeSections`,
+ * `hashBlock`, `parseSections`, the marker constants, `detectLineEnding`,
+ * `NdjsonDecoder`, `buildClaudeAgentOptions`, `createVaultToolGuard`,
+ * `ExecutableAgentStub`, `extractUserNotes`) are deliberately absent: exporting
+ * them would re-create exactly the coupling the sink port removed.
+ */
+
+export { EnhanceRunner } from "./agent/runner.js";
+export type { EnhanceRunnerOptions, EnhanceStatus, PassOutcome } from "./agent/runner.js";
+
+export { busySinkError, sinkError } from "./note/sink.js";
+export type {
+  NoteSink,
+  SinkError,
+  SinkErrorCode,
+  SinkReadResult,
+  SinkSnapshot,
+  SinkWriteResult,
+} from "./note/sink.js";
+
+export type { Section } from "./note/markers.js";
+
+export { StreamClient } from "./stream/client.js";
+export type { ExitDiagnosis, StreamClientOptions } from "./stream/client.js";
+
+export { enhancementDelta, TranscriptStore } from "./stream/transcript.js";
+export type { TranscriptUpdate } from "./stream/transcript.js";
+
+export { SidecarWriter } from "./note/sidecar.js";
+export type { SidecarWriterOptions } from "./note/sidecar.js";
+
+export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
+
+export type {
+  AgentClient,
+  AgentQueryRequest,
+  AgentQueryResponse,
+  AgentTier,
+} from "./agent/contract.js";
+
+export { DEFAULT_CONFIG, detectHandyExecutable } from "./config.js";
+export type { HandyNotesConfig } from "./config.js";

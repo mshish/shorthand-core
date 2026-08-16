@@ -36,6 +36,27 @@ try {
     "--transcript", sidecarRelative, "--tier", "link", "--agent-stub", agentStub,
   ]);
 
+  // Bare --fake-stream, no path: the only case that exercises the CLI's own
+  // default fixture, which it resolves as ../test/fixtures/fake-stream.mjs from
+  // the BUNDLE location. dist/ and test/ must therefore stay siblings at runtime,
+  // and every other invocation here passes an explicit path, so nothing else in
+  // CI would notice that coupling breaking.
+  const defaultNoteRelative = join("Meetings", "Default fixture.md");
+  const defaultSidecarRelative = join("Meetings", "Transcripts", "Default fixture transcript.md");
+  await runCli([
+    "init-note", "--vault", scratchVault, "--note", defaultNoteRelative,
+    "--title", "Default fixture", "--sidecar", defaultSidecarRelative,
+  ]);
+  await runCli([
+    "capture", "--vault", scratchVault, "--note", defaultNoteRelative,
+    "--fake-stream", "--no-reconnect",
+  ]);
+  const defaultSidecar = await readFile(join(scratchVault, defaultSidecarRelative), "utf8");
+  assert(
+    defaultSidecar.includes("# Handy Transcript"),
+    "capture with a bare --fake-stream wrote no transcript; the CLI's bundled fixture path is broken",
+  );
+
   const enhanced = await readFile(notePath, "utf8");
   const after = splitOwnedBlock(enhanced);
   assert(after.body !== before.body, "the AI-owned marker body did not change");

@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./markdown": "./src/markdown.ts",
+    "./testing": "./src/testing/sink-conformance.ts",
+    "./plugin-ui": "./src/plugin/index.ts"
+  },
   "bin": {
     "handy-notes": "./dist/handy-notes.mjs"
   },

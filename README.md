@@ -4,6 +4,16 @@ Handy Notes captures Handy's live microphone and system-audio transcript into a 
 
 The headless core owns capture, transcript reconciliation, enhancement, and all writes. The Obsidian plugin is a thin desktop lifecycle and UI wrapper around that same core.
 
+Granola-style meeting notes for Obsidian, driven by [Handy](https://github.com/cjpais/Handy)'s
+`--follow-stream` CLI: Handy transcribes your microphone and system audio as separate
+speaker-labelled lanes, and this keeps an AI-owned summary in the note while the meeting is
+still running.
+
+**Background:** [`docs/DESIGN.md`](docs/DESIGN.md) records the requirements, the deliberate
+decisions, the invariants that must not be weakened, and the bugs found by running it rather
+than reading it. [`docs/original-plan.md`](docs/original-plan.md) is the plan as approved
+before implementation.
+
 ## Prerequisites
 
 - Handy must be running with **Follow Live Transcript Output** enabled under **Advanced settings**. If Handy is stopped or that setting is disabled, `--follow-stream` exits with code 2 and Handy Notes reports both remedies.

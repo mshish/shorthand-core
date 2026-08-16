@@ -30,16 +30,30 @@ Download `main.js` and `manifest.json` from the [latest release](../../releases/
 <vault>/.obsidian/plugins/handy-notes/
 ```
 
-Releases are produced by `.github/workflows/release.yml` — push a tag matching the
-`plugin/manifest.json` version and CI typechecks, tests, builds, attests provenance, and
-opens a draft release with both assets:
+Releases are produced by `.github/workflows/release.yml` — push an `obsidian-v<version>` tag
+whose version matches `plugin/manifest.json` and CI typechecks, tests, builds, attests
+provenance, and opens a draft release with both assets:
 
 ```sh
-git tag 0.1.0 && git push origin 0.1.0
+git tag obsidian-v0.1.0 && git push origin obsidian-v0.1.0
 ```
 
 The tag must match the manifest version or the workflow fails deliberately, because Obsidian
 installs by manifest version and a mismatch would ship a plugin that reports the wrong one.
+
+**`plugin/manifest.json` is the single source of truth for the plugin version.** The root
+`package.json` is `private` and pinned to `0.0.0` precisely so it cannot disagree: it is never
+published and never read for a version, so there is no second number to keep in sync.
+
+The tag prefix is scoped so that a sibling tool living in this repo can never cut an Obsidian
+release. It has a cost, recorded here so it is not rediscovered the hard way:
+
+> **This plugin is manual / [BRAT](https://github.com/TfTHacker/obsidian42-brat) install only.**
+> Obsidian's community-plugin listing requires the release tag to *equal* the manifest version
+> with no prefix (`0.1.0`, not `obsidian-v0.1.0`), plus a `versions.json` at the repository
+> root. The `obsidian-v*` scheme is incompatible with both. If community listing is ever
+> wanted, the tag scheme has to change back to a bare version — and then the trigger, the
+> guard in `release.yml`, and this section all move together.
 
 ### From source
 

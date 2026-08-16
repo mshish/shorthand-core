@@ -5,10 +5,12 @@
 # at the repo root.
 name: Release Obsidian plugin
 
+# Tags are scoped to `obsidian-v*` so a sibling tool's tag can never cut an Obsidian
+# release. The guard below must strip the SAME prefix — see README ("Releases").
 on:
   push:
     tags:
-      - "*"
+      - "obsidian-v*"
 
 jobs:
   build:
@@ -34,8 +36,9 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           manifest="$(jq -r .version plugin/manifest.json)"
-          if [ "${tag#v}" != "$manifest" ]; then
+          if [ "${tag#obsidian-v}" != "$manifest" ]; then
             echo "Tag ${tag} does not match plugin/manifest.json version ${manifest}." >&2
+            echo "Expected tag obsidian-v${manifest}." >&2
             echo "Obsidian installs by manifest version, so a mismatch ships a broken release." >&2
             exit 1
           fi

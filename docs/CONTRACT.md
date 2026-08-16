@@ -1,6 +1,6 @@
 # The core contract
 
-This is the contract between `obsidian-handy-notes` core and a consumer that supplies it with
+This is the contract between `handy-notes-core` and a consumer that supplies it with
 a destination. It exists for the case that motivated the sink port in the first place: an
 **API-backed** target — Notion- or Granola-shaped, with `GET` + etag, `PATCH` with
 `If-Match`, `409` for a lost race and `429` for backpressure — rather than a second Markdown
@@ -20,18 +20,17 @@ Core's side of the deal is narrow and worth stating up front:
 
 The package's `exports` map is the boundary, and it is enforced at resolution time — `tsc`,
 `esbuild` and Node all honour it, so a deep import fails to resolve rather than merely being
-frowned upon. There are four entry points.
+frowned upon. There are three entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `obsidian-handy-notes` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
-| `obsidian-handy-notes/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
-| `obsidian-handy-notes/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
-| `obsidian-handy-notes/plugin-ui` | Obsidian plugin settings + status reducer | The Obsidian plugin only. Not part of core's contract; it disappears into the plugin package when the workspace split lands. |
+| `handy-notes-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
+| `handy-notes-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
+| `handy-notes-core/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
 
 Entry points are **explicit named re-exports**, never `export *`. `export *` would drag every
-incidental module on the re-exported files' graph into consumers' bundles — the plugin bundle
-is already ~6.7 MB — and would silently widen the public surface each time some unrelated
+incidental module on the re-exported files' graph into consumers' bundles — the Obsidian
+plugin's bundle is already ~7 MB — and would silently widen the public surface each time some unrelated
 module gained an export.
 
 ### What is deliberately NOT exported, and why
@@ -250,7 +249,7 @@ under OneDrive) → `busy` + `retryAfterMs`, hash mismatch → `stale`.
 
 ## 5. Running the conformance suite
 
-`obsidian-handy-notes/testing` is **shipped API, not a test**. It imports no test runner, has
+`handy-notes-core/testing` is **shipped API, not a test**. It imports no test runner, has
 no assertion-library dependency, and every scenario is a plain async function that throws on
 failure. That inversion is the whole point: the artifact that defines the contract has to be
 runnable by a second package, a different runner, or an extracted core — not only by
@@ -268,7 +267,7 @@ scenario. `primitives` is the minimal slice of a runner it needs: `{ describe, t
 
 ```ts
 import { describe, test } from "vitest";
-import { describeNoteSinkConformance, type SinkHarness } from "obsidian-handy-notes/testing";
+import { describeNoteSinkConformance, type SinkHarness } from "handy-notes-core/testing";
 import { NotionNoteSink } from "../src/notion-sink.js";
 
 describeNoteSinkConformance(
@@ -303,7 +302,7 @@ scenarios are simply omitted):
 
 ```ts
 import { describe, it } from "node:test";
-import { describeNoteSinkConformance } from "obsidian-handy-notes/testing";
+import { describeNoteSinkConformance } from "handy-notes-core/testing";
 
 describeNoteSinkConformance({ describe, test: it }, "NotionNoteSink", createHarness, {
   missing: true,
@@ -315,7 +314,7 @@ describeNoteSinkConformance({ describe, test: it }, "NotionNoteSink", createHarn
 
 ```ts
 import { describe, test } from "bun:test";
-import { describeNoteSinkConformance } from "obsidian-handy-notes/testing";
+import { describeNoteSinkConformance } from "handy-notes-core/testing";
 ```
 
 ### 5.2 No runner at all — drive the scenarios directly
@@ -324,7 +323,7 @@ import { describeNoteSinkConformance } from "obsidian-handy-notes/testing";
 any runner whose API does not fit the primitives shape:
 
 ```ts
-import { NOTE_SINK_CONFORMANCE_SCENARIOS } from "obsidian-handy-notes/testing";
+import { NOTE_SINK_CONFORMANCE_SCENARIOS } from "handy-notes-core/testing";
 
 const support = { missing: true, forbidden: false };
 let failed = 0;
@@ -366,29 +365,31 @@ produce a shape appears as a `todo` in the report instead of a silently absent t
 
 ---
 
-## 6. Extraction
+## 6. Consumers
 
-The `exports` map already carries the boundary, so moving core to its own repo is a directory
-move plus a dependency line rather than a refactor. What remains:
+The Obsidian plugin has been extracted to its own repository,
+[`mshish/obsidian-handy-notes`](https://github.com/mshish/obsidian-handy-notes). It consumes
+this package the way any second consumer would — by package name, through the `exports` map,
+pinned to a tag:
 
-1. **Move `src/` (minus `src/plugin/`) and its tests** into the new repo, `git mv` to preserve
-   blame. `src/plugin/` is consumer-owned code parked under `src/`; it goes to the plugin side.
-2. **Publish under its real name.** The exports map keys (`.`, `./markdown`, `./testing`,
-   `./plugin-ui`) stay; only the package name in consumers' import statements changes, and
-   `plugin-ui` drops off since it never belonged to core. Drop `"private": true` and give it a
-   real version — the root package here is pinned to `0.0.0` precisely because it is not the
-   thing that gets versioned.
-3. **Two known snags, both already identified:**
-   - **`bin/` is internal to core, not a consumer.** `read-block` and `set-sections` call
-     `readCurrentBlock`/`writeSections` directly, which is legitimate — but it makes them
-     Markdown-coupled CLI commands that cannot follow core out of this repo without the block
-     writer coming too.
-   - **`bin/handy-notes.ts` runtime-resolves `../test/fixtures/fake-stream.mjs`** from the
-     bundle location, so `dist/` and `test/` must stay siblings at runtime. Either move that
-     fixture under `src/`, where it is genuinely shipped, or carry `test/fixtures/` along.
-4. **Verification is unchanged:** the conformance suite is already runner-independent and
-   already exported, so it moves with core and keeps working from the consumer side without
-   edits.
+```json
+"handy-notes-core": "git+https://github.com/mshish/handy-notes-core.git#0.1.0"
+```
 
-Nothing here requires touching the sink port, the runner, or any consumer's import
-statements beyond the package name — which was the point.
+The extraction cost exactly what this document predicted: a directory move plus a dependency
+line. Nothing in the sink port, the runner, or the entry points changed. The one thing that
+did not survive was `./plugin-ui` — Obsidian settings and a status-bar reducer parked under
+`src/` — which was never core's contract and now lives in the plugin repo as ordinary source.
+
+Two properties of this repo constrain any future consumer, and both are deliberate:
+
+- **`bin/` is internal to core, not a consumer.** `read-block` and `set-sections` call
+  `readCurrentBlock`/`writeSections` directly. That is legitimate for code inside the package,
+  but it makes them Markdown-coupled CLI commands — they could not be lifted into a consumer
+  without the block writer coming too.
+- **`bin/handy-notes.ts` runtime-resolves `../test/fixtures/fake-stream.mjs`** from the bundle
+  location, so `dist/` and `test/` must stay siblings at runtime. A consumer that vendors only
+  `dist/` loses `--fake-stream`.
+
+Verification needs nothing special: the conformance suite is runner-independent and exported,
+so a consumer's own test suite runs it against its own sink with no access to core internals.

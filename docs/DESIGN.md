@@ -57,7 +57,9 @@ diarisation beyond me/them.
 
 **Headless core, thin plugin.** Everything of consequence is a plain Node package with no
 Obsidian dependency, driven by a CLI. Writes go directly to files; Obsidian picks up external
-changes itself. The plugin supplies lifecycle and UI only.
+changes itself. The plugin supplies lifecycle and UI only — and now lives in its own
+repository, [`mshish/obsidian-handy-notes`](https://github.com/mshish/obsidian-handy-notes),
+which depends on this one by package name and a pinned tag.
 
 Two payoffs: the whole pipeline is testable end to end without launching Obsidian, and
 nothing — no MCP server, no plugin install — stands between the agent and the note.
@@ -88,22 +90,25 @@ busy) is expressible without core learning anything about it. Revision is opaque
 `read()` returns sections, user notes, and revision from one observation so they cannot skew.
 The full contract is [`CONTRACT.md`](CONTRACT.md).
 
-**One entry point, enforced by `exports`.** Consumers import `obsidian-handy-notes` (and
-`/markdown`, `/testing`, `/plugin-ui`) — never a deep path. The `exports` map in
-`package.json` is the enforcement; there are deliberately no tsconfig `paths`, which would
-defeat it. Entry points are explicit named re-exports, never `export *`: a barrel would pull
-incidental modules into an already ~6.7 MB plugin bundle and silently widen the public
-surface. Block-format internals (`readCurrentBlock`, `writeSections`, `hashBlock`,
+**One entry point, enforced by `exports`.** Consumers import `handy-notes-core` (and
+`/markdown`, `/testing`) — never a deep path. The `exports` map in `package.json` is the
+enforcement; there are deliberately no tsconfig `paths`, which would defeat it. Entry points
+are explicit named re-exports, never `export *`: a barrel would pull incidental modules into
+an already ~7 MB plugin bundle and silently widen the public surface. Block-format internals (`readCurrentBlock`, `writeSections`, `hashBlock`,
 `parseSections`, the marker constants) and test seams stay private, because exporting them
 re-creates exactly the coupling the sink port removed.
 
-The workspace split (`packages/`) is **deferred, not cancelled**. Every constraint it was
-meant to deliver — extraction-ready core, a single public entry point, no deep consumer
-imports, a release containing only `main.js` + `manifest.json` — is delivered by the entry
-point plus the `exports` map inside the single package. Extraction is a directory move plus a
-dependency line because of the exports map, not because of the directory. Revisit when the
-API sink actually exists, so the package boundary is designed against two real consumers
-rather than one hypothetical one.
+**The split happened, and cost what the exports map promised.** The plugin was extracted to
+its own repository because Obsidian's documented dev loop assumes the repo root *is* the
+plugin — every in-repo alternative (copy script, junction) was an adaptation. Because the
+`exports` map already carried the boundary, extraction was a directory move plus a dependency
+line: no import in core changed except its own package name. `./plugin-ui` — Obsidian settings
+and a status reducer parked under `src/` — was never core's contract and went with the plugin.
+
+A multi-package **workspace** (`packages/`) remains deferred, not cancelled. Revisit when the
+API sink actually exists, so a package boundary is designed against two real consumers rather
+than one hypothetical one. The consumer that exists today is a separate repo, and a git tag is
+the version boundary between them.
 
 ## Invariants — do not weaken these
 
@@ -183,29 +188,23 @@ transcript stream and agent stub). CI runs all of it offline — no Handy, vault
 required. See `README.md` for commands and `.github/workflows/` for the pipeline.
 
 **The conformance suite is shipped API, not a test.** It lives at
-`src/testing/sink-conformance.ts` and is exported as `obsidian-handy-notes/testing`. It
+`src/testing/sink-conformance.ts` and is exported as `handy-notes-core/testing`. It
 imports no test runner: scenarios are plain async functions that throw, plus a thin adapter
 that takes a caller's `describe`/`test`. That inversion is deliberate — the artifact defining
 the contract must be runnable by a second package, a different runner (Vitest, `node:test`),
-or an extracted core, not only by `bun test` in this repo. `test/markdown-sink.test.ts` runs
+or a consumer in another repo, not only by `bun test` in this repo. `test/markdown-sink.test.ts` runs
 `MarkdownNoteSink` through it. Every future sink must pass it unchanged.
 
-**Two gaps CI could not previously see, now closed.** `test/plugin-bundle.test.ts` actually
-`require`s the built bundle under a stub `obsidian` and asserts a bundle-size ceiling — CI
-built `plugin/main.js` and never loaded it, which is how the load-bearing `import.meta.url`
-banner in the esbuild config came to exist after a real Obsidian load failure with everything
-green. `test/consumer-imports.test.ts` closes the hole `exports` cannot see: a *relative*
-import escaping a consumer root bypasses bare-specifier resolution entirely.
+**Two checks left with the plugin, and that is correct.** The bundle-load test — which
+`require`s the built `main.js` under a stub `obsidian` and asserts a size ceiling — now lives
+in the plugin repo, where the bundle is. It exists because CI once built the bundle and never
+loaded it, which is how the load-bearing `import.meta.url` banner in the esbuild config came
+to exist after a real Obsidian load failure with everything green. `consumer-imports.test.ts`
+was deleted outright: it caught a *relative* import escaping a consumer root, a hole `exports`
+cannot see — but with the consumer in another repo there is no root left to escape, and a
+relative path can no longer reach core at all.
 
-**`plugin/main.ts` is typechecked.** It was not, until `obsidian` was added as a pinned
-devDependency (1.5.7, matching `minAppVersion`) and `plugin/**/*.ts` was added to the tsconfig
-`include`. ~530 lines of shipped plugin had no static check behind them; esbuild only needs
-`external: ["obsidian"]`, which requires no types.
-
-**Release tags are scoped to `obsidian-v*`,** so a sibling tool's tag can never cut an
-Obsidian release. The trigger and the version guard in `release.yml` must always change
-together: the guard strips the tag prefix, and a prefix mismatch fails *every* release rather
-than none. `plugin/manifest.json` is the single source of truth for the plugin version;
-`package.json` is private and pinned to `0.0.0` so it cannot disagree. The cost, recorded in
-`README.md`: the prefix makes this plugin manual/BRAT install only, because Obsidian's
-community listing requires a bare-version tag plus a root `versions.json`.
+**Releases are the plugin repo's job now.** Obsidian identifies a release by a bare `x.y.z`
+tag equal to `manifest.json`'s `version`; BRAT treats that tag as the source of truth and
+overrides the manifest on a mismatch. That machinery moved with the plugin. Core carries no
+`x.y.z` release of its own — its tags exist only as dependency pins for consumers.

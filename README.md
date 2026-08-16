@@ -1,13 +1,20 @@
-# Obsidian Handy Notes
+# handy-notes-core
 
-Handy Notes captures Handy's live microphone and system-audio transcript into a linked sidecar note. Stateless Claude Agent SDK passes use the new transcript plus your notes to maintain a structured summary in the meeting note. Sections may be added, rewritten, reordered, or removed as the meeting develops.
+The headless engine behind Handy Notes: it captures [Handy](https://github.com/cjpais/Handy)'s
+live microphone and system-audio transcript into a linked sidecar note, and runs stateless Claude
+Agent SDK passes that use the new transcript plus your own notes to maintain a structured summary
+in the meeting note. Sections may be added, rewritten, reordered, or removed as the meeting
+develops.
 
-The headless core owns capture, transcript reconciliation, enhancement, and all writes. The Obsidian plugin is a thin desktop lifecycle and UI wrapper around that same core.
+Core owns capture, transcript reconciliation, enhancement, and every write. It has **no Obsidian
+dependency**: writes go straight to files and Obsidian picks up external changes itself. Two
+payoffs — the whole pipeline is testable end to end without launching Obsidian, and nothing (no
+MCP server, no plugin install) stands between the agent and the note.
 
-Granola-style meeting notes for Obsidian, driven by [Handy](https://github.com/cjpais/Handy)'s
-`--follow-stream` CLI: Handy transcribes your microphone and system audio as separate
-speaker-labelled lanes, and this keeps an AI-owned summary in the note while the meeting is
-still running.
+**Consumers.** The Obsidian plugin lives in its own repository,
+[`mshish/obsidian-handy-notes`](https://github.com/mshish/obsidian-handy-notes), and depends on
+this package by name and a pinned tag. A `bin/handy-notes` CLI in this repo drives the same
+pipeline headlessly.
 
 **Background:** [`docs/DESIGN.md`](docs/DESIGN.md) records the requirements, the deliberate
 decisions, the invariants that must not be weakened, and the bugs found by running it rather
@@ -17,126 +24,53 @@ consumer — read it before writing a second output target.
 
 ## Package layout
 
-Core is consumed **by package name only**, through the `exports` map in `package.json`. There
-are no deep imports and no tsconfig `paths` — `exports` is the enforcement, honoured by `tsc`,
+Core is consumed **by package name only**, through the `exports` map in `package.json`. There are
+no deep imports and no tsconfig `paths` — `exports` is the enforcement, honoured by `tsc`,
 esbuild and Node alike, so a deep path fails to resolve rather than merely being discouraged.
 
 | Specifier | Entry point | Contains |
 | --- | --- | --- |
-| `obsidian-handy-notes` | `src/index.ts` | The engine and the `NoteSink` port |
-| `obsidian-handy-notes/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
-| `obsidian-handy-notes/testing` | `src/testing/sink-conformance.ts` | The executable `NoteSink` conformance suite, runner-independent |
-| `obsidian-handy-notes/plugin-ui` | `src/plugin/index.ts` | Obsidian plugin settings and status reducer |
+| `handy-notes-core` | `src/index.ts` | The engine and the `NoteSink` port |
+| `handy-notes-core/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
+| `handy-notes-core/testing` | `src/testing/sink-conformance.ts` | The executable `NoteSink` conformance suite, runner-independent |
 
 Entry points use explicit named re-exports, never `export *`. Block-format internals and test
-seams are deliberately not exported; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and
-says why. `bin/` is internal to core rather than a consumer, so its direct use of the block
-writer is legitimate.
+seams are deliberately not exported; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and says
+why. `bin/` is internal to core rather than a consumer, so its direct use of the block writer is
+legitimate.
+
+## Consuming core
+
+The package is private and unpublished, so consumers install it from git, pinned to a tag:
+
+```json
+"handy-notes-core": "git+https://github.com/mshish/handy-notes-core.git#0.1.0"
+```
+
+Use **npm**, not bun: npm resolves that URL by cloning through the `gh` credential helper, while
+bun rewrites GitHub dependencies to the API tarball endpoint and 404s on a private repository
+regardless of the token supplied. Core itself develops with bun.
+
+Core's tags exist **only** as dependency pins. There is no release workflow here and no
+`main.js`; the Obsidian plugin's releases are cut from the plugin repository.
 
 ## Prerequisites
 
-- Handy must be running with **Follow Live Transcript Output** enabled under **Advanced settings**. If Handy is stopped or that setting is disabled, `--follow-stream` exits with code 2 and Handy Notes reports both remedies.
-- The `claude` CLI must be installed and logged in. On Windows the standard `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location can be configured in the plugin or passed with `--claude`.
-- Node.js 20 or Bun is required for headless CLI use. Bun is required for the development build and test commands.
-
-## Install the Obsidian plugin
-
-### From a release (no toolchain required)
-
-Download `main.js` and `manifest.json` from the [latest release](../../releases/latest) into:
-
-```text
-<vault>/.obsidian/plugins/handy-notes/
-```
-
-Releases are produced by `.github/workflows/release.yml` — push a tag equal to the
-`plugin/manifest.json` version and CI typechecks, tests, builds, attests provenance, and opens
-a draft release with both assets:
-
-```sh
-git tag 0.1.0 && git push origin 0.1.0
-```
-
-The tag must **equal** the manifest version exactly, with no prefix, or the workflow fails
-deliberately. Both [BRAT](https://github.com/TfTHacker/obsidian42-brat) and Obsidian's community
-listing require that, and BRAT treats the tag as the source of truth — on a mismatch it
-overrides the manifest, shipping a plugin that reports the wrong version.
-
-**`plugin/manifest.json` is the single source of truth for the plugin version**, and nothing is
-edited by hand. `bun run version:bump <version>` writes the manifest, adds the
-`plugin/versions.json` entry, and syncs the (private, unpublished) root `package.json` together,
-so the three cannot drift. The release guard fails if the tag does not equal the manifest version
-**or** if `versions.json` has no entry for it — a missing entry is invisible until the day the
-repo goes public, long after the release it describes.
-
-The workflow is scoped by tag **shape** rather than a prefix, so a sibling tool in this repo
-still cannot cut an Obsidian release — `apisink-v0.1.0` does not match a bare-version glob. An
-earlier `obsidian-v*` scheme gave the same isolation but silently broke BRAT and community
-listing, which is why shape-scoping is used instead.
-
-### Install from the repo with BRAT
-
-BRAT installs from a **release**, not from the repo tree, so cut one first. This repository is
-private, so BRAT needs a fine-grained personal access token with read-only **Contents**
-permission on it, added in BRAT's settings; then add `mshish/obsidian-handy-notes` as a beta
-plugin.
-
-BRAT is the right path for testing a real build or installing on another machine. For a tight
-edit-build-reload loop, `bun run dev:plugin` below is faster — it skips the release cycle
-entirely.
-
-### From source, while developing
-
-Start a watch build that reinstalls into a vault on every rebuild:
-
-```sh
-bun run dev:plugin --vault "C:\path\to\vault"
-```
-
-Or set `HANDY_NOTES_VAULT` once and drop the flag. This is an esbuild watch — the same
-mechanism as the official sample plugin's `dev` script. `bun run build:plugin` builds once
-without watching; `bun run install:local` copies an existing build without rebuilding. All of
-them copy **only** `main.js` and `manifest.json`; `data.json` is your saved settings and is
-never touched.
-
-Install the community [Hot Reload](https://github.com/pjeby/hot-reload) plugin in that vault
-and the reload is automatic — the installer drops the `.hotreload` marker it looks for. Without
-it, Obsidian caches the bundle, so **toggle the plugin off and on** (or reload Obsidian) after
-each rebuild; otherwise you are still running the previous build, which looks exactly like your
-change having no effect.
-
-Obsidian's docs suggest developing directly inside `<vault>/.obsidian/plugins/<id>/`. This repo
-copies into that directory instead, on purpose: the vault is OneDrive-synced, and either a
-junction or an in-place build makes OneDrive re-upload a 6.7 MB bundle on every rebuild.
-
-### From source, manually
-
-```sh
-bun run build:plugin
-```
-
-Copy the contents of `plugin/`—at minimum `manifest.json` and the generated `main.js`—into:
-
-```text
-<vault>/.obsidian/plugins/handy-notes/
-```
-
-Reload Obsidian, enable **Handy Notes** under Community plugins, and configure the executable paths and budgets in its settings tab.
-
-The plugin provides these commands — Obsidian prefixes them with the plugin name in the palette,
-so they appear as "Handy Notes: Start capture on this note":
-
-- **Start capture on this note**
-- **Stop capture**
-- **Enhance now**
-
-Capture starts only on the active Markdown note. If it has no ownership markers, the plugin offers to append the same seeded marker scaffold used by `init-note`. Malformed, duplicate, nested, or inverted markers are never repaired automatically.
+- Handy must be running with **Follow Live Transcript Output** enabled under **Advanced
+  settings**. If Handy is stopped or that setting is disabled, `--follow-stream` exits with code 2
+  and core reports both remedies.
+- The `claude` CLI must be installed and logged in. On Windows the standard
+  `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location can be passed with
+  `--claude`.
+- Node.js 20 or Bun for headless CLI use. Bun is required for the development build and test
+  commands.
 
 ## Headless CLI
 
 Build the standalone CLI first:
 
 ```sh
+bun install
 bun run build
 ```
 
@@ -164,9 +98,13 @@ For all available flags:
 node dist/handy-notes.mjs
 ```
 
+`dist/` and `test/` must stay siblings at runtime: `bin/handy-notes.ts` resolves
+`../test/fixtures/fake-stream.mjs` relative to the bundle, so `--fake-stream` needs the fixture
+directory alongside the build.
+
 ## Ownership-marker contract
 
-Handy Notes owns only the bytes strictly between one well-ordered marker pair:
+Core owns only the bytes strictly between one well-ordered marker pair:
 
 ```markdown
 <!-- handy:notes -->
@@ -178,51 +116,49 @@ AI-maintained sections live here.
 <!-- handy:ai:end -->
 ```
 
-Every AI update re-reads the file, verifies the current block hash, splices only the marker body, writes a same-directory temporary file, and atomically renames it over the note with lock retries. Marker anomalies fail closed. The agent has no write tools; all note writes go through the core file writer, never through Obsidian's vault API.
+Every AI update re-reads the file, verifies the current block hash, splices only the marker body,
+writes a same-directory temporary file, and atomically renames it over the note with lock retries.
+Marker anomalies fail closed. The agent has no write tools; all note writes go through the core
+file writer.
 
 ## Known limitations
 
-- Because the core writes directly to disk, Obsidian notices updates through its file watcher. If the note has unsaved keystrokes in Obsidian's editor buffer, that buffer can win on its next save and an AI update may be lost. This is the intentionally safe direction: Handy Notes does not discard user text.
-- Under Claude subscription authentication, `total_cost_usd` is commonly `0`. In that case the configured USD budget is inert, so the pass-count budget is the real hard cap.
-- A stream disconnect cannot replay missed Handy events. Reconnects add a visible transcript-gap warning to the sidecar.
-- The plugin requires a desktop, filesystem-backed vault.
-
-## Cutting a release
-
-Obsidian identifies a release by a bare `x.y.z` tag that equals `plugin/manifest.json`'s
-`version` — no `v` prefix. Bump all three version-bearing files at once:
-
-```sh
-bun run version:bump 0.2.0
-git commit -am "chore: release 0.2.0"
-git tag 0.2.0 && git push origin main 0.2.0
-```
-
-That writes `plugin/manifest.json`, `plugin/versions.json` and `package.json`. `minAppVersion`
-is never bumped for you — raise it by hand in `manifest.json` first if a release needs a newer
-Obsidian, and the bump records that value against the new version.
-
-The release workflow refuses to build unless the tag matches both the manifest version and a
-`versions.json` entry, then attaches `main.js` + `manifest.json` to a **draft** release for you
-to write notes on and publish. `versions.json` lets an older Obsidian resolve the newest build
-it can still run; it is read from the repo's default branch, so it does nothing while this repo
-is private and is maintained purely so the history is correct if that changes.
+- Because core writes directly to disk, Obsidian notices updates through its file watcher. If the
+  note has unsaved keystrokes in Obsidian's editor buffer, that buffer can win on its next save
+  and an AI update may be lost. This is the intentionally safe direction: user text is never
+  discarded.
+- Under Claude subscription authentication, `total_cost_usd` is commonly `0`. In that case the
+  configured USD budget is inert, so the pass-count budget is the real hard cap.
+- A stream disconnect cannot replay missed Handy events. Reconnects add a visible transcript-gap
+  warning to the sidecar.
 
 ## Offline verification
 
-The unit suite and smoke test use local fixtures only; they do not require Handy, Claude, Obsidian, or network access:
+The unit suite and smoke test use local fixtures only; they do not require Handy, Claude,
+Obsidian, or network access:
 
 ```sh
-bun run build
-bun run build:plugin
 bun run typecheck
 bun test
-node test/e2e-smoke.mjs
+bun run build
+bun run test:e2e
 ```
 
-The smoke script creates and removes a scratch vault, initializes a note, captures from `--fake-stream`, enhances with `--agent-stub`, and verifies that only the AI marker body changed.
+The smoke script creates and removes a scratch vault, initializes a note, captures from
+`--fake-stream`, enhances with `--agent-stub`, and verifies that only the AI marker body changed.
+CI (`.github/workflows/ci.yml`) runs exactly this.
 
-`bun run typecheck` covers `bin/`, `plugin/`, `src/` and `test/`. `plugin/main.ts` is included
-and `obsidian` is a pinned devDependency (1.5.7, matching `manifest.json`'s `minAppVersion`)
-purely so that typings exist — the plugin bundle still marks `obsidian` external, so nothing
-of it is shipped.
+Writing a second sink? `handy-notes-core/testing` exports the conformance suite as plain async
+functions plus a thin adapter over any runner's `describe`/`test`, so it runs from another
+package and another test runner unchanged. Every sink must pass it.
+
+## Cutting a core tag
+
+Consumers pin by tag, so a tag is a compatibility promise:
+
+```sh
+git tag 0.1.0 && git push origin 0.1.0
+```
+
+Then bump the dependency line in each consumer and run its own verification. There is no release
+workflow and no artifact — the tag is the whole deliverable.

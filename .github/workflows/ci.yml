@@ -1,4 +1,4 @@
-# Runs the same gates used during development: typecheck, unit tests, both bundles, and the
+# Runs the same gates used during development: typecheck, unit tests, the CLI bundle, and the
 # headless end-to-end smoke. Everything here is offline — the smoke script uses the fake
 # transcript stream and the agent stub, so CI never needs Handy, a vault, or API credentials.
 name: CI
@@ -28,10 +28,8 @@ jobs:
       - name: Unit tests
         run: bun test
 
-      - name: Build CLI and plugin
-        run: |
-          bun run build
-          bun run build:plugin
+      - name: Build CLI
+        run: bun run build
 
       - name: End-to-end smoke
         run: bun run test:e2e

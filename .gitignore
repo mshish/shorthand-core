@@ -1,12 +1,7 @@
 node_modules/
 
-# Build artifacts — rebuild with `bun run build` / `bun run build:plugin`.
-# plugin/main.js is ~6.7MB (bundles the Claude Agent SDK); ship it via a release, not git.
+# Build artifacts — rebuild with `bun run build`.
 dist/
-plugin/main.js
-
-# Obsidian writes plugin settings here when installed into a vault.
-data.json
 
 # Scratch dirs from local test runs.
 .block-writer-*test-*/

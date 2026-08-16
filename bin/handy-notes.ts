@@ -25,13 +25,13 @@ import {
   type ExitDiagnosis,
   type PassOutcome,
   type Section,
-} from "obsidian-handy-notes";
+} from "handy-notes-core";
 import {
   buildNoteScaffold,
   linkTranscriptFrontmatter,
   MarkdownNoteSink,
   transcriptWikilink,
-} from "obsidian-handy-notes/markdown";
+} from "handy-notes-core/markdown";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);

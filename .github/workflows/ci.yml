@@ -1,0 +1,37 @@
+# Runs the same gates used during development: typecheck, unit tests, both bundles, and the
+# headless end-to-end smoke. Everything here is offline — the smoke script uses the fake
+# transcript stream and the agent stub, so CI never needs Handy, a vault, or API credentials.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Use Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Build CLI and plugin
+        run: |
+          bun run build
+          bun run build:plugin
+
+      - name: End-to-end smoke
+        run: bun run test:e2e

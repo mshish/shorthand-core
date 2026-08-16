@@ -12,6 +12,27 @@ The headless core owns capture, transcript reconciliation, enhancement, and all 
 
 ## Install the Obsidian plugin
 
+### From a release (no toolchain required)
+
+Download `main.js` and `manifest.json` from the [latest release](../../releases/latest) into:
+
+```text
+<vault>/.obsidian/plugins/handy-notes/
+```
+
+Releases are produced by `.github/workflows/release.yml` — push a tag matching the
+`plugin/manifest.json` version and CI typechecks, tests, builds, attests provenance, and
+opens a draft release with both assets:
+
+```sh
+git tag 0.1.0 && git push origin 0.1.0
+```
+
+The tag must match the manifest version or the workflow fails deliberately, because Obsidian
+installs by manifest version and a mismatch would ship a plugin that reports the wrong one.
+
+### From source
+
 From this package, build the plugin:
 
 ```sh

@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ClaudeAgentClient, detectClaudeExecutable, ExecutableAgentStub } from "../src/agent/client.js";
 import { EnhanceRunner, type PassOutcome } from "../src/agent/runner.js";
 import type { AgentClient, AgentTier } from "../src/agent/contract.js";
-import { DEFAULT_CONFIG } from "../src/config.js";
+import { DEFAULT_CONFIG, detectHandyExecutable } from "../src/config.js";
 import { buildNoteScaffold, transcriptWikilink, type Section } from "../src/note/markers.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
 import { linkTranscriptFrontmatter, readCurrentBlock, writeSections } from "../src/note/writer.js";
@@ -130,7 +130,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   const suppliedFixture = fake ? argumentValue(args, "--fake-stream", true) : undefined;
   const bundledFixture = resolve(dirname(fileURLToPath(import.meta.url)), "../test/fixtures/fake-stream.mjs");
   const fixture = suppliedFixture === undefined ? bundledFixture : resolveFrom(process.cwd(), suppliedFixture);
-  const handyBinary = argumentValue(args, "--handy") ?? environment.HANDY_BIN ?? DEFAULT_CONFIG.handyBinaryPath;
+  const handyBinary = detectHandyExecutable(argumentValue(args, "--handy"), environment);
   const client = new StreamClient({
     command: fake ? process.execPath : handyBinary,
     args: fake ? [fixture] : DEFAULT_CONFIG.followStreamArgs,

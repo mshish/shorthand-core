@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { ClaudeAgentClient, detectClaudeExecutable } from "../src/agent/client.js";
 import { EnhanceRunner, type EnhanceStatus, type PassOutcome } from "../src/agent/runner.js";
-import { DEFAULT_CONFIG } from "../src/config.js";
+import { DEFAULT_CONFIG, detectHandyExecutable } from "../src/config.js";
 import { locateAiBlock, transcriptWikilink } from "../src/note/markers.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
 import { ensureNoteScaffold, linkTranscriptFrontmatter } from "../src/note/writer.js";
@@ -135,7 +135,8 @@ export default class HandyNotesPlugin extends Plugin {
         enhancementUnavailable = `${errorMessage(error)} Capture will continue with transcript only.`;
       }
       const client = new StreamClient({
-        command: this.settings.handyExecutable,
+        // Blank setting means "find it for me"; an explicit path always wins.
+        command: detectHandyExecutable(this.settings.handyExecutable || undefined),
         args: DEFAULT_CONFIG.followStreamArgs,
         maxReconnectAttempts: DEFAULT_CONFIG.reconnect.maxAttempts,
         backoffMs: DEFAULT_CONFIG.reconnect.backoffMs,

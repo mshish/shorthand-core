@@ -1,4 +1,47 @@
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
+
+/**
+ * Resolve the Handy binary without baking in a machine-specific path.
+ *
+ * Order: explicit override -> HANDY_BIN -> PATH -> conventional install and build
+ * locations. Falls back to the bare command name so spawn still surfaces a clear ENOENT
+ * (the CLI and plugin both report the resolved path when that happens).
+ */
+export function detectHandyExecutable(
+  override?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = override ?? environment.HANDY_BIN;
+  if (configured !== undefined && configured.length > 0) return resolve(configured);
+
+  const windows = process.platform === "win32";
+  const names = windows ? ["handy.exe", "handy"] : ["handy"];
+
+  for (const directory of (environment.PATH ?? "").split(delimiter).filter(Boolean)) {
+    for (const name of names) {
+      const candidate = join(directory, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+
+  const home = environment.USERPROFILE ?? environment.HOME ?? homedir();
+  const conventional = windows
+    ? [
+      join(environment.LOCALAPPDATA ?? join(home, "AppData", "Local"), "Programs", "Handy", "handy.exe"),
+      join(environment.PROGRAMFILES ?? "C:\\Program Files", "Handy", "handy.exe"),
+    ]
+    : process.platform === "darwin"
+      ? ["/Applications/Handy.app/Contents/MacOS/handy", join(home, "Applications", "Handy.app", "Contents", "MacOS", "handy")]
+      : ["/usr/local/bin/handy", "/usr/bin/handy", join(home, ".local", "bin", "handy")];
+
+  for (const candidate of conventional) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return names[0]!;
+}
 
 export const DEFAULT_CONFIG = Object.freeze({
   handyBinaryPath: "handy",

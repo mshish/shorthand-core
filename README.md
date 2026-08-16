@@ -74,9 +74,26 @@ release. It has a cost, recorded here so it is not rediscovered the hard way:
 > wanted, the tag scheme has to change back to a bare version — and then the trigger, the
 > guard in `release.yml`, and this section all move together.
 
-### From source
+### From source, while developing
 
-From this package, build the plugin:
+Build and install into a vault in one step:
+
+```sh
+bun run dev:plugin --vault "C:\path\to\vault"
+```
+
+Or set `HANDY_NOTES_VAULT` once and drop the flag. `install:local` alone installs without
+rebuilding. Both copy **only** `main.js` and `manifest.json`; `data.json` is your saved settings
+and is never touched.
+
+Obsidian caches the bundle, so **toggle the plugin off and on** (or reload Obsidian) after
+installing — otherwise you are still running the previous build, which looks exactly like your
+change having no effect.
+
+This copies rather than symlinking on purpose. A junction inside a OneDrive-synced vault makes
+OneDrive follow it and re-upload a 6.7 MB bundle on every rebuild.
+
+### From source, manually
 
 ```sh
 bun run build:plugin

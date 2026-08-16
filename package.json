@@ -28,6 +28,7 @@
     "@types/bun": "1.3.14",
     "@types/node": "22.14.0",
     "esbuild": "0.25.9",
+    "obsidian": "1.5.7",
     "typescript": "5.9.3"
   }
 }

@@ -59,8 +59,13 @@ export type LinkTranscriptResult =
   | { status: "note-locked"; path: string; attempts: number }
   | { status: "error"; error: NoteFileError };
 
+// Each status is its own member so this is a genuine discriminated union. Packing
+// "written" | "unchanged" into one member makes `status === "written"` unable to
+// narrow the member away, so a consumer's trailing `else` still sees it and cannot
+// reach `.error`. LinkTranscriptResult above is split for the same reason.
 export type EnsureScaffoldResult =
-  | { status: "written" | "unchanged" }
+  | { status: "written" }
+  | { status: "unchanged" }
   | { status: "retry"; reason: "outside-edits" | "writer-busy" }
   | { status: "note-locked"; path: string; attempts: number }
   | { status: "error"; error: BlockWriterError };

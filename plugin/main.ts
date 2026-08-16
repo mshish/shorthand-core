@@ -58,8 +58,10 @@ type CaptureRuntime = {
 export default class HandyNotesPlugin extends Plugin {
   settings: HandyNotesPluginSettings = DEFAULT_PLUGIN_SETTINGS;
   #state: PluginUiState = INITIAL_PLUGIN_STATE;
-  #statusBar?: HTMLElement;
-  #capture?: CaptureRuntime;
+  // Declared `| undefined` rather than optional: `exactOptionalPropertyTypes` forbids
+  // assigning `undefined` to an optional property, and both are cleared on teardown.
+  #statusBar: HTMLElement | undefined = undefined;
+  #capture: CaptureRuntime | undefined = undefined;
 
   async onload(): Promise<void> {
     this.settings = normalizePluginSettings(await this.loadData());

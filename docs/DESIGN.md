@@ -73,9 +73,37 @@ handy.exe --follow-stream json     (child process, stdout NDJSON)
   EnhanceRunner ──► Agent SDK query()  ──► fenced-JSON section array
   (stateless passes,   (NO resume)              |  (zod-validated, 1 retry)
    two tiers)                                   v
+                                          NoteSink.write()
+                                                 |
+                                    MarkdownNoteSink (reference impl)
+                                                 v
                                         BlockWriter ──► meeting note on disk, only
                                                         inside the handy:ai markers
 ```
+
+**The destination is a port, not a path.** `EnhanceRunner` takes a `NoteSink` rather than a
+note path, a vault root, and three injected file functions. `MarkdownNoteSink` is the
+reference implementation; an API-backed target (etag for revision, `409` for stale, `429` for
+busy) is expressible without core learning anything about it. Revision is opaque to core, and
+`read()` returns sections, user notes, and revision from one observation so they cannot skew.
+The full contract is [`CONTRACT.md`](CONTRACT.md).
+
+**One entry point, enforced by `exports`.** Consumers import `obsidian-handy-notes` (and
+`/markdown`, `/testing`, `/plugin-ui`) — never a deep path. The `exports` map in
+`package.json` is the enforcement; there are deliberately no tsconfig `paths`, which would
+defeat it. Entry points are explicit named re-exports, never `export *`: a barrel would pull
+incidental modules into an already ~6.7 MB plugin bundle and silently widen the public
+surface. Block-format internals (`readCurrentBlock`, `writeSections`, `hashBlock`,
+`parseSections`, the marker constants) and test seams stay private, because exporting them
+re-creates exactly the coupling the sink port removed.
+
+The workspace split (`packages/`) is **deferred, not cancelled**. Every constraint it was
+meant to deliver — extraction-ready core, a single public entry point, no deep consumer
+imports, a release containing only `main.js` + `manifest.json` — is delivered by the entry
+point plus the `exports` map inside the single package. Extraction is a directory move plus a
+dependency line because of the exports map, not because of the directory. Revisit when the
+API sink actually exists, so the package boundary is designed against two real consumers
+rather than one hypothetical one.
 
 ## Invariants — do not weaken these
 
@@ -153,3 +181,31 @@ recorded because the fix is easy to undo by accident.
 `bun test` (unit), `bun run typecheck`, `bun run test:e2e` (headless end-to-end using the fake
 transcript stream and agent stub). CI runs all of it offline — no Handy, vault, or credentials
 required. See `README.md` for commands and `.github/workflows/` for the pipeline.
+
+**The conformance suite is shipped API, not a test.** It lives at
+`src/testing/sink-conformance.ts` and is exported as `obsidian-handy-notes/testing`. It
+imports no test runner: scenarios are plain async functions that throw, plus a thin adapter
+that takes a caller's `describe`/`test`. That inversion is deliberate — the artifact defining
+the contract must be runnable by a second package, a different runner (Vitest, `node:test`),
+or an extracted core, not only by `bun test` in this repo. `test/markdown-sink.test.ts` runs
+`MarkdownNoteSink` through it. Every future sink must pass it unchanged.
+
+**Two gaps CI could not previously see, now closed.** `test/plugin-bundle.test.ts` actually
+`require`s the built bundle under a stub `obsidian` and asserts a bundle-size ceiling — CI
+built `plugin/main.js` and never loaded it, which is how the load-bearing `import.meta.url`
+banner in the esbuild config came to exist after a real Obsidian load failure with everything
+green. `test/consumer-imports.test.ts` closes the hole `exports` cannot see: a *relative*
+import escaping a consumer root bypasses bare-specifier resolution entirely.
+
+**`plugin/main.ts` is typechecked.** It was not, until `obsidian` was added as a pinned
+devDependency (1.5.7, matching `minAppVersion`) and `plugin/**/*.ts` was added to the tsconfig
+`include`. ~530 lines of shipped plugin had no static check behind them; esbuild only needs
+`external: ["obsidian"]`, which requires no types.
+
+**Release tags are scoped to `obsidian-v*`,** so a sibling tool's tag can never cut an
+Obsidian release. The trigger and the version guard in `release.yml` must always change
+together: the guard strips the tag prefix, and a prefix mismatch fails *every* release rather
+than none. `plugin/manifest.json` is the single source of truth for the plugin version;
+`package.json` is private and pinned to `0.0.0` so it cannot disagree. The cost, recorded in
+`README.md`: the prefix makes this plugin manual/BRAT install only, because Obsidian's
+community listing requires a bare-version tag plus a root `versions.json`.

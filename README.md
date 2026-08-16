@@ -11,8 +11,27 @@ still running.
 
 **Background:** [`docs/DESIGN.md`](docs/DESIGN.md) records the requirements, the deliberate
 decisions, the invariants that must not be weakened, and the bugs found by running it rather
-than reading it. [`docs/original-plan.md`](docs/original-plan.md) is the plan as approved
-before implementation.
+than reading it. [`docs/CONTRACT.md`](docs/CONTRACT.md) is the contract between core and a
+consumer — read it before writing a second output target.
+[`docs/original-plan.md`](docs/original-plan.md) is the plan as approved before implementation.
+
+## Package layout
+
+Core is consumed **by package name only**, through the `exports` map in `package.json`. There
+are no deep imports and no tsconfig `paths` — `exports` is the enforcement, honoured by `tsc`,
+esbuild and Node alike, so a deep path fails to resolve rather than merely being discouraged.
+
+| Specifier | Entry point | Contains |
+| --- | --- | --- |
+| `obsidian-handy-notes` | `src/index.ts` | The engine and the `NoteSink` port |
+| `obsidian-handy-notes/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
+| `obsidian-handy-notes/testing` | `src/testing/sink-conformance.ts` | The executable `NoteSink` conformance suite, runner-independent |
+| `obsidian-handy-notes/plugin-ui` | `src/plugin/index.ts` | Obsidian plugin settings and status reducer |
+
+Entry points use explicit named re-exports, never `export *`. Block-format internals and test
+seams are deliberately not exported; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and
+says why. `bin/` is internal to core rather than a consumer, so its direct use of the block
+writer is legitimate.
 
 ## Prerequisites
 
@@ -147,3 +166,8 @@ node test/e2e-smoke.mjs
 ```
 
 The smoke script creates and removes a scratch vault, initializes a note, captures from `--fake-stream`, enhances with `--agent-stub`, and verifies that only the AI marker body changed.
+
+`bun run typecheck` covers `bin/`, `plugin/`, `src/` and `test/`. `plugin/main.ts` is included
+and `obsidian` is a pinned devDependency (1.5.7, matching `manifest.json`'s `minAppVersion`)
+purely so that typings exist — the plugin bundle still marks `obsidian` external, so nothing
+of it is shipped.

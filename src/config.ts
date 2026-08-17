@@ -76,4 +76,4 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
 });
 
-export type HandyNotesConfig = typeof DEFAULT_CONFIG;
+export type ShorthandConfig = typeof DEFAULT_CONFIG;

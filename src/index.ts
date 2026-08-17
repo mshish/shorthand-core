@@ -52,4 +52,4 @@ export type {
 } from "./agent/contract.js";
 
 export { DEFAULT_CONFIG, detectHandyExecutable } from "./config.js";
-export type { HandyNotesConfig } from "./config.js";
+export type { ShorthandConfig } from "./config.js";

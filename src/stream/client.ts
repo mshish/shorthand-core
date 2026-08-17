@@ -65,7 +65,7 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
     if (protocol === undefined) throw new ProtocolError("hello record is missing a numeric protocol");
     if (protocol !== SUPPORTED_PROTOCOL) {
       throw new ProtocolError(
-        `Unsupported Handy follow-stream protocol: expected ${SUPPORTED_PROTOCOL}, received ${protocol}. Update Handy Notes or use a compatible Handy build.`,
+        `Unsupported Handy follow-stream protocol: expected ${SUPPORTED_PROTOCOL}, received ${protocol}. Update Shorthand or use a compatible Handy build.`,
         SUPPORTED_PROTOCOL,
         protocol,
       );

@@ -9,13 +9,13 @@ import { fileURLToPath } from "node:url";
 const START = "<!-- handy:ai:start -->";
 const END = "<!-- handy:ai:end -->";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const cli = join(packageRoot, "dist", "handy-notes.mjs");
+const cli = join(packageRoot, "dist", "shorthand-notes.mjs");
 const fakeStream = join(packageRoot, "test", "fixtures", "fake-stream.mjs");
 const agentStub = join(packageRoot, "test", "fixtures", "fake-agent.mjs");
 let scratchVault;
 
 try {
-  scratchVault = await mkdtemp(join(tmpdir(), "handy-notes-e2e-"));
+  scratchVault = await mkdtemp(join(tmpdir(), "shorthand-notes-e2e-"));
   const noteRelative = join("Meetings", "Smoke.md");
   const sidecarRelative = join("Meetings", "Transcripts", "Smoke transcript.md");
   const notePath = join(scratchVault, noteRelative);
@@ -62,9 +62,9 @@ try {
   assert(after.body !== before.body, "the AI-owned marker body did not change");
   assert(after.prefix === before.prefix, "bytes before the AI-owned marker body changed");
   assert(after.suffix === before.suffix, "bytes after the AI-owned marker body changed");
-  process.stdout.write(`Handy Notes e2e smoke passed in ${scratchVault}\n`);
+  process.stdout.write(`Shorthand e2e smoke passed in ${scratchVault}\n`);
 } catch (error) {
-  process.stderr.write(`Handy Notes e2e smoke failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.stderr.write(`Shorthand e2e smoke failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
   process.exitCode = 1;
 } finally {
   if (scratchVault !== undefined) await rm(scratchVault, { recursive: true, force: true });

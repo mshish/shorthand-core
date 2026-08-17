@@ -287,7 +287,7 @@ async function acquireLock(
   path: string,
   fileSystem: WriterFileSystem,
 ): Promise<{ ok: true; path: string } | { ok: false; error: "busy" | NoteFileError }> {
-  const lockPath = join(dirname(path), `.${basename(path)}.handy-notes.lock`);
+  const lockPath = join(dirname(path), `.${basename(path)}.shorthand-notes.lock`);
   try {
     const handle = await fileSystem.open(lockPath, "wx");
     await handle.close();

@@ -58,7 +58,7 @@ diarisation beyond me/them.
 **Headless core, thin plugin.** Everything of consequence is a plain Node package with no
 Obsidian dependency, driven by a CLI. Writes go directly to files; Obsidian picks up external
 changes itself. The plugin supplies lifecycle and UI only — and now lives in its own
-repository, [`mshish/obsidian-handy-notes`](https://github.com/mshish/obsidian-handy-notes),
+repository, [`mshish/obsidian-shorthand-notes`](https://github.com/mshish/obsidian-shorthand-notes),
 which depends on this one by package name and a pinned tag.
 
 Two payoffs: the whole pipeline is testable end to end without launching Obsidian, and
@@ -90,7 +90,7 @@ busy) is expressible without core learning anything about it. Revision is opaque
 `read()` returns sections, user notes, and revision from one observation so they cannot skew.
 The full contract is [`CONTRACT.md`](CONTRACT.md).
 
-**One entry point, enforced by `exports`.** Consumers import `handy-notes-core` (and
+**One entry point, enforced by `exports`.** Consumers import `shorthand-core` (and
 `/markdown`, `/testing`) — never a deep path. The `exports` map in `package.json` is the
 enforcement; there are deliberately no tsconfig `paths`, which would defeat it. Entry points
 are explicit named re-exports, never `export *`: a barrel would pull incidental modules into
@@ -188,7 +188,7 @@ transcript stream and agent stub). CI runs all of it offline — no Handy, vault
 required. See `README.md` for commands and `.github/workflows/` for the pipeline.
 
 **The conformance suite is shipped API, not a test.** It lives at
-`src/testing/sink-conformance.ts` and is exported as `handy-notes-core/testing`. It
+`src/testing/sink-conformance.ts` and is exported as `shorthand-core/testing`. It
 imports no test runner: scenarios are plain async functions that throw, plus a thin adapter
 that takes a caller's `describe`/`test`. That inversion is deliberate — the artifact defining
 the contract must be runnable by a second package, a different runner (Vitest, `node:test`),

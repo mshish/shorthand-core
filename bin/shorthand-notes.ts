@@ -25,18 +25,18 @@ import {
   type ExitDiagnosis,
   type PassOutcome,
   type Section,
-} from "handy-notes-core";
+} from "shorthand-core";
 import {
   buildNoteScaffold,
   linkTranscriptFrontmatter,
   MarkdownNoteSink,
   transcriptWikilink,
-} from "handy-notes-core/markdown";
+} from "shorthand-core/markdown";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  handy-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--handy <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  handy-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  handy-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  handy-notes read-block --note <path> [--vault <path>]\n  handy-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--handy <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
   );
   return 2;
 }

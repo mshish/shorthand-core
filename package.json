@@ -1,6 +1,6 @@
 {
-  "name": "handy-notes-core",
-  "version": "0.2.0",
+  "name": "shorthand-core",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "author": "Michael Sciscenti",
@@ -11,11 +11,11 @@
     "./testing": "./src/testing/sink-conformance.ts"
   },
   "bin": {
-    "handy-notes": "./dist/handy-notes.mjs"
+    "shorthand-notes": "./dist/shorthand-notes.mjs"
   },
   "scripts": {
-    "build": "esbuild bin/handy-notes.ts --bundle --platform=node --format=esm --target=node20 --external:@anthropic-ai/claude-agent-sdk --outfile=dist/handy-notes.mjs",
-    "capture": "bun bin/handy-notes.ts capture",
+    "build": "esbuild bin/shorthand-notes.ts --bundle --platform=node --format=esm --target=node20 --external:@anthropic-ai/claude-agent-sdk --outfile=dist/shorthand-notes.mjs",
+    "capture": "bun bin/shorthand-notes.ts capture",
     "test": "bun test",
     "test:e2e": "node test/e2e-smoke.mjs",
     "typecheck": "tsc --noEmit"

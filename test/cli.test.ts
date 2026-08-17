@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { runFinalEnhancementWithRetries } from "../bin/handy-notes.js";
+import { runFinalEnhancementWithRetries } from "../bin/shorthand-notes.js";
 import type { PassOutcome } from "../src/agent/runner.js";
 
 const scratchDirectories: string[] = [];
@@ -11,7 +11,7 @@ afterEach(async () => {
   await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-describe("handy-notes CLI", () => {
+describe("shorthand-notes CLI", () => {
   test("final enhancement retries requeued and timed-out outcomes with backoff", async () => {
     const outcomes: PassOutcome[] = [
       { status: "requeued", reason: "busy" },
@@ -61,7 +61,7 @@ describe("handy-notes CLI", () => {
     const original = "<!-- handy:notes -->\n- mine\n<!-- handy:ai:start -->\n## Summary\nOld\n<!-- handy:ai:end -->";
     await writeFile(note, original, "utf8");
     await writeFile(transcript, "me: offline transcript", "utf8");
-    const result = await run(join(process.cwd(), "bin", "handy-notes.ts"), [
+    const result = await run(join(process.cwd(), "bin", "shorthand-notes.ts"), [
       "enhance", "--vault", vault, "--note", "meeting.md", "--transcript", "transcript.md",
       "--tier", "tick", "--dry-run", "--agent-stub", join(process.cwd(), "test", "fixtures", "fake-agent.mjs"),
     ]);
@@ -73,7 +73,7 @@ describe("handy-notes CLI", () => {
   test("capture --enhance keeps capturing and runs the final link pass through the offline stub", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-capture-enhance-test-"));
     scratchDirectories.push(vault);
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     expect((await run(entry, [
       "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
     ])).code).toBe(0);
@@ -95,7 +95,7 @@ describe("handy-notes CLI", () => {
     const sidecar = join(vault, "transcript.md");
     const originalNote = "# Meeting\n\nUser-owned notes.\n";
     await writeFile(note, originalNote, "utf8");
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
     const result = await run(entry, [
       "capture",
@@ -116,7 +116,7 @@ describe("handy-notes CLI", () => {
   test("init-note creates a linked scaffold without overwriting an existing note", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-init-test-"));
     scratchDirectories.push(vault);
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const args = [
       "init-note",
       "--vault", vault,
@@ -144,7 +144,7 @@ describe("handy-notes CLI", () => {
     const original = "user\tbytes  \r\n<!-- handy:ai:start -->\r\n## Old\r\n<!-- handy:ai:end -->tail";
     await writeFile(note, original, "utf8");
     await writeFile(json, JSON.stringify([{ heading: "Summary", markdown: "Done" }]), "utf8");
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const result = await run(entry, ["set-sections", "--note", note, "--json", json, "--force"]);
     expect(result.code).toBe(0);
     expect(await readFile(note, "utf8")).toBe(
@@ -160,7 +160,7 @@ describe("handy-notes CLI", () => {
     const original = "before\n<!-- handy:ai:start -->\n## Old\n<!-- handy:ai:end -->\nafter";
     await writeFile(note, original, "utf8");
     await writeFile(json, JSON.stringify([{ heading: "Summary", markdown: "New" }]), "utf8");
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
 
     const read = await run(entry, ["read-block", "--vault", vault, "--note=meeting.md"]);
     expect(read.code).toBe(0);
@@ -185,7 +185,7 @@ describe("handy-notes CLI", () => {
     const original = "<!-- handy:ai:start -->\n<!-- handy:ai:end -->";
     await writeFile(note, original, "utf8");
     await writeFile(json, "[]", "utf8");
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const result = await run(entry, ["set-sections", "--note", note, "--json", json]);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("requires --expect-hash");
@@ -193,7 +193,7 @@ describe("handy-notes CLI", () => {
   });
 
   test("rejects a missing known-flag value instead of silently using a default", async () => {
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const result = await run(entry, ["read-block", "--vault", "--note", "meeting.md"]);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("--vault requires a value");
@@ -205,7 +205,7 @@ describe("handy-notes CLI", () => {
     const note = join(vault, "meeting.md");
     const originalBody = "# Meeting\n\nUser text with\ttabs and café.\n";
     await writeFile(note, `---\nowner: human\n---\n${originalBody}`, "utf8");
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
     const result = await run(entry, [
       "capture", "--vault", vault, "--note", "meeting.md", "--sidecar", "linked/transcript.md",
@@ -220,7 +220,7 @@ describe("handy-notes CLI", () => {
   test("capture follows the scaffold's sidecar link while leaving the meeting note unchanged", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-linked-capture-test-"));
     scratchDirectories.push(vault);
-    const entry = join(process.cwd(), "bin", "handy-notes.ts");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     expect((await run(entry, [
       "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "linked/transcript.md",
     ])).code).toBe(0);

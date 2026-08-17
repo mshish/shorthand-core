@@ -13,7 +13,7 @@ back and fix structure afterwards. The AI work runs through the **Claude Agent S
 what a plain summarizer cannot: on demand, the agent reads the rest of the vault (prior meetings,
 people, projects) and wires the new note into it.
 
-Deliverable at `D:/tools/Handy/obsidian-handy-notes/`, kept **out of git**, to be moved to its own
+Deliverable at `D:/tools/Handy/obsidian-shorthand-notes/`, kept **out of git**, to be moved to its own
 repo later.
 
 **This plan has been through one Codex review** (`gpt-5.6-sol`); its blockers are folded in below and
@@ -213,7 +213,7 @@ step until the very end. `handy.exe` exists at `src-tauri/target/release/` and
 
 **Phase 1 — capture core, zero AI.** `StreamClient` (spawn, framing, lifecycle, reconnect, exit-code
 mapping), `TranscriptStore` (keying, resync, `final` reconciliation, deltas), sidecar writer, and a
-`handy-notes capture` CLI. Full unit suite plus a **fake-stream fixture script** that replays the
+`shorthand-notes capture` CLI. Full unit suite plus a **fake-stream fixture script** that replays the
 documented NDJSON so the pipeline is testable without Handy running at all.
 
 **Phase 2 — block writer.** Marker parsing, block regeneration from a section array, read-splice-
@@ -230,12 +230,12 @@ a folder copy; the README covers it.
 
 ## Critical files
 
-New, under `D:/tools/Handy/obsidian-handy-notes/`:
+New, under `D:/tools/Handy/obsidian-shorthand-notes/`:
 
 | Path | Role |
 |---|---|
 | `package.json`, `tsconfig.json` | headless core, no Obsidian dependency |
-| `bin/handy-notes.mjs` | CLI entry: `capture --note <path> [--vault <path>]` |
+| `bin/shorthand-notes.mjs` | CLI entry: `capture --note <path> [--vault <path>]` |
 | `src/stream/client.ts` | spawn, framing, reconnect, exit-code mapping |
 | `src/stream/transcript.ts` | keying, resync, `final` reconciliation, deltas |
 | `src/note/markers.ts` | pure marker/block string functions (heavily unit-tested) |
@@ -251,7 +251,7 @@ Handy files are **read-only references**, not modified: `FOLLOW_STREAM.md`,
 
 ## Repo hygiene
 
-Add `obsidian-handy-notes/` to `.git/info/exclude` — local-only, unlike `.gitignore` which is tracked
+Add `obsidian-shorthand-notes/` to `.git/info/exclude` — local-only, unlike `.gitignore` which is tracked
 and would itself be a commit. No commits in this repo for this work.
 
 ## Verification

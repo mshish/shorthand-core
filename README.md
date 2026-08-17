@@ -1,6 +1,6 @@
-# handy-notes-core
+# shorthand-core
 
-The headless engine behind Handy Notes: it captures [Handy](https://github.com/cjpais/Handy)'s
+The headless engine behind Shorthand: it captures [Handy](https://github.com/cjpais/Handy)'s
 live microphone and system-audio transcript into a linked sidecar note, and runs stateless Claude
 Agent SDK passes that use the new transcript plus your own notes to maintain a structured summary
 in the meeting note. Sections may be added, rewritten, reordered, or removed as the meeting
@@ -12,8 +12,8 @@ payoffs — the whole pipeline is testable end to end without launching Obsidian
 MCP server, no plugin install) stands between the agent and the note.
 
 **Consumers.** The Obsidian plugin lives in its own repository,
-[`mshish/obsidian-handy-notes`](https://github.com/mshish/obsidian-handy-notes), and depends on
-this package by name and a pinned tag. A `bin/handy-notes` CLI in this repo drives the same
+[`mshish/obsidian-shorthand-notes`](https://github.com/mshish/obsidian-shorthand-notes), and depends on
+this package by name and a pinned tag. A `bin/shorthand-notes` CLI in this repo drives the same
 pipeline headlessly.
 
 **Background:** [`docs/DESIGN.md`](docs/DESIGN.md) records the requirements, the deliberate
@@ -30,9 +30,9 @@ esbuild and Node alike, so a deep path fails to resolve rather than merely being
 
 | Specifier | Entry point | Contains |
 | --- | --- | --- |
-| `handy-notes-core` | `src/index.ts` | The engine and the `NoteSink` port |
-| `handy-notes-core/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
-| `handy-notes-core/testing` | `src/testing/sink-conformance.ts` | The executable `NoteSink` conformance suite, runner-independent |
+| `shorthand-core` | `src/index.ts` | The engine and the `NoteSink` port |
+| `shorthand-core/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
+| `shorthand-core/testing` | `src/testing/sink-conformance.ts` | The executable `NoteSink` conformance suite, runner-independent |
 
 Entry points use explicit named re-exports, never `export *`. Block-format internals and test
 seams are deliberately not exported; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and says
@@ -44,7 +44,7 @@ legitimate.
 The package is private and unpublished, so consumers install it from git, pinned to a tag:
 
 ```json
-"handy-notes-core": "git+https://github.com/mshish/handy-notes-core.git#0.1.0"
+"shorthand-core": "git+https://github.com/mshish/shorthand-core.git#0.1.0"
 ```
 
 Use **npm**, not bun: npm resolves that URL by cloning through the `gh` credential helper, while
@@ -77,28 +77,28 @@ bun run build
 Initialize a new meeting note and its transcript link:
 
 ```sh
-node dist/handy-notes.mjs init-note --vault "C:\path\to\vault" --note "Meetings/Standup.md"
+node dist/shorthand-notes.mjs init-note --vault "C:\path\to\vault" --note "Meetings/Standup.md"
 ```
 
 Capture into the linked sidecar, with live enhancement enabled:
 
 ```sh
-node dist/handy-notes.mjs capture --vault "C:\path\to\vault" --note "Meetings/Standup.md" --enhance --handy "C:\path\to\handy.exe" --claude "C:\path\to\claude.exe"
+node dist/shorthand-notes.mjs capture --vault "C:\path\to\vault" --note "Meetings/Standup.md" --enhance --handy "C:\path\to\handy.exe" --claude "C:\path\to\claude.exe"
 ```
 
 Run an on-demand link-tier pass against an existing transcript:
 
 ```sh
-node dist/handy-notes.mjs enhance --vault "C:\path\to\vault" --note "Meetings/Standup.md" --transcript "Meetings/Transcripts/standup.md" --tier link
+node dist/shorthand-notes.mjs enhance --vault "C:\path\to\vault" --note "Meetings/Standup.md" --transcript "Meetings/Transcripts/standup.md" --tier link
 ```
 
 For all available flags:
 
 ```sh
-node dist/handy-notes.mjs
+node dist/shorthand-notes.mjs
 ```
 
-`dist/` and `test/` must stay siblings at runtime: `bin/handy-notes.ts` resolves
+`dist/` and `test/` must stay siblings at runtime: `bin/shorthand-notes.ts` resolves
 `../test/fixtures/fake-stream.mjs` relative to the bundle, so `--fake-stream` needs the fixture
 directory alongside the build.
 
@@ -148,7 +148,7 @@ The smoke script creates and removes a scratch vault, initializes a note, captur
 `--fake-stream`, enhances with `--agent-stub`, and verifies that only the AI marker body changed.
 CI (`.github/workflows/ci.yml`) runs exactly this.
 
-Writing a second sink? `handy-notes-core/testing` exports the conformance suite as plain async
+Writing a second sink? `shorthand-core/testing` exports the conformance suite as plain async
 functions plus a thin adapter over any runner's `describe`/`test`, so it runs from another
 package and another test runner unchanged. Every sink must pass it.
 

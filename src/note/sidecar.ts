@@ -161,7 +161,7 @@ export class SidecarWriter extends EventEmitter {
         throw error;
       }
       if (current !== this.#persisted) {
-        throw new Error(`Sidecar changed outside Handy Notes during capture: ${this.path}`);
+        throw new Error(`Sidecar changed outside Shorthand during capture: ${this.path}`);
       }
     }
 

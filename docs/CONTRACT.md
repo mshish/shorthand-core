@@ -1,6 +1,6 @@
 # The core contract
 
-This is the contract between `handy-notes-core` and a consumer that supplies it with
+This is the contract between `shorthand-core` and a consumer that supplies it with
 a destination. It exists for the case that motivated the sink port in the first place: an
 **API-backed** target — Notion- or Granola-shaped, with `GET` + etag, `PATCH` with
 `If-Match`, `409` for a lost race and `429` for backpressure — rather than a second Markdown
@@ -24,9 +24,9 @@ frowned upon. There are three entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `handy-notes-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `HandyControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
-| `handy-notes-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
-| `handy-notes-core/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
+| `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `HandyControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
+| `shorthand-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
+| `shorthand-core/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
 
 Entry points are **explicit named re-exports**, never `export *`. `export *` would drag every
 incidental module on the re-exported files' graph into consumers' bundles — the Obsidian
@@ -249,7 +249,7 @@ under OneDrive) → `busy` + `retryAfterMs`, hash mismatch → `stale`.
 
 ## 5. Running the conformance suite
 
-`handy-notes-core/testing` is **shipped API, not a test**. It imports no test runner, has
+`shorthand-core/testing` is **shipped API, not a test**. It imports no test runner, has
 no assertion-library dependency, and every scenario is a plain async function that throws on
 failure. That inversion is the whole point: the artifact that defines the contract has to be
 runnable by a second package, a different runner, or an extracted core — not only by
@@ -267,7 +267,7 @@ scenario. `primitives` is the minimal slice of a runner it needs: `{ describe, t
 
 ```ts
 import { describe, test } from "vitest";
-import { describeNoteSinkConformance, type SinkHarness } from "handy-notes-core/testing";
+import { describeNoteSinkConformance, type SinkHarness } from "shorthand-core/testing";
 import { NotionNoteSink } from "../src/notion-sink.js";
 
 describeNoteSinkConformance(
@@ -302,7 +302,7 @@ scenarios are simply omitted):
 
 ```ts
 import { describe, it } from "node:test";
-import { describeNoteSinkConformance } from "handy-notes-core/testing";
+import { describeNoteSinkConformance } from "shorthand-core/testing";
 
 describeNoteSinkConformance({ describe, test: it }, "NotionNoteSink", createHarness, {
   missing: true,
@@ -314,7 +314,7 @@ describeNoteSinkConformance({ describe, test: it }, "NotionNoteSink", createHarn
 
 ```ts
 import { describe, test } from "bun:test";
-import { describeNoteSinkConformance } from "handy-notes-core/testing";
+import { describeNoteSinkConformance } from "shorthand-core/testing";
 ```
 
 ### 5.2 No runner at all — drive the scenarios directly
@@ -323,7 +323,7 @@ import { describeNoteSinkConformance } from "handy-notes-core/testing";
 any runner whose API does not fit the primitives shape:
 
 ```ts
-import { NOTE_SINK_CONFORMANCE_SCENARIOS } from "handy-notes-core/testing";
+import { NOTE_SINK_CONFORMANCE_SCENARIOS } from "shorthand-core/testing";
 
 const support = { missing: true, forbidden: false };
 let failed = 0;
@@ -368,12 +368,12 @@ produce a shape appears as a `todo` in the report instead of a silently absent t
 ## 6. Consumers
 
 The Obsidian plugin has been extracted to its own repository,
-[`mshish/obsidian-handy-notes`](https://github.com/mshish/obsidian-handy-notes). It consumes
+[`mshish/obsidian-shorthand-notes`](https://github.com/mshish/obsidian-shorthand-notes). It consumes
 this package the way any second consumer would — by package name, through the `exports` map,
 pinned to a tag:
 
 ```json
-"handy-notes-core": "git+https://github.com/mshish/handy-notes-core.git#0.1.0"
+"shorthand-core": "git+https://github.com/mshish/shorthand-core.git#0.1.0"
 ```
 
 The extraction cost exactly what this document predicted: a directory move plus a dependency
@@ -387,7 +387,7 @@ Two properties of this repo constrain any future consumer, and both are delibera
   `readCurrentBlock`/`writeSections` directly. That is legitimate for code inside the package,
   but it makes them Markdown-coupled CLI commands — they could not be lifted into a consumer
   without the block writer coming too.
-- **`bin/handy-notes.ts` runtime-resolves `../test/fixtures/fake-stream.mjs`** from the bundle
+- **`bin/shorthand-notes.ts` runtime-resolves `../test/fixtures/fake-stream.mjs`** from the bundle
   location, so `dist/` and `test/` must stay siblings at runtime. A consumer that vendors only
   `dist/` loses `--fake-stream`.
 

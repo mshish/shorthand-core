@@ -66,8 +66,8 @@ describe("fenced JSON section contract", () => {
 
   test("retries once then skips and preserves the last good sections", async () => {
     const agent = new SequenceAgent([
-      { finalAssistantMessage: "not json", costUsd: 0.1 },
-      { finalAssistantMessage: "still not json", costUsd: 0.2 },
+      { finalAssistantMessage: "not json" },
+      { finalAssistantMessage: "still not json" },
     ]);
     const lastGood: readonly Section[] = [{ heading: "Existing", markdown: "Keep me" }];
     const errors: string[] = [];
@@ -75,7 +75,6 @@ describe("fenced JSON section contract", () => {
     expect(agent.requests).toHaveLength(2);
     expect(agent.requests[1]?.prompt).toContain("Validation error");
     expect(result).toEqual(expect.objectContaining({ status: "skipped", sections: lastGood, attempts: 2 }));
-    expect(result.costUsd).toBeCloseTo(0.3);
     expect(errors[0]).toContain("OUTPUT REJECTED AFTER TWO ATTEMPTS");
   });
 

@@ -175,8 +175,13 @@ recorded because the fix is easy to undo by accident.
 - **Residual external-write window.** Between the verify-read and the rename, a foreign writer
   cannot be excluded with plain filesystem primitives. Our own processes serialise with a lock
   file.
-- **The USD budget is inert under subscription auth.** `total_cost_usd` is commonly `0` via
-  the logged-in `claude` CLI, so the pass-count cap is the real bound on a meeting.
+- **No enhancement pass or USD budget.** Both were tried and removed. Under Claude
+  subscription authentication `total_cost_usd` is commonly `0`, so a USD cap never trips —
+  and a raw pass count can't tell a long meeting from a runaway loop, so it punished
+  the former to guard against the latter. The interval gate (`minIntervalMs`) is the
+  real rate bound: even a failing pass respects it, so passes can't fire faster than
+  once per interval. A wall-clock window (`maxDurationMs`, 4h by default) is the
+  loop-breaker backstop, stopping enhancement only if a capture runs unreasonably long.
 - **Shorthand pastes into the focused app.** If Obsidian has focus while capturing, transcription
   lands in the note body as well as the sidecar. That is Shorthand's own behaviour, not this
   plugin's.

@@ -20,7 +20,6 @@ export class ClaudeAgentClient implements AgentClient {
     request.signal?.addEventListener("abort", interrupt, { once: true });
     let finalAssistantMessage = "";
     let resultText = "";
-    let costUsd = 0;
     try {
       for await (const rawMessage of stream) {
         const message = rawMessage as unknown as SdkMessage;
@@ -29,10 +28,9 @@ export class ClaudeAgentClient implements AgentClient {
           if (text.length > 0) finalAssistantMessage = text;
         }
         if (message.type === "result") {
-          if (typeof message.total_cost_usd === "number") costUsd = message.total_cost_usd;
           if (typeof message.result === "string") resultText = message.result;
           if (message.is_error === true) {
-            throw new AgentQueryError(resultText || `Claude Agent SDK result failed (${String(message.subtype)}).`, costUsd);
+            throw new AgentQueryError(resultText || `Claude Agent SDK result failed (${String(message.subtype)}).`);
           }
         }
       }
@@ -41,7 +39,7 @@ export class ClaudeAgentClient implements AgentClient {
     }
     if (finalAssistantMessage.length === 0) finalAssistantMessage = resultText;
     if (finalAssistantMessage.length === 0) throw new Error("Claude Agent SDK returned no final assistant text.");
-    return { finalAssistantMessage, costUsd };
+    return { finalAssistantMessage };
   }
 }
 
@@ -64,7 +62,6 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
     systemPrompt: request.systemPrompt,
     settingSources: [...request.settingSources],
     maxTurns: request.maxTurns,
-    ...(request.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: request.maxBudgetUsd }),
     ...(request.pathToClaudeCodeExecutable === undefined
       ? {}
       : { pathToClaudeCodeExecutable: request.pathToClaudeCodeExecutable }),
@@ -162,10 +159,7 @@ export class ExecutableAgentStub implements AgentClient {
         try {
           const parsed = JSON.parse(stdout) as Record<string, unknown>;
           if (typeof parsed.finalAssistantMessage !== "string") throw new Error("Stub output requires finalAssistantMessage.");
-          resolveQuery({
-            finalAssistantMessage: parsed.finalAssistantMessage,
-            costUsd: typeof parsed.costUsd === "number" ? parsed.costUsd : 0,
-          });
+          resolveQuery({ finalAssistantMessage: parsed.finalAssistantMessage });
         } catch (error) {
           rejectQuery(new Error(`Invalid agent stub JSON: ${error instanceof Error ? error.message : String(error)}`));
         }

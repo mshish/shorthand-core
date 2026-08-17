@@ -17,7 +17,7 @@ import type { Section } from "./markers.js";
  *   (missing/duplicated ownership boundary, unexpected document structure).
  * - `invalid-content` — the stored or supplied sections cannot be represented.
  * - `busy` — transiently unavailable (lock contention, `429`); the same call may
- *   be retried. Core must never count this toward a permanent-failure budget.
+ *   be retried. Core must never count this toward a permanent-failure limit.
  * - `transport` — an I/O or network failure while talking to the target.
  */
 export type SinkErrorCode =

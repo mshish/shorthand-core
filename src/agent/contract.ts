@@ -47,14 +47,12 @@ export type AgentQueryRequest = Readonly<{
   settingSources: readonly ("user" | "project" | "local")[];
   maxTurns: number;
   maxAttempts?: number;
-  maxBudgetUsd?: number;
   pathToClaudeCodeExecutable?: string;
   signal?: AbortSignal;
 }>;
 
 export type AgentQueryResponse = Readonly<{
   finalAssistantMessage: string;
-  costUsd: number;
 }>;
 
 export interface AgentClient {
@@ -62,22 +60,18 @@ export interface AgentClient {
 }
 
 export class AgentQueryError extends Error {
-  readonly costUsd: number;
-
-  constructor(message: string, costUsd = 0) {
+  constructor(message: string) {
     super(message);
     this.name = "AgentQueryError";
-    this.costUsd = finiteCost(costUsd);
   }
 }
 
 export type ContractResult =
-  | Readonly<{ status: "valid"; sections: readonly Section[]; costUsd: number; attempts: number }>
+  | Readonly<{ status: "valid"; sections: readonly Section[]; attempts: number }>
   | Readonly<{
     status: "skipped";
     reason: "invalid-output" | "query-error" | "aborted";
     sections: readonly Section[];
-    costUsd: number;
     attempts: number;
     error: string;
   }>;
@@ -120,32 +114,19 @@ export async function queryForSections(
   logger: ContractLogger = console,
 ): Promise<ContractResult> {
   let prompt = request.prompt;
-  let costUsd = 0;
   let lastError = "Agent output was invalid.";
   let attempts = 0;
-  let remainingBudget = request.maxBudgetUsd;
   let failureReason: "invalid-output" | "query-error" | "aborted" = "invalid-output";
   const maximumAttempts = Math.max(1, Math.min(2, request.maxAttempts ?? 2));
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
     if (request.signal?.aborted === true) break;
     attempts = attempt;
     try {
-      const attemptRequest = remainingBudget === undefined
-        ? { ...request, prompt }
-        : { ...request, prompt, maxBudgetUsd: remainingBudget };
-      const response = await agent.query(attemptRequest);
-      const attemptCost = finiteCost(response.costUsd);
-      costUsd += attemptCost;
-      if (remainingBudget !== undefined) remainingBudget = Math.max(0, remainingBudget - attemptCost);
+      const response = await agent.query({ ...request, prompt });
       const parsed = parseSectionOutput(response.finalAssistantMessage);
-      if (parsed.ok) return { status: "valid", sections: parsed.sections, costUsd, attempts: attempt };
+      if (parsed.ok) return { status: "valid", sections: parsed.sections, attempts: attempt };
       lastError = parsed.error;
-      if (remainingBudget === 0) {
-        lastError = `${lastError} Validation retry suppressed because the meeting USD budget is exhausted.`;
-        break;
-      }
     } catch (error) {
-      if (error instanceof AgentQueryError) costUsd += error.costUsd;
       lastError = `Agent query failed: ${error instanceof Error ? error.message : String(error)}`;
       // Read through a helper: control-flow narrowing from the pre-await guard above is
       // unsound here, because the signal can abort *during* the awaited query.
@@ -160,7 +141,7 @@ export async function queryForSections(
     ? `[enhance] OUTPUT REJECTED AFTER ${attempts === 1 ? "ONE ATTEMPT" : "TWO ATTEMPTS"}; keeping the last good sections. ${lastError}`
     : `[enhance] AGENT PASS FAILED; keeping the last good sections. ${lastError}`;
   try { logger.error(loudMessage); } catch { /* Logging must not kill capture. */ }
-  return { status: "skipped", reason: failureReason, sections: lastGoodSections, costUsd, attempts, error: lastError };
+  return { status: "skipped", reason: failureReason, sections: lastGoodSections, attempts, error: lastError };
 }
 
 function containsMarkerToken(value: string): boolean {
@@ -169,10 +150,6 @@ function containsMarkerToken(value: string): boolean {
 
 function signalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
-}
-
-function finiteCost(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function normalizeSectionMarkdown(markdown: string): string {

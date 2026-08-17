@@ -127,8 +127,13 @@ file writer.
   note has unsaved keystrokes in Obsidian's editor buffer, that buffer can win on its next save
   and an AI update may be lost. This is the intentionally safe direction: user text is never
   discarded.
-- Under Claude subscription authentication, `total_cost_usd` is commonly `0`. In that case the
-  configured USD budget is inert, so the pass-count budget is the real hard cap.
+- Enhancement has no pass or USD budget — both were removed. Under Claude subscription
+  authentication `total_cost_usd` is commonly `0`, so a USD cap never trips, and a raw pass
+  count can't tell a long meeting from a runaway loop. Instead, enhancement runs inside a
+  wall-clock window (`maxDurationMs`, 4h by default) as a loop-breaker backstop; the interval
+  gate (`minIntervalMs`) is what actually bounds pass rate. Set `HANDY_NOTES_MAX_DURATION_MS`
+  to override the window (this replaces the older `HANDY_NOTES_MAX_PASSES`,
+  `HANDY_NOTES_MAX_USD`, and `HANDY_NOTES_MAX_PASS_USD` variables, which no longer exist).
 - A stream disconnect cannot replay missed Shorthand events. Reconnects add a visible transcript-gap
   warning to the sidecar.
 

@@ -14,9 +14,7 @@ export type EnhanceRunnerOptions = Readonly<{
   agent: AgentClient;
   minNewChars?: number;
   minIntervalMs?: number;
-  maxPasses?: number;
-  maxUsd?: number;
-  maxPassUsd?: number;
+  maxDurationMs?: number;
   timeoutMs?: number;
   maxTurns?: number;
   maxRequeuedCharacters?: number;
@@ -30,7 +28,7 @@ export type EnhanceRunnerOptions = Readonly<{
 }>;
 
 export type EnhanceStatus = Readonly<{
-  kind: "started" | "finished" | "skipped" | "requeued" | "budget-exhausted" | "error";
+  kind: "started" | "finished" | "skipped" | "requeued" | "expired" | "error";
   message: string;
   tier?: AgentTier;
   /**
@@ -40,15 +38,14 @@ export type EnhanceStatus = Readonly<{
    */
   retryAfterMs?: number;
   passCount: number;
-  costUsd: number;
 }>;
 
 export type PassOutcome =
-  | Readonly<{ status: "completed"; tier: AgentTier; sections: readonly Section[]; costUsd: number; written: boolean }>
+  | Readonly<{ status: "completed"; tier: AgentTier; sections: readonly Section[]; written: boolean }>
   | Readonly<{ status: "skipped"; reason: "invalid-output" | "agent-error" }>
   | Readonly<{ status: "not-ready"; reason: "characters" | "interval" }>
   | Readonly<{ status: "in-flight" }>
-  | Readonly<{ status: "budget-exhausted"; reason: "passes" | "usd" }>
+  | Readonly<{ status: "expired" }>
   | Readonly<{ status: "timed-out" }>
   | Readonly<{ status: "requeued"; reason: "stale" | "busy"; retryAfterMs?: number }>
   | Readonly<{ status: "failed"; error: string }>;
@@ -59,34 +56,29 @@ const REQUEUE_DROP_MARKER = "[...earlier transcript dropped...]";
 
 export class EnhanceRunner {
   readonly #options: Required<Pick<EnhanceRunnerOptions,
-    "minNewChars" | "minIntervalMs" | "maxPasses" | "maxUsd" | "maxPassUsd" | "timeoutMs" | "maxTurns" | "maxRequeuedCharacters" | "maxRequeuesPerDelta" | "maxConsecutiveReadFailures" | "dryRun">>
+    "minNewChars" | "minIntervalMs" | "maxDurationMs" | "timeoutMs" | "maxTurns" | "maxRequeuedCharacters" | "maxRequeuesPerDelta" | "maxConsecutiveReadFailures" | "dryRun">>
     & EnhanceRunnerOptions;
   readonly #now: () => number;
   readonly #logger: ContractLogger & Pick<Console, "info">;
+  readonly #startedAt: number;
   #pendingTranscript = "";
   #requeuedTranscript = "";
   #requeueCount = 0;
   #lastPassFinishedAt = Number.NEGATIVE_INFINITY;
   #passCount = 0;
-  #costUsd = 0;
-  #reservedUsd = 0;
-  #reservedAttempts = 0;
   #inFlight: Promise<PassOutcome> | undefined;
   #scheduledTick: ReturnType<typeof setTimeout> | undefined;
   #liveTicksEnabled = false;
-  #budgetReported: "passes" | "usd" | undefined;
+  #expiryReported = false;
   #consecutiveReadFailures = 0;
   #disabledForReadFailures = false;
-  #zeroCostWarningReported = false;
 
   constructor(options: EnhanceRunnerOptions) {
     this.#options = {
       ...options,
       minNewChars: options.minNewChars ?? 600,
       minIntervalMs: options.minIntervalMs ?? 60_000,
-      maxPasses: options.maxPasses ?? 30,
-      maxUsd: options.maxUsd ?? 5,
-      maxPassUsd: options.maxPassUsd ?? 1,
+      maxDurationMs: options.maxDurationMs ?? (4 * 60 * 60 * 1000),
       timeoutMs: options.timeoutMs ?? 45_000,
       maxTurns: options.maxTurns ?? 6,
       maxRequeuedCharacters: options.maxRequeuedCharacters ?? 20_000,
@@ -96,6 +88,7 @@ export class EnhanceRunner {
     };
     this.#now = options.now ?? Date.now;
     this.#logger = options.logger ?? console;
+    this.#startedAt = this.#now();
   }
 
   appendTranscript(delta: string): void {
@@ -108,7 +101,7 @@ export class EnhanceRunner {
 
   get state(): Readonly<{
     passCount: number;
-    costUsd: number;
+    elapsedMs: number;
     watermark: number;
     pendingCharacters: number;
     inFlight: boolean;
@@ -116,19 +109,18 @@ export class EnhanceRunner {
   }> {
     return {
       passCount: this.#passCount,
-      costUsd: this.#costUsd,
+      elapsedMs: this.#now() - this.#startedAt,
       watermark: 0,
       pendingCharacters: this.#pendingCharacters(),
       inFlight: this.#inFlight !== undefined,
-      enhancementEnabled: this.#budgetReason() === undefined && !this.#disabledForReadFailures,
+      enhancementEnabled: !this.#expired() && !this.#disabledForReadFailures,
     };
   }
 
   tick(): Promise<PassOutcome> {
     if (this.#inFlight !== undefined) return Promise.resolve({ status: "in-flight" });
     if (this.#disabledForReadFailures) return Promise.resolve({ status: "failed", error: "Enhancement is disabled after repeated meeting-note read failures." });
-    const budget = this.#budgetReason();
-    if (budget !== undefined) return Promise.resolve(this.#reportBudget(budget));
+    if (this.#expired()) return Promise.resolve(this.#reportExpiry());
     if (this.#pendingCharacters() < this.#options.minNewChars) {
       return Promise.resolve({ status: "not-ready", reason: "characters" });
     }
@@ -141,8 +133,7 @@ export class EnhanceRunner {
   enhanceNow(tier: AgentTier = "link"): Promise<PassOutcome> {
     if (this.#inFlight !== undefined) return Promise.resolve({ status: "in-flight" });
     if (this.#disabledForReadFailures) return Promise.resolve({ status: "failed", error: "Enhancement is disabled after repeated meeting-note read failures." });
-    const budget = this.#budgetReason();
-    if (budget !== undefined) return Promise.resolve(this.#reportBudget(budget));
+    if (this.#expired()) return Promise.resolve(this.#reportExpiry());
     return this.#start(tier);
   }
 
@@ -212,15 +203,9 @@ export class EnhanceRunner {
     if (requestedTier === "link" && input.transcript.length === 0 && observed.sections.length > 0) {
       return { status: "not-ready", reason: "characters" };
     }
-    const allowedAttempts = Math.min(2, this.#options.maxPasses - this.#passCount - this.#reservedAttempts);
-    if (allowedAttempts <= 0) {
-      this.#requeue(input);
-      return this.#reportBudget("passes");
-    }
+    const allowedAttempts = 2;
     this.#emit("started", `Enhancement attempt ${this.#passCount + 1} started (${tier}).`, tier);
     const abortController = new AbortController();
-    const remainingUsd = Math.max(0, this.#options.maxUsd - this.#costUsd - this.#reservedUsd);
-    const passBudgetUsd = Math.min(remainingUsd, this.#options.maxPassUsd);
     const request = {
       prompt: buildPassPrompt(observed.sections, input.transcript, observed.userNotes, tier),
       systemPrompt: ENHANCEMENT_SYSTEM_PROMPT,
@@ -229,7 +214,6 @@ export class EnhanceRunner {
       settingSources: [],
       maxTurns: this.#options.maxTurns,
       maxAttempts: allowedAttempts,
-      maxBudgetUsd: passBudgetUsd,
       ...(this.#options.pathToClaudeCodeExecutable === undefined
         ? {}
         : { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
@@ -241,27 +225,25 @@ export class EnhanceRunner {
     if (result === TIMEOUT) {
       abortController.abort();
       this.#requeue(input);
-      this.#reserveTimedOutResult(contractPromise, passBudgetUsd, allowedAttempts);
+      this.#trackTimedOutResult(contractPromise);
       this.#emit("requeued", `Enhancement pass timed out after ${this.#options.timeoutMs}ms; transcript re-queued.`, tier);
       return { status: "timed-out" };
     }
     this.#passCount += result.attempts;
-    this.#costUsd += result.costUsd;
-    this.#warnOnZeroCost(result.costUsd);
-    this.#reportNewlyExhaustedBudget();
+    this.#reportNewlyExpired();
     if (result.status === "skipped") {
       this.#requeue(input);
       const message = result.reason === "invalid-output"
         ? "Enhancement output was invalid; existing sections were kept and transcript re-queued."
         : `Enhancement agent failed (${result.error}); existing sections were kept and transcript re-queued.`;
       this.#emit("skipped", message, tier);
-      this.#reportNewlyExhaustedBudget();
+      this.#reportNewlyExpired();
       return { status: "skipped", reason: result.reason === "invalid-output" ? "invalid-output" : "agent-error" };
     }
     if (this.#options.dryRun) {
       this.#emit("finished", `Enhancement pass ${this.#passCount} finished (dry run).`, tier);
-      this.#reportNewlyExhaustedBudget();
-      return { status: "completed", tier, sections: result.sections, costUsd: result.costUsd, written: false };
+      this.#reportNewlyExpired();
+      return { status: "completed", tier, sections: result.sections, written: false };
     }
 
     let writeResult: SinkWriteResult;
@@ -298,12 +280,11 @@ export class EnhanceRunner {
     }
 
     this.#emit("finished", `Enhancement pass ${this.#passCount} finished (${writeResult.status}).`, tier);
-    this.#reportNewlyExhaustedBudget();
+    this.#reportNewlyExpired();
     return {
       status: "completed",
       tier,
       sections: result.sections,
-      costUsd: result.costUsd,
       written: writeResult.status === "written",
     };
   }
@@ -336,47 +317,37 @@ export class EnhanceRunner {
     return this.#requeuedTranscript.length + this.#pendingTranscript.length;
   }
 
-  #budgetReason(): "passes" | "usd" | undefined {
-    if (this.#passCount + this.#reservedAttempts >= this.#options.maxPasses) return "passes";
-    if (this.#costUsd + this.#reservedUsd >= this.#options.maxUsd) return "usd";
-    return undefined;
+  #expired(): boolean {
+    return this.#now() - this.#startedAt >= this.#options.maxDurationMs;
   }
 
-  #reportBudget(reason: "passes" | "usd"): Extract<PassOutcome, { status: "budget-exhausted" }> {
-    if (this.#budgetReported !== reason) {
-      this.#budgetReported = reason;
-      this.#emit("budget-exhausted", `Enhancement ${reason === "passes" ? "pass-count" : "USD"} budget exhausted; capture continues without enhancement.`);
+  #reportExpiry(): Extract<PassOutcome, { status: "expired" }> {
+    if (!this.#expiryReported) {
+      this.#expiryReported = true;
+      this.#emit("expired", "Enhancement stopped after 4h; capture continues without enhancement.");
     }
-    return { status: "budget-exhausted", reason };
+    return { status: "expired" };
   }
 
-  #reportNewlyExhaustedBudget(): void {
-    const reason = this.#budgetReason();
-    if (reason !== undefined) this.#reportBudget(reason);
+  #reportNewlyExpired(): void {
+    if (this.#expired()) this.#reportExpiry();
   }
 
-  #reserveTimedOutResult(contractPromise: Promise<Awaited<ReturnType<typeof queryForSections>>>, maximumCostUsd: number, maximumAttempts: number): void {
-    this.#reservedUsd += maximumCostUsd;
-    this.#reservedAttempts += maximumAttempts;
+  /**
+   * A pass that times out keeps running in the background — the query wasn't cancelled,
+   * only abandoned by this runner. When it eventually settles, its attempts still need to
+   * land in `#passCount` for accurate reporting, and a follow-up tick must be scheduled in
+   * case the late result freed up capacity (there is no cost/attempt reservation to release
+   * now that this is a time window, not a spend cap).
+   */
+  #trackTimedOutResult(contractPromise: Promise<Awaited<ReturnType<typeof queryForSections>>>): void {
     void contractPromise.then((lateResult) => {
-      this.#reservedUsd = Math.max(0, this.#reservedUsd - maximumCostUsd);
-      this.#reservedAttempts = Math.max(0, this.#reservedAttempts - maximumAttempts);
-      this.#costUsd += lateResult.costUsd;
       this.#passCount += lateResult.attempts;
-      this.#warnOnZeroCost(lateResult.costUsd);
-      this.#reportNewlyExhaustedBudget();
+      this.#reportNewlyExpired();
       this.#scheduleTick();
     }).catch(() => {
-      this.#reservedUsd = Math.max(0, this.#reservedUsd - maximumCostUsd);
-      this.#reservedAttempts = Math.max(0, this.#reservedAttempts - maximumAttempts);
       this.#scheduleTick();
     });
-  }
-
-  #warnOnZeroCost(costUsd: number): void {
-    if (costUsd !== 0 || this.#zeroCostWarningReported) return;
-    this.#zeroCostWarningReported = true;
-    try { this.#logger.info("[enhance] WARNING: the agent reported $0 cost; subscription authentication may not report USD usage, so the USD cap is inactive. The model-attempt cap remains enforced."); } catch {}
   }
 
   /**
@@ -399,7 +370,7 @@ export class EnhanceRunner {
 
   #scheduleTick(): void {
     if (!this.#liveTicksEnabled || this.#scheduledTick !== undefined || this.#inFlight !== undefined) return;
-    if (this.#pendingCharacters() < this.#options.minNewChars || this.#budgetReason() !== undefined) return;
+    if (this.#pendingCharacters() < this.#options.minNewChars || this.#expired()) return;
     const delayMs = Math.max(0, this.#options.minIntervalMs - (this.#now() - this.#lastPassFinishedAt));
     this.#scheduledTick = setTimeout(() => {
       this.#scheduledTick = undefined;
@@ -422,7 +393,6 @@ export class EnhanceRunner {
         ...(tier === undefined ? {} : { tier }),
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         passCount: this.#passCount,
-        costUsd: this.#costUsd,
       });
     } catch { /* Status UI failures must not kill capture. */ }
   }

@@ -127,8 +127,8 @@ pass's read and its write straddle a tick. The suite pins this explicitly.
 | --- | --- | --- |
 | `written` | The sections were stored. `revision` is the new revision. | Records the pass as successful and adopts the returned revision. |
 | `unchanged` | The sections already matched; nothing was stored. `revision` is the current (unmoved) revision. | Treated as a completed pass that wrote nothing. |
-| `stale` | `expectedRevision` is superseded. **Nothing was written.** | Discards the agent's result and re-queues. Never a failure; never counted against a budget. |
-| `busy` | Transiently unavailable. **Nothing was written.** The *same* call may be retried. | Re-queues, honouring `retryAfterMs` if given. Must never count toward a permanent-failure budget. |
+| `stale` | `expectedRevision` is superseded. **Nothing was written.** | Discards the agent's result and re-queues. Never a failure; never counted as a permanent failure. |
+| `busy` | Transiently unavailable. **Nothing was written.** The *same* call may be retried. | Re-queues, honouring `retryAfterMs` if given. Must never count toward a permanent-failure limit. |
 | `error` | A real failure. **Nothing partial was written.** | Surfaces `error.message`; the pass fails. |
 
 Two rules bind the sink here:

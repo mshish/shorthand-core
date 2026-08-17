@@ -183,62 +183,66 @@ describe("EnhanceRunner trigger and watermark policy", () => {
   });
 });
 
-describe("EnhanceRunner budgets and failure isolation", () => {
-  test("pass-count exhaustion disables enhancement while transcript capture keeps accumulating", async () => {
-    const agent = new FakeAgent([Promise.resolve(response())]);
-    const runner = makeRunner({ agent, maxPasses: 1, minNewChars: 1, minIntervalMs: 0 });
+describe("EnhanceRunner wall-clock window and failure isolation", () => {
+  test("the wall-clock window disables enhancement once elapsed, while transcript capture keeps accumulating, and reports expiry exactly once", async () => {
+    let now = 0;
+    const statuses: EnhanceStatus[] = [];
+    const agent = new FakeAgent([]);
+    const runner = makeRunner({
+      agent, now: () => now, maxDurationMs: 100, minNewChars: 1, minIntervalMs: 0,
+      onStatus: (status) => statuses.push(status),
+    });
+    now = 100;
     runner.updateTranscript("one");
-    await runner.tick();
+    expect(await runner.tick()).toEqual({ status: "expired" });
+    expect(runner.state).toMatchObject({ enhancementEnabled: false, pendingCharacters: 3 });
     runner.updateTranscript(" two");
-    expect(await runner.tick()).toEqual({ status: "budget-exhausted", reason: "passes" });
-    expect(runner.state).toMatchObject({ enhancementEnabled: false, pendingCharacters: 4 });
-  });
-
-  test("USD exhaustion disables enhancement while transcript capture keeps accumulating", async () => {
-    const agent = new FakeAgent([Promise.resolve(response(0.5))]);
-    const runner = makeRunner({ agent, maxUsd: 0.5, minNewChars: 1, minIntervalMs: 0 });
-    runner.updateTranscript("one");
-    await runner.tick();
-    runner.updateTranscript(" two");
-    expect(await runner.tick()).toEqual({ status: "budget-exhausted", reason: "usd" });
-    expect(runner.state).toMatchObject({ enhancementEnabled: false, pendingCharacters: 4, costUsd: 0.5 });
+    expect(await runner.tick()).toEqual({ status: "expired" });
+    expect(runner.state.pendingCharacters).toBe(8); // "one" + joinTranscript's "\n" + " two"
+    expect(statuses.filter(({ kind }) => kind === "expired")).toHaveLength(1);
+    expect(agent.requests).toHaveLength(0);
   });
 
   test("timeout abandons a hung pass, re-queues its transcript, and permits the next tick", async () => {
     const agent = new FakeAgent([new Promise<AgentQueryResponse>(() => {}), Promise.resolve(response())]);
-    const runner = makeRunner({ agent, timeoutMs: 10, minNewChars: 1, minIntervalMs: 0, maxUsd: 2, maxPassUsd: 1 });
+    const runner = makeRunner({ agent, timeoutMs: 10, minNewChars: 1, minIntervalMs: 0 });
     runner.updateTranscript("not lost");
     expect((await runner.tick()).status).toBe("timed-out");
     expect(runner.state.inFlight).toBe(false);
     expect((await runner.tick()).status).toBe("completed");
     expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toBe("not lost");
-    expect(agent.requests.map(({ maxBudgetUsd }) => maxBudgetUsd)).toEqual([1, 1]);
   });
 
-  test("a settled zero-cost timed-out query releases its USD reservation and warns once", async () => {
+  test("a late-settling timed-out pass still counts its attempts and its own rescheduling still picks up newly queued transcript", async () => {
     const late = deferred<AgentQueryResponse>();
-    const messages: string[] = [];
     const agent = new FakeAgent([late.promise, Promise.resolve(response())]);
-    const runner = makeRunner({
-      agent, timeoutMs: 5, maxUsd: 1, maxPassUsd: 1,
-      logger: { error: () => {}, info: (message) => messages.push(String(message)) },
-    });
+    const runner = makeRunner({ agent, timeoutMs: 5, minIntervalMs: 0, minNewChars: 8 });
     runner.appendTranscript("late");
-    expect((await runner.tick()).status).toBe("timed-out");
-    expect(runner.state.enhancementEnabled).toBe(false);
-    late.resolve(response(0));
-    await until(() => runner.state.enhancementEnabled);
-    expect(messages.filter((message) => message.includes("USD cap is inactive"))).toHaveLength(1);
+    // enhanceNow bypasses the character/interval gate, so this one pass starts despite
+    // "late" being under minNewChars — isolating the reschedule check below to the late
+    // settle's own #scheduleTick() call rather than #start's ordinary post-pass reschedule.
+    expect((await runner.enhanceNow("tick")).status).toBe("timed-out");
+    expect(runner.state.passCount).toBe(0);
+    expect(runner.state.pendingCharacters).toBe(4);
+    // "late" alone is still below minNewChars, so this settles as not-ready and schedules
+    // nothing yet — it only flips on live ticking for the reschedule check below.
+    runner.requestTick();
+    runner.appendTranscript(" more!");
+    late.resolve(response());
+    await waitUntil(() => agent.requests.length === 2, 250);
+    runner.stopLiveTicks();
+    expect(runner.state.passCount).toBe(2);
+    expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toBe("late\n more!");
   });
 
-  test("validation retries count as model attempts against maxPasses", async () => {
-    const invalid = { finalAssistantMessage: "not json", costUsd: 0 };
+  test("validation retries all count as model attempts toward passCount", async () => {
+    const invalid = { finalAssistantMessage: "not json" };
     const agent = new FakeAgent([Promise.resolve(invalid), Promise.resolve(response())]);
-    const runner = makeRunner({ agent, maxPasses: 1 });
-    runner.appendTranscript("one attempt only");
-    expect((await runner.enhanceNow("tick")).status).toBe("skipped");
-    expect(agent.requests).toHaveLength(1);
-    expect(runner.state.passCount).toBe(1);
+    const runner = makeRunner({ agent });
+    runner.appendTranscript("one attempt then a retry");
+    expect((await runner.enhanceNow("tick")).status).toBe("completed");
+    expect(agent.requests).toHaveLength(2);
+    expect(runner.state.passCount).toBe(2);
   });
 
   test("requeued transcript is capped and dropped after a bounded number of retries", async () => {
@@ -373,8 +377,8 @@ describe("EnhanceRunner budgets and failure isolation", () => {
   test("marker-bearing model output is rejected before the writer is called", async () => {
     const invalid = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"<!-- shorthand:ai:end -->\"}]\n```";
     const agent = new FakeAgent([
-      Promise.resolve({ finalAssistantMessage: invalid, costUsd: 0 }),
-      Promise.resolve({ finalAssistantMessage: invalid, costUsd: 0 }),
+      Promise.resolve({ finalAssistantMessage: invalid }),
+      Promise.resolve({ finalAssistantMessage: invalid }),
     ]);
     const sink = new FakeSink({ cwd: process.cwd() });
     const runner = makeRunner({ agent, sink });
@@ -445,8 +449,6 @@ function makeRunner(overrides: Partial<EnhanceRunnerOptions> & Pick<EnhanceRunne
     sink: new FakeSink({ cwd: process.cwd() }),
     minNewChars: 1,
     minIntervalMs: 0,
-    maxPasses: 10,
-    maxUsd: 10,
     timeoutMs: 1_000,
     maxTurns: 3,
     logger: silentLogger,
@@ -454,8 +456,8 @@ function makeRunner(overrides: Partial<EnhanceRunnerOptions> & Pick<EnhanceRunne
   });
 }
 
-function response(costUsd = 0): AgentQueryResponse {
-  return { finalAssistantMessage: OUTPUT, costUsd };
+function response(): AgentQueryResponse {
+  return { finalAssistantMessage: OUTPUT };
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

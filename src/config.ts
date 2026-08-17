@@ -68,9 +68,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     enhancementIntervalMs: 25_000,
   },
   enhancement: {
-    maxPasses: 30,
-    maxUsd: 5,
-    maxPassUsd: 1,
+    maxDurationMs: 4 * 60 * 60 * 1000, // 4h — a loop breaker, not a product limit
     timeoutMs: 45_000,
     maxTurns: 6,
   },

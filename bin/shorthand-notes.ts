@@ -329,9 +329,7 @@ function createEnhanceRunner(
     agent,
     minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
     minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
-    maxPasses: environmentNumber(environment.HANDY_NOTES_MAX_PASSES, DEFAULT_CONFIG.enhancement.maxPasses),
-    maxUsd: environmentNumber(environment.HANDY_NOTES_MAX_USD, DEFAULT_CONFIG.enhancement.maxUsd),
-    maxPassUsd: environmentNumber(environment.HANDY_NOTES_MAX_PASS_USD, DEFAULT_CONFIG.enhancement.maxPassUsd),
+    maxDurationMs: environmentNumber(environment.HANDY_NOTES_MAX_DURATION_MS, DEFAULT_CONFIG.enhancement.maxDurationMs),
     timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, DEFAULT_CONFIG.enhancement.timeoutMs),
     maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
     dryRun,
@@ -346,7 +344,7 @@ function reportPassOutcome(outcome: PassOutcome): void {
   if (outcome.status === "completed") return;
   if (outcome.status === "not-ready") console.error(`Enhancement did not run: ${outcome.reason} threshold not met.`);
   else if (outcome.status === "in-flight") console.error("Enhancement did not run because another pass is in flight.");
-  else if (outcome.status === "budget-exhausted") console.error(`Enhancement ${outcome.reason} budget is exhausted; capture continues.`);
+  else if (outcome.status === "expired") console.error("Enhancement stopped after the maximum duration; capture continues.");
   else if (outcome.status === "timed-out") console.error("Enhancement timed out and was re-queued.");
   else if (outcome.status === "requeued") console.error(`Enhancement was re-queued (${outcome.reason}).`);
   else if (outcome.status === "skipped") console.error(outcome.reason === "invalid-output"

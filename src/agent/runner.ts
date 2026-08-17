@@ -72,6 +72,7 @@ export class EnhanceRunner {
   #expiryReported = false;
   #consecutiveReadFailures = 0;
   #disabledForReadFailures = false;
+  #sessionId: string | undefined;
 
   constructor(options: EnhanceRunnerOptions) {
     this.#options = {
@@ -217,6 +218,7 @@ export class EnhanceRunner {
       ...(this.#options.pathToClaudeCodeExecutable === undefined
         ? {}
         : { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
+      ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
       signal: abortController.signal,
     } as const;
 
@@ -230,6 +232,7 @@ export class EnhanceRunner {
       return { status: "timed-out" };
     }
     this.#passCount += result.attempts;
+    this.#sessionId = result.sessionId ?? this.#sessionId;
     this.#reportNewlyExpired();
     if (result.status === "skipped") {
       this.#requeue(input);
@@ -343,6 +346,7 @@ export class EnhanceRunner {
   #trackTimedOutResult(contractPromise: Promise<Awaited<ReturnType<typeof queryForSections>>>): void {
     void contractPromise.then((lateResult) => {
       this.#passCount += lateResult.attempts;
+      this.#sessionId = lateResult.sessionId ?? this.#sessionId;
       this.#reportNewlyExpired();
       this.#scheduleTick();
     }).catch(() => {

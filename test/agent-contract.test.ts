@@ -66,8 +66,8 @@ describe("fenced JSON section contract", () => {
 
   test("retries once then skips and preserves the last good sections", async () => {
     const agent = new SequenceAgent([
-      { finalAssistantMessage: "not json" },
-      { finalAssistantMessage: "still not json" },
+      { finalAssistantMessage: "not json", sessionId: "session-a" },
+      { finalAssistantMessage: "still not json", sessionId: "session-b" },
     ]);
     const lastGood: readonly Section[] = [{ heading: "Existing", markdown: "Keep me" }];
     const errors: string[] = [];
@@ -76,6 +76,18 @@ describe("fenced JSON section contract", () => {
     expect(agent.requests[1]?.prompt).toContain("Validation error");
     expect(result).toEqual(expect.objectContaining({ status: "skipped", sections: lastGood, attempts: 2 }));
     expect(errors[0]).toContain("OUTPUT REJECTED AFTER TWO ATTEMPTS");
+  });
+
+  test("a same-pass retry resumes the first attempt's session id", async () => {
+    const agent = new SequenceAgent([
+      { finalAssistantMessage: "not json", sessionId: "session-first-attempt" },
+      { finalAssistantMessage: '```json\n' + JSON.stringify(valid) + '\n```', sessionId: "session-second-attempt" },
+    ]);
+    const result = await queryForSections(agent, request(), [], { error: () => {} });
+    expect(agent.requests).toHaveLength(2);
+    expect(agent.requests[0]).not.toHaveProperty("sessionId");
+    expect(agent.requests[1]?.sessionId).toBe("session-first-attempt");
+    expect(result).toEqual(expect.objectContaining({ status: "valid", sessionId: "session-second-attempt" }));
   });
 
   test("rejects marker tokens in model output", () => {

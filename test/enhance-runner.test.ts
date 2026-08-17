@@ -236,13 +236,46 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
   });
 
   test("validation retries all count as model attempts toward passCount", async () => {
-    const invalid = { finalAssistantMessage: "not json" };
+    const invalid = { finalAssistantMessage: "not json", sessionId: "session-invalid" };
     const agent = new FakeAgent([Promise.resolve(invalid), Promise.resolve(response())]);
     const runner = makeRunner({ agent });
     runner.appendTranscript("one attempt then a retry");
     expect((await runner.enhanceNow("tick")).status).toBe("completed");
     expect(agent.requests).toHaveLength(2);
     expect(runner.state.passCount).toBe(2);
+  });
+
+  test("the second pass resumes the first pass's session id", async () => {
+    const agent = new FakeAgent([Promise.resolve(response("session-1")), Promise.resolve(response("session-2"))]);
+    const runner = makeRunner({ agent, minNewChars: 1, minIntervalMs: 0 });
+    runner.updateTranscript("first chunk");
+    expect((await runner.tick()).status).toBe("completed");
+    expect(agent.requests[0]).not.toHaveProperty("sessionId");
+    runner.updateTranscript("second chunk");
+    expect((await runner.tick()).status).toBe("completed");
+    expect(agent.requests[1]!.sessionId).toBe("session-1");
+  });
+
+  test("a pass whose query throws before any response arrives leaves the resumed session id unchanged", async () => {
+    const agent = new FakeAgent([
+      Promise.resolve(response("session-1")),
+      Promise.reject(new Error("network blip")),
+      Promise.resolve(response("session-3")),
+    ]);
+    const runner = makeRunner({ agent, minNewChars: 1, minIntervalMs: 0 });
+    runner.updateTranscript("first");
+    expect((await runner.tick()).status).toBe("completed");
+    expect(agent.requests[0]).not.toHaveProperty("sessionId");
+
+    runner.updateTranscript("second");
+    expect((await runner.tick()).status).toBe("skipped");
+    expect(agent.requests[1]!.sessionId).toBe("session-1");
+
+    runner.updateTranscript("third");
+    expect((await runner.tick()).status).toBe("completed");
+    // Pass 2 never received a response, so #sessionId was never overwritten by its
+    // (nonexistent) result — pass 3 still resumes pass 1's session.
+    expect(agent.requests[2]!.sessionId).toBe("session-1");
   });
 
   test("requeued transcript is capped and dropped after a bounded number of retries", async () => {
@@ -377,8 +410,8 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
   test("marker-bearing model output is rejected before the writer is called", async () => {
     const invalid = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"<!-- shorthand:ai:end -->\"}]\n```";
     const agent = new FakeAgent([
-      Promise.resolve({ finalAssistantMessage: invalid }),
-      Promise.resolve({ finalAssistantMessage: invalid }),
+      Promise.resolve({ finalAssistantMessage: invalid, sessionId: "session-marker-1" }),
+      Promise.resolve({ finalAssistantMessage: invalid, sessionId: "session-marker-2" }),
     ]);
     const sink = new FakeSink({ cwd: process.cwd() });
     const runner = makeRunner({ agent, sink });
@@ -456,8 +489,8 @@ function makeRunner(overrides: Partial<EnhanceRunnerOptions> & Pick<EnhanceRunne
   });
 }
 
-function response(): AgentQueryResponse {
-  return { finalAssistantMessage: OUTPUT };
+function response(sessionId = "session-mock"): AgentQueryResponse {
+  return { finalAssistantMessage: OUTPUT, sessionId };
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

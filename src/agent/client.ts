@@ -20,9 +20,13 @@ export class ClaudeAgentClient implements AgentClient {
     request.signal?.addEventListener("abort", interrupt, { once: true });
     let finalAssistantMessage = "";
     let resultText = "";
+    let sessionId: string | undefined;
     try {
       for await (const rawMessage of stream) {
         const message = rawMessage as unknown as SdkMessage;
+        // The session id is stable for the life of the stream: capture it off the first
+        // message seen and never overwrite it on later messages.
+        if (sessionId === undefined && typeof message.session_id === "string") sessionId = message.session_id;
         if (message.type === "assistant") {
           const text = assistantText(message);
           if (text.length > 0) finalAssistantMessage = text;
@@ -39,7 +43,10 @@ export class ClaudeAgentClient implements AgentClient {
     }
     if (finalAssistantMessage.length === 0) finalAssistantMessage = resultText;
     if (finalAssistantMessage.length === 0) throw new Error("Claude Agent SDK returned no final assistant text.");
-    return { finalAssistantMessage };
+    // The throw above guarantees at least one message carried assistant text or a result,
+    // and every SDK message type carries session_id, so sessionId is always set by here.
+    if (sessionId === undefined) throw new Error("Claude Agent SDK returned no session id.");
+    return { finalAssistantMessage, sessionId };
   }
 }
 
@@ -65,6 +72,7 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
     ...(request.pathToClaudeCodeExecutable === undefined
       ? {}
       : { pathToClaudeCodeExecutable: request.pathToClaudeCodeExecutable }),
+    ...(request.sessionId === undefined ? {} : { resume: request.sessionId }),
   };
 }
 
@@ -159,7 +167,11 @@ export class ExecutableAgentStub implements AgentClient {
         try {
           const parsed = JSON.parse(stdout) as Record<string, unknown>;
           if (typeof parsed.finalAssistantMessage !== "string") throw new Error("Stub output requires finalAssistantMessage.");
-          resolveQuery({ finalAssistantMessage: parsed.finalAssistantMessage });
+          // Stubs are hand-written fixtures that predate session ids; falling back to an
+          // empty string keeps the stub JSON contract simple rather than forcing every
+          // fixture to invent one.
+          const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId : "";
+          resolveQuery({ finalAssistantMessage: parsed.finalAssistantMessage, sessionId });
         } catch (error) {
           rejectQuery(new Error(`Invalid agent stub JSON: ${error instanceof Error ? error.message : String(error)}`));
         }

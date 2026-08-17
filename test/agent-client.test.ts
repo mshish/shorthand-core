@@ -56,6 +56,20 @@ describe("Claude Agent vault tool confinement", () => {
     expect(options).not.toHaveProperty("allowedTools");
     expect(typeof options.canUseTool).toBe("function");
   });
+
+  test("sessionId threads through as resume; its absence leaves resume unset", async () => {
+    const vault = await temp("vault");
+    const resumed = buildClaudeAgentOptions({
+      prompt: "prompt", systemPrompt: "system", cwd: vault,
+      tools: ["Read"], settingSources: ["project"], maxTurns: 2, sessionId: "session-42",
+    });
+    expect(resumed.resume).toBe("session-42");
+    const fresh = buildClaudeAgentOptions({
+      prompt: "prompt", systemPrompt: "system", cwd: vault,
+      tools: ["Read"], settingSources: ["project"], maxTurns: 2,
+    });
+    expect(fresh).not.toHaveProperty("resume");
+  });
 });
 
 function guard(vault: string) {

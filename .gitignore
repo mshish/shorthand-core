@@ -5,3 +5,6 @@ dist/
 
 # Scratch dirs from local test runs.
 .block-writer-*test-*/
+
+# Local git worktrees (SDD scratch)
+.worktrees/

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { HandyControl, type ControlSignal } from "../src/stream/control.js";
+import { ShorthandControl, type ControlSignal } from "../src/stream/control.js";
 
 type FakeStderr = PassThrough & { unref: () => void; unrefCount: number; resumeCount: number };
 
@@ -83,25 +83,25 @@ function harness(): {
   };
 }
 
-describe("HandyControl argv", () => {
+describe("ShorthandControl argv", () => {
   const signals: ControlSignal[] = ["toggle-transcription", "toggle-post-process", "cancel"];
 
   for (const signal of signals) {
     test(`spawns --${signal} as its own short-lived process`, async () => {
       const { calls, child, spawnFn } = harness();
-      const control = new HandyControl({ command: "C:/handy/handy.exe", spawnFn, timeoutMs: 1_000 });
+      const control = new ShorthandControl({ command: "C:/shorthand/shorthand.exe", spawnFn, timeoutMs: 1_000 });
       const sent = control.send(signal);
       child.emit("close", 0);
       expect(await sent).toEqual({ status: "sent" });
       expect(calls).toHaveLength(1);
-      expect(calls[0]?.command).toBe("C:/handy/handy.exe");
+      expect(calls[0]?.command).toBe("C:/shorthand/shorthand.exe");
       expect(calls[0]?.args).toEqual([`--${signal}`]);
     });
   }
 
   test("detaches, hides the window, and unrefs so the child cannot hold Obsidian open", async () => {
     const { calls, child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("cancel");
     child.emit("close", 0);
     await sent;
@@ -115,7 +115,7 @@ describe("HandyControl argv", () => {
 
   test("unrefs the stderr pipe too: child.unref() alone leaves a ref'd libuv handle", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("cancel");
     expect(child.stderr.unrefCount).toBe(1);
     child.emit("close", 0);
@@ -123,10 +123,10 @@ describe("HandyControl argv", () => {
   });
 });
 
-describe("HandyControl outcomes", () => {
+describe("ShorthandControl outcomes", () => {
   test("exit 0 means the flag reached the running instance", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("toggle-transcription");
     child.emit("close", 0);
     expect(await sent).toEqual({ status: "sent" });
@@ -134,7 +134,7 @@ describe("HandyControl outcomes", () => {
 
   test("non-zero exit carries the collected stderr", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("toggle-post-process");
     await writeStderr(child, "error: unexpected argument\n");
     child.emit("close", 2);
@@ -143,7 +143,7 @@ describe("HandyControl outcomes", () => {
 
   test("non-zero exit without stderr still names the exit code", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("cancel");
     child.emit("close", 3);
     const result = await sent;
@@ -153,29 +153,29 @@ describe("HandyControl outcomes", () => {
 
   test("ENOENT names the resolved command path", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "C:/missing/handy.exe", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "C:/missing/shorthand.exe", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("cancel");
     child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
     const result = await sent;
     expect(result.status).toBe("error");
-    expect(result.status === "error" && result.message).toContain("C:/missing/handy.exe");
+    expect(result.status === "error" && result.message).toContain("C:/missing/shorthand.exe");
   });
 
   test("ENOENT wins over the close code Node emits right after it", async () => {
     // Probed against real Node with a missing exe and these spawn options:
     //   [["error","ENOENT"],["close",-4058,null]]
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "C:/missing/handy.exe", spawnFn, timeoutMs: 1_000 });
+    const control = new ShorthandControl({ command: "C:/missing/shorthand.exe", spawnFn, timeoutMs: 1_000 });
     const sent = control.send("cancel");
     child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
     child.emit("close", -4058, null);
     const result = await sent;
-    expect(result).toEqual({ status: "error", message: "Handy binary not found at C:/missing/handy.exe" });
+    expect(result).toEqual({ status: "error", message: "Shorthand binary not found at C:/missing/shorthand.exe" });
   });
 
-  test("a child still alive past the timeout means Handy was not running", async () => {
+  test("a child still alive past the timeout means Shorthand was not running", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 10 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 10 });
     // No close event: the process became the primary Tauri instance and launched the app.
     expect(await control.send("toggle-transcription")).toEqual({ status: "not-running" });
     expect(child.listenerCount("close")).toBe(1);
@@ -187,7 +187,7 @@ describe("HandyControl outcomes", () => {
       const { child, spawnFn } = harness();
       // A minute: if the timeout is not cleared, it is still pending — and in the real
       // process still holding Obsidian's event loop — long after send() resolved.
-      const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 60_000 });
+      const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 60_000 });
       const sent = control.send("cancel");
       expect(timers.pending.size).toBe(1);
       child.emit("close", 0);
@@ -200,7 +200,7 @@ describe("HandyControl outcomes", () => {
 
   test("settles and releases the child exactly once when close follows the timeout", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 10 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 10 });
     const sent = control.send("cancel");
     expect(await sent).toEqual({ status: "not-running" });
     expect(child.stderr.listenerCount("data")).toBe(0);
@@ -215,21 +215,21 @@ describe("HandyControl outcomes", () => {
 
   test("settling stops the abandoned child's stderr from accumulating for the session", async () => {
     const { child, spawnFn } = harness();
-    const control = new HandyControl({ command: "handy", spawnFn, timeoutMs: 10 });
+    const control = new ShorthandControl({ command: "shorthand", spawnFn, timeoutMs: 10 });
     const sent = control.send("toggle-transcription");
     expect(await sent).toEqual({ status: "not-running" });
-    // Handy keeps logging for the rest of the session; none of it may be retained.
-    child.stderr.write("[handy] log line\n");
+    // Shorthand keeps logging for the rest of the session; none of it may be retained.
+    child.stderr.write("[shorthand] log line\n");
     await new Promise<void>((resolve) => { setImmediate(resolve); });
     expect(child.stderr.readableLength).toBe(0);
     expect(child.stderr.listenerCount("data")).toBe(0);
   });
 });
 
-describe("HandyControl.sendDetached", () => {
+describe("ShorthandControl.sendDetached", () => {
   test("returns synchronously and swallows an ENOENT error event", () => {
     const { calls, child, spawnFn } = harness();
-    const control = new HandyControl({ command: "C:/missing/handy.exe", spawnFn });
+    const control = new ShorthandControl({ command: "C:/missing/shorthand.exe", spawnFn });
     control.sendDetached("cancel");
     expect(calls[0]?.args).toEqual(["--cancel"]);
     expect(() => {
@@ -238,8 +238,8 @@ describe("HandyControl.sendDetached", () => {
   });
 
   test("swallows a synchronous spawn failure", () => {
-    const control = new HandyControl({
-      command: "handy",
+    const control = new ShorthandControl({
+      command: "shorthand",
       spawnFn: () => { throw new Error("EPERM"); },
     });
     expect(() => control.sendDetached("toggle-transcription")).not.toThrow();

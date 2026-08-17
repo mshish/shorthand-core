@@ -9,16 +9,16 @@ not.
 
 The brief, in the order it arrived:
 
-- A fork of [Handy](https://github.com/cjpais/Handy) captures and transcribes **system audio
+- A fork of [Shorthand](https://github.com/cjpais/Shorthand) captures and transcribes **system audio
   alongside the microphone**, as two speaker-labelled lanes, and exposes the live transcript
-  over a CLI flag (`handy --follow-stream`) for piping.
+  over a CLI flag (`shorthand --follow-stream`) for piping.
 - Build **the first consumer of that stream**: an Obsidian AI note taker. Proving the CLI is
   useful is half the point.
 - It **must use the Claude Agent SDK** to invoke a Claude Code session — not the raw Messages
   API.
 - Model the behaviour on **Granola**. Existing Obsidian plugins (Claudian) as integration
   inspiration.
-- Distributed separately from Handy. Developed inside the Handy tree but never committed to
+- Distributed separately from Shorthand. Developed inside the Shorthand tree but never committed to
   it (`.git/info/exclude`), then moved out.
 - **Keep setup and install simple.** Lean on open source; do web research rather than
   inventing.
@@ -65,7 +65,7 @@ Two payoffs: the whole pipeline is testable end to end without launching Obsidia
 nothing — no MCP server, no plugin install — stands between the agent and the note.
 
 ```
-handy.exe --follow-stream json     (child process, stdout NDJSON)
+shorthand.exe --follow-stream json     (child process, stdout NDJSON)
         |
         v
   StreamClient ──► TranscriptStore ──► sidecar note   (fs write, append)
@@ -80,7 +80,7 @@ handy.exe --follow-stream json     (child process, stdout NDJSON)
                                     MarkdownNoteSink (reference impl)
                                                  v
                                         BlockWriter ──► meeting note on disk, only
-                                                        inside the handy:ai markers
+                                                        inside the shorthand:ai markers
 ```
 
 **The destination is a port, not a path.** `EnhanceRunner` takes a `NoteSink` rather than a
@@ -112,8 +112,8 @@ the version boundary between them.
 
 ## Invariants — do not weaken these
 
-**Ownership.** The plugin only ever replaces text strictly between `<!-- handy:ai:start -->`
-and `<!-- handy:ai:end -->`. User text is never touched. Marker anomalies (zero, duplicate,
+**Ownership.** The plugin only ever replaces text strictly between `<!-- shorthand:ai:start -->`
+and `<!-- shorthand:ai:end -->`. User text is never touched. Marker anomalies (zero, duplicate,
 nested, inverted) **fail closed** — no write at all, rather than a guess.
 
 **The agent has no write tool.** `options.tools` never contains `Write`/`Edit`/`Bash`, which
@@ -164,8 +164,8 @@ recorded because the fix is easy to undo by accident.
   ordinary speech produces ~130. The threshold is now 180 characters / 25s, and the status bar
   shows progress toward the next pass — the absence of that feedback was the actual bug.
 - **A stampless stream silently produced nothing.** `session_elapsed_ms` was treated as
-  required, but Handy's protocol added both timestamp fields *without* a version bump, so an
-  older Handy dropped every event while the protocol check still passed.
+  required, but Shorthand's protocol added both timestamp fields *without* a version bump, so an
+  older Shorthand dropped every event while the protocol check still passed.
 
 ## Known limitations
 
@@ -177,14 +177,14 @@ recorded because the fix is easy to undo by accident.
   file.
 - **The USD budget is inert under subscription auth.** `total_cost_usd` is commonly `0` via
   the logged-in `claude` CLI, so the pass-count cap is the real bound on a meeting.
-- **Handy pastes into the focused app.** If Obsidian has focus while capturing, transcription
-  lands in the note body as well as the sidecar. That is Handy's own behaviour, not this
+- **Shorthand pastes into the focused app.** If Obsidian has focus while capturing, transcription
+  lands in the note body as well as the sidecar. That is Shorthand's own behaviour, not this
   plugin's.
 
 ## Verification
 
 `bun test` (unit), `bun run typecheck`, `bun run test:e2e` (headless end-to-end using the fake
-transcript stream and agent stub). CI runs all of it offline — no Handy, vault, or credentials
+transcript stream and agent stub). CI runs all of it offline — no Shorthand, vault, or credentials
 required. See `README.md` for commands and `.github/workflows/` for the pipeline.
 
 **The conformance suite is shipped API, not a test.** It lives at

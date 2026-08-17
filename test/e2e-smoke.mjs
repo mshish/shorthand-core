@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const START = "<!-- handy:ai:start -->";
-const END = "<!-- handy:ai:end -->";
+const START = "<!-- shorthand:ai:start -->";
+const END = "<!-- shorthand:ai:end -->";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(packageRoot, "dist", "shorthand-notes.mjs");
 const fakeStream = join(packageRoot, "test", "fixtures", "fake-stream.mjs");
@@ -53,7 +53,7 @@ try {
   ]);
   const defaultSidecar = await readFile(join(scratchVault, defaultSidecarRelative), "utf8");
   assert(
-    defaultSidecar.includes("# Handy Transcript"),
+    defaultSidecar.includes("# Shorthand Transcript"),
     "capture with a bare --fake-stream wrote no transcript; the CLI's bundled fixture path is broken",
   );
 

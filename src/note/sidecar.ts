@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { sessionKey, type SessionSnapshot, type TranscriptUpdate } from "../stream/transcript.js";
 
-export const SIDECAR_SENTINEL = "# Handy Transcript";
+export const SIDECAR_SENTINEL = "# Shorthand Transcript";
 const HEADER = `${SIDECAR_SENTINEL}
 
 > [!info] Commit timing
@@ -66,7 +66,7 @@ export class SidecarWriter extends EventEmitter {
     const gap: TimelineEntry = {
       type: "gap",
       id: this.#gapId++,
-      text: `> [!warning] Transcript gap\n> Reconnected as connection generation ${connectionGeneration}. Handy does not replay missed events.`,
+      text: `> [!warning] Transcript gap\n> Reconnected as connection generation ${connectionGeneration}. Shorthand does not replay missed events.`,
     };
     this.#timeline.push(gap);
     const gaps = this.#timeline.filter((entry): entry is Extract<TimelineEntry, { type: "gap" }> => entry.type === "gap");

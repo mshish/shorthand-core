@@ -58,7 +58,7 @@ describe("shorthand-notes CLI", () => {
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const transcript = join(vault, "transcript.md");
-    const original = "<!-- handy:notes -->\n- mine\n<!-- handy:ai:start -->\n## Summary\nOld\n<!-- handy:ai:end -->";
+    const original = "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->";
     await writeFile(note, original, "utf8");
     await writeFile(transcript, "me: offline transcript", "utf8");
     const result = await run(join(process.cwd(), "bin", "shorthand-notes.ts"), [
@@ -84,7 +84,7 @@ describe("shorthand-notes CLI", () => {
       "--no-reconnect", "--enhance", "--agent-stub", agentStub,
     ]);
     expect(result.code).toBe(0);
-    expect(await readFile(join(vault, "transcript.md"), "utf8")).toContain("# Handy Transcript");
+    expect(await readFile(join(vault, "transcript.md"), "utf8")).toContain("# Shorthand Transcript");
     expect(await readFile(join(vault, "meeting.md"), "utf8")).toContain("## Stub summary\nOffline result");
   }, 10_000);
 
@@ -108,9 +108,9 @@ describe("shorthand-notes CLI", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(`Sidecar written: ${sidecar}`);
     const linkedNote = await readFile(note, "utf8");
-    expect(linkedNote).toStartWith('---\nhandy-transcript: "[[transcript]]"\n---\n');
+    expect(linkedNote).toStartWith('---\nshorthand-transcript: "[[transcript]]"\n---\n');
     expect(linkedNote.slice(linkedNote.indexOf(originalNote))).toBe(originalNote);
-    expect(await readFile(sidecar, "utf8")).toContain("# Handy Transcript");
+    expect(await readFile(sidecar, "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
 
   test("init-note creates a linked scaffold without overwriting an existing note", async () => {
@@ -128,9 +128,9 @@ describe("shorthand-notes CLI", () => {
     expect(first.code).toBe(0);
     const note = join(vault, "Meetings", "standup.md");
     const content = await readFile(note, "utf8");
-    expect(content).toContain('handy-transcript: "[[Meetings/Transcripts/standup]]"');
-    expect(content).toContain("# Weekly Standup\n\n<!-- handy:notes -->");
-    expect(content).toContain("<!-- handy:ai:start -->\n## Summary");
+    expect(content).toContain('shorthand-transcript: "[[Meetings/Transcripts/standup]]"');
+    expect(content).toContain("# Weekly Standup\n\n<!-- shorthand:notes -->");
+    expect(content).toContain("<!-- shorthand:ai:start -->\n## Summary");
     const second = await run(entry, args);
     expect(second.code).toBe(1);
     expect(await readFile(note, "utf8")).toBe(content);
@@ -141,14 +141,14 @@ describe("shorthand-notes CLI", () => {
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const json = join(vault, "sections.json");
-    const original = "user\tbytes  \r\n<!-- handy:ai:start -->\r\n## Old\r\n<!-- handy:ai:end -->tail";
+    const original = "user\tbytes  \r\n<!-- shorthand:ai:start -->\r\n## Old\r\n<!-- shorthand:ai:end -->tail";
     await writeFile(note, original, "utf8");
     await writeFile(json, JSON.stringify([{ heading: "Summary", markdown: "Done" }]), "utf8");
     const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const result = await run(entry, ["set-sections", "--note", note, "--json", json, "--force"]);
     expect(result.code).toBe(0);
     expect(await readFile(note, "utf8")).toBe(
-      "user\tbytes  \r\n<!-- handy:ai:start -->\r\n## Summary\r\nDone\r\n<!-- handy:ai:end -->tail",
+      "user\tbytes  \r\n<!-- shorthand:ai:start -->\r\n## Summary\r\nDone\r\n<!-- shorthand:ai:end -->tail",
     );
   });
 
@@ -157,7 +157,7 @@ describe("shorthand-notes CLI", () => {
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const json = join(vault, "sections.json");
-    const original = "before\n<!-- handy:ai:start -->\n## Old\n<!-- handy:ai:end -->\nafter";
+    const original = "before\n<!-- shorthand:ai:start -->\n## Old\n<!-- shorthand:ai:end -->\nafter";
     await writeFile(note, original, "utf8");
     await writeFile(json, JSON.stringify([{ heading: "Summary", markdown: "New" }]), "utf8");
     const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
@@ -182,7 +182,7 @@ describe("shorthand-notes CLI", () => {
     scratchDirectories.push(vault);
     const note = join(vault, "meeting.md");
     const json = join(vault, "sections.json");
-    const original = "<!-- handy:ai:start -->\n<!-- handy:ai:end -->";
+    const original = "<!-- shorthand:ai:start -->\n<!-- shorthand:ai:end -->";
     await writeFile(note, original, "utf8");
     await writeFile(json, "[]", "utf8");
     const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
@@ -213,7 +213,7 @@ describe("shorthand-notes CLI", () => {
     ]);
     expect(result.code).toBe(0);
     expect(await readFile(note, "utf8")).toBe(
-      `---\nowner: human\nhandy-transcript: "[[linked/transcript]]"\n---\n${originalBody}`,
+      `---\nowner: human\nshorthand-transcript: "[[linked/transcript]]"\n---\n${originalBody}`,
     );
   }, 10_000);
 
@@ -232,7 +232,7 @@ describe("shorthand-notes CLI", () => {
     ]);
     expect(capture.code).toBe(0);
     expect(await readFile(note, "utf8")).toBe(original);
-    expect(await readFile(join(vault, "linked", "transcript.md"), "utf8")).toContain("# Handy Transcript");
+    expect(await readFile(join(vault, "linked", "transcript.md"), "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
 });
 

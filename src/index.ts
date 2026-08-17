@@ -33,8 +33,8 @@ export type { Section } from "./note/markers.js";
 export { StreamClient } from "./stream/client.js";
 export type { ExitDiagnosis, StreamClientOptions } from "./stream/client.js";
 
-export { HandyControl } from "./stream/control.js";
-export type { ControlResult, ControlSignal, HandyControlOptions } from "./stream/control.js";
+export { ShorthandControl } from "./stream/control.js";
+export type { ControlResult, ControlSignal, ShorthandControlOptions } from "./stream/control.js";
 
 export { enhancementDelta, TranscriptStore } from "./stream/transcript.js";
 export type { TranscriptUpdate } from "./stream/transcript.js";
@@ -51,5 +51,5 @@ export type {
   AgentTier,
 } from "./agent/contract.js";
 
-export { DEFAULT_CONFIG, detectHandyExecutable } from "./config.js";
+export { DEFAULT_CONFIG, detectShorthandExecutable } from "./config.js";
 export type { ShorthandConfig } from "./config.js";

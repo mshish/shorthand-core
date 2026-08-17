@@ -1,6 +1,6 @@
-export const AI_BLOCK_START = "<!-- handy:ai:start -->";
-export const AI_BLOCK_END = "<!-- handy:ai:end -->";
-export const USER_NOTES_MARKER = "<!-- handy:notes -->";
+export const AI_BLOCK_START = "<!-- shorthand:ai:start -->";
+export const AI_BLOCK_END = "<!-- shorthand:ai:end -->";
+export const USER_NOTES_MARKER = "<!-- shorthand:notes -->";
 
 export type Section = Readonly<{
   heading: string;
@@ -61,13 +61,13 @@ function offsetsOf(content: string, token: string): number[] {
 
 function markerError(code: MarkerErrorCode, content: string, offsets: readonly number[] = []): MarkerError {
   const messages: Record<MarkerErrorCode, string> = {
-    "markers-missing": "The note has no Handy AI block markers.",
-    "start-marker-missing": "The Handy AI block start marker is missing.",
-    "end-marker-missing": "The Handy AI block end marker is missing.",
-    "duplicate-start-marker": "The note contains more than one Handy AI block start marker.",
-    "duplicate-end-marker": "The note contains more than one Handy AI block end marker.",
-    "nested-markers": "The note contains nested Handy AI block markers.",
-    "end-before-start": "A Handy AI block end marker appears before its start marker.",
+    "markers-missing": "The note has no Shorthand AI block markers.",
+    "start-marker-missing": "The Shorthand AI block start marker is missing.",
+    "end-marker-missing": "The Shorthand AI block end marker is missing.",
+    "duplicate-start-marker": "The note contains more than one Shorthand AI block start marker.",
+    "duplicate-end-marker": "The note contains more than one Shorthand AI block end marker.",
+    "nested-markers": "The note contains nested Shorthand AI block markers.",
+    "end-before-start": "A Shorthand AI block end marker appears before its start marker.",
   };
   const locations = offsets.map((offset) => ({
     offset: Buffer.byteLength(content.slice(0, offset), "utf8"),
@@ -160,10 +160,10 @@ function validateSections(sections: readonly Section[]): Result<readonly Section
       return sectionFailure("multiline-heading", sectionIndex, "Section headings must fit on one line.");
     }
     if (containsMarker(section.heading)) {
-      return sectionFailure("marker-in-heading", sectionIndex, "A section heading contains a Handy marker token.");
+      return sectionFailure("marker-in-heading", sectionIndex, "A section heading contains a Shorthand marker token.");
     }
     if (containsMarker(section.markdown)) {
-      return sectionFailure("marker-in-markdown", sectionIndex, "Section markdown contains a Handy marker token.");
+      return sectionFailure("marker-in-markdown", sectionIndex, "Section markdown contains a Shorthand marker token.");
     }
     if (fenceAwareHeadingOffsets(normalizeLineEndings(section.markdown)).length > 0) {
       return sectionFailure("section-heading-in-markdown", sectionIndex, "Section markdown contains a level-two heading that would split the block.");
@@ -225,7 +225,7 @@ export function detectLineEnding(content: string): "\r\n" | "\n" {
 export function transcriptWikilink(content: string): string | undefined {
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
   if (frontmatter === undefined) return undefined;
-  return /^handy-transcript:\s*["']?\[\[([^\]|]+)(?:\|[^\]]+)?\]\]["']?\s*$/m.exec(frontmatter)?.[1];
+  return /^shorthand-transcript:\s*["']?\[\[([^\]|]+)(?:\|[^\]]+)?\]\]["']?\s*$/m.exec(frontmatter)?.[1];
 }
 
 export type NoteScaffoldOptions = Readonly<{
@@ -238,10 +238,10 @@ export type NoteScaffoldOptions = Readonly<{
 
 export function buildNoteScaffold(options: NoteScaffoldOptions): Result<string, SectionError> {
   if (containsMarker(options.title)) {
-    return sectionFailure("marker-in-heading", -1, "The note title contains a Handy marker token.");
+    return sectionFailure("marker-in-heading", -1, "The note title contains a Shorthand marker token.");
   }
   if (containsMarker(options.transcriptWikilink)) {
-    return sectionFailure("marker-in-markdown", -1, "The transcript link contains a Handy marker token.");
+    return sectionFailure("marker-in-markdown", -1, "The transcript link contains a Shorthand marker token.");
   }
   const lineEnding = options.lineEnding ?? "\n";
   const rendered = renderSections(options.sections, lineEnding);
@@ -253,8 +253,8 @@ export function buildNoteScaffold(options: NoteScaffoldOptions): Result<string, 
     ok: true,
     value: [
       "---",
-      `handy-capture: ${options.captureTimestamp}`,
-      `handy-transcript: "[[${yamlLink}]]"`,
+      `shorthand-capture: ${options.captureTimestamp}`,
+      `shorthand-transcript: "[[${yamlLink}]]"`,
       "---",
       `# ${safeTitle}`,
       "",

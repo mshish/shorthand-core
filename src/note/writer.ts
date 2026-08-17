@@ -257,14 +257,14 @@ export async function ensureNoteScaffold(
 
 function spliceTranscriptFrontmatter(content: string, wikilink: string): string {
   const lineEnding = detectLineEnding(content);
-  const value = `handy-transcript: "[[${wikilink.replaceAll("\\", "/").replace(/\.md$/i, "").replaceAll('"', '\\"')}]]"`;
+  const value = `shorthand-transcript: "[[${wikilink.replaceAll("\\", "/").replace(/\.md$/i, "").replaceAll('"', '\\"')}]]"`;
   const opening = /^---(?:\r\n|\n)/.exec(content);
   if (opening === null) return `---${lineEnding}${value}${lineEnding}---${lineEnding}${content}`;
   const frontmatterStart = opening[0].length;
   const closing = /^---[ \t]*\r?$/m.exec(content.slice(frontmatterStart));
   if (closing === null) return `---${lineEnding}${value}${lineEnding}---${lineEnding}${content}`;
   const closingOffset = frontmatterStart + closing.index;
-  const key = /^handy-transcript:[^\r\n]*$/m.exec(content.slice(frontmatterStart, closingOffset));
+  const key = /^shorthand-transcript:[^\r\n]*$/m.exec(content.slice(frontmatterStart, closingOffset));
   if (key !== null) {
     const keyOffset = frontmatterStart + key.index;
     return content.slice(0, keyOffset) + value + content.slice(keyOffset + key[0].length);

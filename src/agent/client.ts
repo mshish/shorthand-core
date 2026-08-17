@@ -176,7 +176,7 @@ export class ExecutableAgentStub implements AgentClient {
 }
 
 export function detectClaudeExecutable(override?: string, environment: NodeJS.ProcessEnv = process.env): string | undefined {
-  const configured = override ?? environment.HANDY_NOTES_CLAUDE_EXE;
+  const configured = override ?? environment.SHORTHAND_CLAUDE_EXE;
   if (configured !== undefined && configured.length > 0) return resolve(configured);
   if (process.platform === "win32") {
     const candidate = join(environment.USERPROFILE ?? homedir(), ".local", "bin", "claude.exe");

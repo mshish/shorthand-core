@@ -1,9 +1,9 @@
-# Obsidian AI note taker on Handy's `--follow-stream`
+# Obsidian AI note taker on Shorthand's `--follow-stream`
 
 ## Context
 
-This fork of Handy transcribes microphone **and** Windows system audio as two speaker-labelled lanes
-and exposes the live transcript over `handy --follow-stream` (NDJSON on stdout, backed by a per-user
+This fork of Shorthand transcribes microphone **and** Windows system audio as two speaker-labelled lanes
+and exposes the live transcript over `shorthand --follow-stream` (NDJSON on stdout, backed by a per-user
 local socket — `FOLLOW_STREAM.md`). That CLI has no consumer yet, so the feature is unproven.
 
 The first consumer is an Obsidian plugin modelled on Granola: you type rough notes during a call and
@@ -13,7 +13,7 @@ back and fix structure afterwards. The AI work runs through the **Claude Agent S
 what a plain summarizer cannot: on demand, the agent reads the rest of the vault (prior meetings,
 people, projects) and wires the new note into it.
 
-Deliverable at `D:/tools/Handy/obsidian-shorthand-notes/`, kept **out of git**, to be moved to its own
+Deliverable at `D:/tools/Shorthand/obsidian-shorthand-notes/`, kept **out of git**, to be moved to its own
 repo later.
 
 **This plan has been through one Codex review** (`gpt-5.6-sol`); its blockers are folded in below and
@@ -42,7 +42,7 @@ there is no Obsidian-side write API, MCP server, or plugin install standing betw
 the note.
 
 ```
-handy.exe --follow-stream json     (child process, stdout NDJSON)
+shorthand.exe --follow-stream json     (child process, stdout NDJSON)
         |
         v
   StreamClient ──► TranscriptStore ──► sidecar note   (fs write, append)
@@ -55,28 +55,28 @@ handy.exe --follow-stream json     (child process, stdout NDJSON)
   (stateless passes,   (NO resume)              |  (zod-validated, 1 retry)
    two tiers)                                   v
                                         BlockWriter ──► meeting note on disk, only
-                                                        inside the handy:ai markers
+                                                        inside the shorthand:ai markers
 ```
 
 ### Ownership invariant
 
 The meeting note is split by HTML-comment markers. The plugin only ever replaces text strictly
-between `<!-- handy:ai:start -->` and `<!-- handy:ai:end -->`.
+between `<!-- shorthand:ai:start -->` and `<!-- shorthand:ai:end -->`.
 
 ```markdown
 ---
-handy-capture: 2026-08-15T14:03:20-07:00
-handy-transcript: "[[Meetings/Transcripts/2026-08-15 1403]]"
+shorthand-capture: 2026-08-15T14:03:20-07:00
+shorthand-transcript: "[[Meetings/Transcripts/2026-08-15 1403]]"
 ---
 # 2026-08-15 Standup
 
-<!-- handy:notes -->
+<!-- shorthand:notes -->
 - rough bullets the user types live        <- user-owned, never written by us
 
-<!-- handy:ai:start -->
+<!-- shorthand:ai:start -->
 ## Summary
 ## Decisions
-<!-- handy:ai:end -->
+<!-- shorthand:ai:end -->
 ```
 
 The agent has no write tool. `options.tools` never contains `Write`/`Edit`/`Bash`, which removes them
@@ -142,7 +142,7 @@ Two tiers, because vault search on every tick is disproportionate:
 | Tier | When | `tools` | Cost shape |
 |---|---|---|---|
 | **Tick** | live: ≥600 new chars **and** ≥60 s since last pass ended **and** none in flight | `[]` — no vault access | small, frequent |
-| **Link** | on stop, and the `Handy: enhance now` command | `["Read","Glob","Grep"]` | occasional |
+| **Link** | on stop, and the `Shorthand: enhance now` command | `["Read","Glob","Grep"]` | occasional |
 
 **Hard budget per meeting** (pass count and USD, from the result message's cost field, both
 configurable): on exhaustion the runner stops enhancing, keeps capturing, and says so in the status
@@ -172,8 +172,8 @@ Rules the parser must implement, each with a test:
 
 - **Framing** — decode with a streaming UTF-8 decoder (`StringDecoder`), not manual buffer slicing:
   multibyte characters split across chunks, several lines per chunk, unterminated tail at exit.
-- **Keying** — `(connectionGeneration, session, speaker)`. Handy's session numbers are process-local
-  and reused after a Handy restart; the generation counter, bumped on every reconnect, keeps keys
+- **Keying** — `(connectionGeneration, session, speaker)`. Shorthand's session numbers are process-local
+  and reused after a Shorthand restart; the generation counter, bumped on every reconnect, keeps keys
   unique.
 - **Resync** — if a `partial.committed` does not extend the stored prefix (legal: snapshots coalesce),
   replace the stored prefix and rewrite that speaker's tail in the sidecar rather than appending.
@@ -191,7 +191,7 @@ Rules the parser must implement, each with a test:
   new connection generation. Give up after N attempts and surface it.
 - **Forward compat** — ignore unknown fields and unknown `t` values; check `hello.protocol`.
 
-Exit codes are used only for start-up diagnosis: `2` = Handy not running **or** "Follow Live
+Exit codes are used only for start-up diagnosis: `2` = Shorthand not running **or** "Follow Live
 Transcript Output" disabled in Advanced settings; `1` = other, with stderr surfaced verbatim.
 
 ### Other failure modes covered
@@ -208,13 +208,13 @@ Codex (`gpt-5.6-sol`) implements each phase; a Claude subagent reviews each incr
 begins, and I fold review findings back to Codex.
 
 Because the core is headless, every phase below is verified by me running it — no human-in-Obsidian
-step until the very end. `handy.exe` exists at `src-tauri/target/release/` and
+step until the very end. `shorthand.exe` exists at `src-tauri/target/release/` and
 `follow_stream_enabled` is already `true` in the settings store, so the real stream is drivable.
 
 **Phase 1 — capture core, zero AI.** `StreamClient` (spawn, framing, lifecycle, reconnect, exit-code
 mapping), `TranscriptStore` (keying, resync, `final` reconciliation, deltas), sidecar writer, and a
 `shorthand-notes capture` CLI. Full unit suite plus a **fake-stream fixture script** that replays the
-documented NDJSON so the pipeline is testable without Handy running at all.
+documented NDJSON so the pipeline is testable without Shorthand running at all.
 
 **Phase 2 — block writer.** Marker parsing, block regeneration from a section array, read-splice-
 write with atomic rename, hash concurrency check, fail-closed marker rules. Pure functions, heavily
@@ -224,13 +224,13 @@ unit-tested; verified against a scratch vault directory.
 budgets, timeouts, the fenced-JSON output contract with zod validation and one retry. Verified by
 running the real Agent SDK against a scratch note.
 
-**Phase 4 — end-to-end + Obsidian plugin.** Full run against real `handy.exe` in a scratch vault.
+**Phase 4 — end-to-end + Obsidian plugin.** Full run against real `shorthand.exe` in a scratch vault.
 Then the thin plugin: start/stop commands, status bar, settings — wrapping the same core. Install is
 a folder copy; the README covers it.
 
 ## Critical files
 
-New, under `D:/tools/Handy/obsidian-shorthand-notes/`:
+New, under `D:/tools/Shorthand/obsidian-shorthand-notes/`:
 
 | Path | Role |
 |---|---|
@@ -246,7 +246,7 @@ New, under `D:/tools/Handy/obsidian-shorthand-notes/`:
 | `test/fixtures/fake-stream.mjs` | replays documented NDJSON; makes the pipeline testable offline |
 | `plugin/` | Phase 4 only: thin Obsidian wrapper (`manifest.json`, `main.ts`, esbuild) |
 
-Handy files are **read-only references**, not modified: `FOLLOW_STREAM.md`,
+Shorthand files are **read-only references**, not modified: `FOLLOW_STREAM.md`,
 `src-tauri/src/follow_stream/{client,protocol}.rs`.
 
 ## Repo hygiene
@@ -259,16 +259,16 @@ and would itself be a commit. No commits in this repo for this work.
 - **Unit** (bun test): marker functions (idempotence, never writes outside markers, fail-closed on
   zero/duplicate/nested/inverted markers, marker tokens in agent content rejected); framing
   (multibyte split across chunks, multi-line chunks, unterminated tail); keying across a simulated
-  Handy restart; resync on a non-extending snapshot; `final` replacing committed text in both lane
+  Shorthand restart; resync on a non-extending snapshot; `final` replacing committed text in both lane
   shapes; watermark advance-at-start; hash-mismatch → discard and re-queue; budget exhaustion.
 - **Contract**: the exact JSONL samples in `FOLLOW_STREAM.md` (single- and dual-speaker) through the
   parser, asserting the resulting transcript.
-- **Manual end-to-end** — the acceptance test: Handy running with follow-stream enabled → `Handy:
+- **Manual end-to-end** — the acceptance test: Shorthand running with follow-stream enabled → `Shorthand:
   start capture` on a new note → play a video (system lane) while speaking (mic lane) → type bullets
   in the notes region *while a pass is in flight* → confirm the AI block fills, **restructures**
   mid-meeting, and that nothing outside the block is ever modified and in-block typing is never
   clobbered → stop → final link pass adds vault links → child process exits, no orphan.
-- **Failure paths, deliberately exercised**: Handy not running and setting disabled (both exit 2,
-  distinct actionable message); `claude.exe` missing (capture still works, AI disabled); Handy killed
+- **Failure paths, deliberately exercised**: Shorthand not running and setting disabled (both exit 2,
+  distinct actionable message); `claude.exe` missing (capture still works, AI disabled); Shorthand killed
   mid-capture (gap marker, reconnect); 9th follower (`follower_limit` surfaced from the stream, not
   the exit code); budget exhausted mid-meeting.

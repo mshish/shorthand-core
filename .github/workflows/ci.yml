@@ -1,6 +1,6 @@
 # Runs the same gates used during development: typecheck, unit tests, the CLI bundle, and the
 # headless end-to-end smoke. Everything here is offline — the smoke script uses the fake
-# transcript stream and the agent stub, so CI never needs Handy, a vault, or API credentials.
+# transcript stream and the agent stub, so CI never needs Shorthand, a vault, or API credentials.
 name: CI
 
 on:

@@ -167,7 +167,7 @@ describe("process lifecycle", () => {
   test("treats spawn ENOENT as fatal and reports the configured binary path", async () => {
     const child = fakeChild();
     const client = new StreamClient({
-      command: "C:/missing/handy.exe",
+      command: "C:/missing/shorthand.exe",
       spawnFn: () => child as unknown as ChildProcess,
     });
     const surfaced = new Promise<{ command: string; fatal: boolean }>((resolve) => client.once("processError", resolve));
@@ -176,7 +176,7 @@ describe("process lifecycle", () => {
     client.start();
     const missing = Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
     child.emit("error", missing);
-    expect(await surfaced).toMatchObject({ command: "C:/missing/handy.exe", fatal: true });
+    expect(await surfaced).toMatchObject({ command: "C:/missing/shorthand.exe", fatal: true });
     child.emit("close", null);
     expect(reconnects).toHaveLength(0);
     expect(client.active).toBe(false);

@@ -371,7 +371,7 @@ describe("EnhanceRunner budgets and failure isolation", () => {
   });
 
   test("marker-bearing model output is rejected before the writer is called", async () => {
-    const invalid = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"<!-- handy:ai:end -->\"}]\n```";
+    const invalid = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"<!-- shorthand:ai:end -->\"}]\n```";
     const agent = new FakeAgent([
       Promise.resolve({ finalAssistantMessage: invalid, costUsd: 0 }),
       Promise.resolve({ finalAssistantMessage: invalid, costUsd: 0 }),

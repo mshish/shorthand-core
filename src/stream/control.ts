@@ -4,15 +4,15 @@ import type { Readable } from "node:stream";
 import type { SpawnFn } from "./client.js";
 
 /**
- * Send control signals to a running Handy instance.
+ * Send control signals to a running Shorthand instance.
  *
- * Handy exposes control only as CLI flags delivered through
- * `tauri_plugin_single_instance`: a second `handy` process detects the running app,
+ * Shorthand exposes control only as CLI flags delivered through
+ * `tauri_plugin_single_instance`: a second `shorthand` process detects the running app,
  * forwards its args, and exits. There is no `--start`/`--stop` — the transcription
  * flags are toggles.
  *
  * Control must be its own short-lived spawn, never an extra argument on the
- * follower: Handy's parser declares `--follow-stream` as
+ * follower: Shorthand's parser declares `--follow-stream` as
  * `conflicts_with_all = ["toggle_transcription", "toggle_post_process", "cancel"]`,
  * so a combined invocation fails to parse.
  */
@@ -23,7 +23,7 @@ export type ControlResult =
   | { status: "not-running" }
   | { status: "error"; message: string };
 
-export type HandyControlOptions = {
+export type ShorthandControlOptions = {
   command: string;
   spawnFn?: SpawnFn;
   timeoutMs?: number;
@@ -41,12 +41,12 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 /** A control child always has piped stderr; `#spawn()` enforces it. */
 type ControlChild = ChildProcess & { stderr: Readable };
 
-export class HandyControl {
+export class ShorthandControl {
   readonly #command: string;
   readonly #spawnFn: SpawnFn;
   readonly #timeoutMs: number;
 
-  constructor(options: HandyControlOptions) {
+  constructor(options: ShorthandControlOptions) {
     this.#command = options.command;
     this.#spawnFn = options.spawnFn ?? spawn;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -56,14 +56,14 @@ export class HandyControl {
    * Resolve on whichever comes first: the child exiting (forwarded, or failed), or
    * the timeout.
    *
-   * The timeout is the only way to detect "Handy is not running". When no instance is
+   * The timeout is the only way to detect "Shorthand is not running". When no instance is
    * running, this process becomes the primary Tauri instance and launches the whole
-   * Handy app instead of forwarding the flag — the flag is only read inside the
+   * Shorthand app instead of forwarding the flag — the flag is only read inside the
    * single-instance callback, never on the primary startup path — and that process
    * then never exits.
    *
    * That child is deliberately never killed: on the `not-running` path the spawn *is*
-   * the Handy app starting, so killing it would shut down the app the user was trying
+   * the Shorthand app starting, so killing it would shut down the app the user was trying
    * to reach. It therefore outlives the call, which is why `#spawn()` goes out of its
    * way to make an abandoned child unable to hold the host alive, and why settling
    * detaches this call's stderr bookkeeping instead of leaving it accumulating for the
@@ -98,7 +98,7 @@ export class HandyControl {
         child.stderr.off("data", collect);
         stderr = "";
         // Keep draining and discarding rather than destroying: an abandoned child is
-        // Handy itself, still logging to this pipe. Closing the read end would break
+        // Shorthand itself, still logging to this pipe. Closing the read end would break
         // its stderr writes; leaving it paused would eventually block them on a full
         // OS pipe buffer.
         child.stderr.resume();
@@ -149,7 +149,7 @@ export class HandyControl {
    * itself. Measured against a never-exiting child: with `child.unref()` alone the host
    * was still running 5s after `send()` settled; adding `stderr.unref()` let it exit
    * ~2ms later. stderr stays piped rather than "ignore" because it is what makes a
-   * non-zero exit report Handy's own error text instead of a bare exit code.
+   * non-zero exit report Shorthand's own error text instead of a bare exit code.
    */
   #spawn(signal: ControlSignal): ControlChild {
     const child = this.#spawnFn(this.#command, [`--${signal}`], {
@@ -178,7 +178,7 @@ function unrefStream(stream: Readable): void {
 function describe(error: unknown, command: string): string {
   if (error instanceof Error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return `Handy binary not found at ${command}`;
+    if (code === "ENOENT") return `Shorthand binary not found at ${command}`;
     return error.message;
   }
   return String(error);

@@ -157,8 +157,8 @@ describe("section rendering", () => {
     });
     expect(scaffold.ok).toBe(true);
     if (!scaffold.ok) return;
-    expect(scaffold.value).toStartWith("---\nhandy-capture: 2026-08-15T14:03:20-07:00\nhandy-transcript: \"[[Meetings/Transcripts/standup]]\"");
-    expect(scaffold.value).toContain("# Standup\n\n<!-- handy:notes -->");
+    expect(scaffold.value).toStartWith("---\nshorthand-capture: 2026-08-15T14:03:20-07:00\nshorthand-transcript: \"[[Meetings/Transcripts/standup]]\"");
+    expect(scaffold.value).toContain("# Standup\n\n<!-- shorthand:notes -->");
     expect(scaffold.value).toContain(`${AI_BLOCK_START}\n## Summary`);
     expect(locateAiBlock(scaffold.value).ok).toBe(true);
   });
@@ -169,7 +169,7 @@ describe("section rendering", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.slice(0, original.length)).toBe(original);
-    expect(result.value).toContain("\r\n\r\n<!-- handy:notes -->\r\n\r\n<!-- handy:ai:start -->\r\n## Summary\r\n<!-- handy:ai:end -->");
+    expect(result.value).toContain("\r\n\r\n<!-- shorthand:notes -->\r\n\r\n<!-- shorthand:ai:start -->\r\n## Summary\r\n<!-- shorthand:ai:end -->");
   });
 
   test("refuses to repair malformed marker scaffolds", () => {

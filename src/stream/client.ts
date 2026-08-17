@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 export const SUPPORTED_PROTOCOL = 1;
 export const NOT_RUNNING_MESSAGE =
-  "Handy is not running, or live transcript streaming is disabled in Advanced settings";
+  "Shorthand is not running, or live transcript streaming is disabled in Advanced settings";
 
 type Speaker = "me" | "them";
 type Stamp = { emitted_at?: string; session_elapsed_ms?: number; unstamped?: true };
@@ -65,7 +65,7 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
     if (protocol === undefined) throw new ProtocolError("hello record is missing a numeric protocol");
     if (protocol !== SUPPORTED_PROTOCOL) {
       throw new ProtocolError(
-        `Unsupported Handy follow-stream protocol: expected ${SUPPORTED_PROTOCOL}, received ${protocol}. Update Shorthand or use a compatible Handy build.`,
+        `Unsupported Shorthand follow-stream protocol: expected ${SUPPORTED_PROTOCOL}, received ${protocol}. Update Shorthand or use a compatible Shorthand build.`,
         SUPPORTED_PROTOCOL,
         protocol,
       );

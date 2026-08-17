@@ -2,9 +2,9 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 
-const statePath = process.env.HANDY_FAKE_STATE;
+const statePath = process.env.SHORTHAND_FAKE_STATE;
 if (!statePath) {
-  process.stderr.write("HANDY_FAKE_STATE is required\n");
+  process.stderr.write("SHORTHAND_FAKE_STATE is required\n");
   process.exitCode = 1;
 } else {
   let generation = 0;

@@ -14,7 +14,7 @@ import {
   ClaudeAgentClient,
   DEFAULT_CONFIG,
   detectClaudeExecutable,
-  detectHandyExecutable,
+  detectShorthandExecutable,
   EnhanceRunner,
   SidecarWriter,
   StreamClient,
@@ -36,7 +36,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--handy <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
   );
   return 2;
 }
@@ -47,7 +47,7 @@ function timestampName(date: Date): string {
 }
 
 const KNOWN_FLAGS = new Set([
-  "--note", "--vault", "--sidecar", "--handy", "--fake-stream", "--no-reconnect",
+  "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude",
 ]);
@@ -122,7 +122,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   if (sidecarArg !== undefined && linkedSidecarFile !== undefined) {
     const linkedPath = resolveFrom(vault, linkedSidecarFile);
     if (!pathsEqual(linkedPath, sidecarPath)) {
-      console.error(`--sidecar does not match the meeting note's handy-transcript link (${linkedSidecar}). The meeting note is read-only during capture.`);
+      console.error(`--sidecar does not match the meeting note's shorthand-transcript link (${linkedSidecar}). The meeting note is read-only during capture.`);
       return 1;
     }
   }
@@ -150,7 +150,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   const suppliedFixture = fake ? argumentValue(args, "--fake-stream", true) : undefined;
   const bundledFixture = resolve(dirname(fileURLToPath(import.meta.url)), "../test/fixtures/fake-stream.mjs");
   const fixture = suppliedFixture === undefined ? bundledFixture : resolveFrom(process.cwd(), suppliedFixture);
-  const handyBinary = detectHandyExecutable(argumentValue(args, "--handy"), environment);
+  const handyBinary = detectShorthandExecutable(argumentValue(args, "--shorthand"), environment);
   const client = new StreamClient({
     command: fake ? process.execPath : handyBinary,
     args: fake ? [fixture] : DEFAULT_CONFIG.followStreamArgs,
@@ -187,7 +187,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     }
   });
   client.on("connectionError", ({ record }) => {
-    console.error(`Handy connection error ${record.code}: ${record.message}`);
+    console.error(`Shorthand connection error ${record.code}: ${record.message}`);
     exitCode = 1;
   });
   client.on("parseError", ({ error }) => console.error(`Ignored malformed stream record: ${error.message}`));
@@ -196,7 +196,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     exitCode = 1;
   });
   client.on("processError", ({ error, command: configuredCommand }) => {
-    console.error(`Failed to start Handy follow-stream binary "${configuredCommand}": ${error.message}`);
+    console.error(`Failed to start Shorthand follow-stream binary "${configuredCommand}": ${error.message}`);
     exitCode = 1;
   });
   client.on("disconnect", ({ generation, diagnosis }) => {

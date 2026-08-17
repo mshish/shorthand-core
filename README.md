@@ -1,6 +1,6 @@
 # shorthand-core
 
-The headless engine behind Shorthand: it captures [Handy](https://github.com/cjpais/Handy)'s
+The headless engine behind Shorthand: it captures [Shorthand](https://github.com/cjpais/Shorthand)'s
 live microphone and system-audio transcript into a linked sidecar note, and runs stateless Claude
 Agent SDK passes that use the new transcript plus your own notes to maintain a structured summary
 in the meeting note. Sections may be added, rewritten, reordered, or removed as the meeting
@@ -56,8 +56,8 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
 
 ## Prerequisites
 
-- Handy must be running with **Follow Live Transcript Output** enabled under **Advanced
-  settings**. If Handy is stopped or that setting is disabled, `--follow-stream` exits with code 2
+- Shorthand must be running with **Follow Live Transcript Output** enabled under **Advanced
+  settings**. If Shorthand is stopped or that setting is disabled, `--follow-stream` exits with code 2
   and core reports both remedies.
 - The `claude` CLI must be installed and logged in. On Windows the standard
   `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location can be passed with
@@ -83,7 +83,7 @@ node dist/shorthand-notes.mjs init-note --vault "C:\path\to\vault" --note "Meeti
 Capture into the linked sidecar, with live enhancement enabled:
 
 ```sh
-node dist/shorthand-notes.mjs capture --vault "C:\path\to\vault" --note "Meetings/Standup.md" --enhance --handy "C:\path\to\handy.exe" --claude "C:\path\to\claude.exe"
+node dist/shorthand-notes.mjs capture --vault "C:\path\to\vault" --note "Meetings/Standup.md" --enhance --shorthand "C:\path\to\shorthand.exe" --claude "C:\path\to\claude.exe"
 ```
 
 Run an on-demand link-tier pass against an existing transcript:
@@ -107,13 +107,13 @@ directory alongside the build.
 Core owns only the bytes strictly between one well-ordered marker pair:
 
 ```markdown
-<!-- handy:notes -->
+<!-- shorthand:notes -->
 - Your rough notes remain user-owned.
 
-<!-- handy:ai:start -->
+<!-- shorthand:ai:start -->
 ## Summary
 AI-maintained sections live here.
-<!-- handy:ai:end -->
+<!-- shorthand:ai:end -->
 ```
 
 Every AI update re-reads the file, verifies the current block hash, splices only the marker body,
@@ -129,12 +129,12 @@ file writer.
   discarded.
 - Under Claude subscription authentication, `total_cost_usd` is commonly `0`. In that case the
   configured USD budget is inert, so the pass-count budget is the real hard cap.
-- A stream disconnect cannot replay missed Handy events. Reconnects add a visible transcript-gap
+- A stream disconnect cannot replay missed Shorthand events. Reconnects add a visible transcript-gap
   warning to the sidecar.
 
 ## Offline verification
 
-The unit suite and smoke test use local fixtures only; they do not require Handy, Claude,
+The unit suite and smoke test use local fixtures only; they do not require Shorthand, Claude,
 Obsidian, or network access:
 
 ```sh

@@ -75,7 +75,7 @@ describe("SidecarWriter", () => {
     const directory = await mkdtemp(join(tmpdir(), ".sidecar-resume-test-"));
     scratchDirectories.push(directory);
     const path = join(directory, "transcript.md");
-    const existing = "# Handy Transcript\n\n## Earlier capture\n\nNever lose this.\n";
+    const existing = "# Shorthand Transcript\n\n## Earlier capture\n\nNever lose this.\n";
     await writeFile(path, existing, "utf8");
     const writer = new SidecarWriter(path, {
       flushIntervalMs: 10_000,
@@ -183,7 +183,7 @@ describe("SidecarWriter", () => {
       maxReconnectAttempts: 2,
       spawnFn: (command, args, options) => spawn(command, args, {
         ...options,
-        env: { ...process.env, HANDY_FAKE_STATE: statePath },
+        env: { ...process.env, SHORTHAND_FAKE_STATE: statePath },
       }),
     });
     client.on("event", ({ generation, record }) => {

@@ -1,10 +1,10 @@
 # shorthand-core
 
 The headless engine behind Shorthand: it captures [Shorthand](https://github.com/cjpais/Shorthand)'s
-live microphone and system-audio transcript into a linked sidecar note, and runs stateless Claude
-Agent SDK passes that use the new transcript plus your own notes to maintain a structured summary
-in the meeting note. Sections may be added, rewritten, reordered, or removed as the meeting
-develops.
+live microphone and system-audio transcript into a linked sidecar note, and runs Claude Agent SDK
+passes — resuming one session per capture — that use the new transcript plus your own notes to
+maintain a structured summary in the meeting note. Sections may be added, rewritten, reordered, or
+removed as the meeting develops.
 
 Core owns capture, transcript reconciliation, enhancement, and every write. It has **no Obsidian
 dependency**: writes go straight to files and Obsidian picks up external changes itself. Two

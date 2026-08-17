@@ -73,7 +73,7 @@ shorthand.exe --follow-stream json     (child process, stdout NDJSON)
         | trigger policy
         v
   EnhanceRunner ──► Agent SDK query()  ──► fenced-JSON section array
-  (stateless passes,   (NO resume)              |  (zod-validated, 1 retry)
+  (resumed session,   (resume, no fork)          |  (zod-validated, 1 retry)
    two tiers)                                   v
                                           NoteSink.write()
                                                  |
@@ -127,10 +127,35 @@ Offsets are never carried across an `await`.
 **Optimistic concurrency.** The block hash observed at pass start is re-checked at write
 time; a mismatch discards the agent result and re-queues rather than overwriting.
 
-**Passes are stateless.** No `resume`, no session reuse. The note *is* the state, so per-pass
-input stays bounded however long the meeting runs. An earlier design resumed one session for
-the whole meeting; that grows context at least linearly while re-sending snapshots and
-accumulating tool results, and prompt caching lowers unit price, not context size.
+**Passes resume one Agent SDK session per capture.** Every pass after the first sends
+`resume: <sessionId>` — never `forkSession`, so there is no session branching — which lets the
+model carry its own reasoning forward instead of re-deriving it from a bare snapshot on every
+tick. This does **not** make the SDK session the source of truth: the full current section
+array and only the transcript delta since the last pass are still resent on every pass
+regardless of what the session remembers, and `ENHANCEMENT_SYSTEM_PROMPT` explicitly tells the
+model to trust that resent JSON over its own memory when the two disagree — the note stays
+authoritative, the session is memory, not state.
+
+This reverses an earlier documented decision, not an accidental regression of one: see
+`docs/original-plan.md`'s "Enhancement passes: stateless and bounded (Codex blocker 3)" for the
+original rejection, which is left in place rather than deleted. That objection — a resumed
+session grows context at least linearly across passes while re-sending snapshots and
+accumulating tool results, and prompt caching lowers unit price, not context size — is real and
+is **not** solved by this change. What changed is that a capture is now bounded by the
+wall-clock window (`maxDurationMs`, 4h by default — see "Known limitations" below), so "grows
+at least linearly" now has a ceiling instead of none: worst case is roughly 4h / 90–576
+accumulated passes of session history for one capture, not the previously-unbounded growth the
+original rejection was guarding against. Accepted as a deliberately unmitigated cost: the
+enhancement session's own context can still grow large over a very long capture and may trigger
+the SDK's own auto-compaction, a path this branch's test suite does not exercise. A live-capture
+check is worth doing before or shortly after this ships, but it is not a blocking condition.
+
+One more consequence worth stating rather than leaving implicit: once the wall-clock window
+expires, the final `enhanceNow("link")` pass that would otherwise run on capture-stop is also
+skipped, not just live ticks — so a capture that runs past the window loses its closing summary
+pass, the single bounded call least likely to itself be a runaway. This is consistent with
+"capture continues without enhancement" (see "Known limitations" below), and the window is
+generous (4h by default), but it is a real cost of the expiry check being unconditional.
 
 **Sections are replaced wholesale**, never patched. `[{heading, markdown}]` is the complete
 desired state, which is what makes add/rename/reorder/drop fall out of one code path — and

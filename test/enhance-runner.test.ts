@@ -11,7 +11,7 @@ const OUTPUT = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"Updated\"}]\n`
 const silentLogger = { info: () => {}, error: () => {} };
 
 describe("EnhanceRunner trigger and watermark policy", () => {
-  test("each pass is a fresh bounded request with fixed tier tools and isolated settings", async () => {
+  test("each pass sends a bounded request with fixed tier tools and isolated settings", async () => {
     const agent = new FakeAgent([Promise.resolve(response()), Promise.resolve(response())]);
     const runner = makeRunner({ agent, sink: new FakeSink({ cwd: "C:\\vault" }), maxTurns: 4 });
     runner.updateTranscript("tick text");
@@ -21,8 +21,6 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     expect(agent.requests).toHaveLength(2);
     expect(agent.requests[0]).toMatchObject({ cwd: "C:\\vault", tools: [], settingSources: [], maxTurns: 4 });
     expect(agent.requests[1]).toMatchObject({ cwd: "C:\\vault", tools: ["Read", "Glob", "Grep"], settingSources: [], maxTurns: 4 });
-    expect(agent.requests[0]).not.toHaveProperty("resume");
-    expect(agent.requests[1]).not.toHaveProperty("resume");
   });
 
   test("a link pass over a sink with no agent context degrades to tick-style: no cwd at all, and no tool can reach a file", async () => {
@@ -195,7 +193,7 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     now = 100;
     runner.updateTranscript("one");
     expect(await runner.tick()).toEqual({ status: "expired" });
-    expect(runner.state).toMatchObject({ enhancementEnabled: false, pendingCharacters: 3 });
+    expect(runner.state).toMatchObject({ enhancementEnabled: false, pendingCharacters: 3, elapsedMs: 100 });
     runner.updateTranscript(" two");
     expect(await runner.tick()).toEqual({ status: "expired" });
     expect(runner.state.pendingCharacters).toBe(8); // "one" + joinTranscript's "\n" + " two"

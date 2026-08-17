@@ -72,7 +72,11 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
     ...(request.pathToClaudeCodeExecutable === undefined
       ? {}
       : { pathToClaudeCodeExecutable: request.pathToClaudeCodeExecutable }),
-    ...(request.sessionId === undefined ? {} : { resume: request.sessionId }),
+    // A caller could in principle pass sessionId: "" (see ExecutableAgentStub's fallback
+    // below, though nothing wires that into a real query today) — only a non-empty
+    // string is a real, resumable session id, and resume: "" would be an empty
+    // --resume flag to the CLI.
+    ...(typeof request.sessionId === "string" && request.sessionId.length > 0 ? { resume: request.sessionId } : {}),
   };
 }
 

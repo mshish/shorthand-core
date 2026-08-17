@@ -218,7 +218,7 @@ export class EnhanceRunner {
       ...(this.#options.pathToClaudeCodeExecutable === undefined
         ? {}
         : { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),
-      ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
+      ...(isResumableSessionId(this.#sessionId) ? { sessionId: this.#sessionId } : {}),
       signal: abortController.signal,
     } as const;
 
@@ -232,7 +232,7 @@ export class EnhanceRunner {
       return { status: "timed-out" };
     }
     this.#passCount += result.attempts;
-    this.#sessionId = result.sessionId ?? this.#sessionId;
+    if (isResumableSessionId(result.sessionId)) this.#sessionId = result.sessionId;
     this.#reportNewlyExpired();
     if (result.status === "skipped") {
       this.#requeue(input);
@@ -327,7 +327,10 @@ export class EnhanceRunner {
   #reportExpiry(): Extract<PassOutcome, { status: "expired" }> {
     if (!this.#expiryReported) {
       this.#expiryReported = true;
-      this.#emit("expired", "Enhancement stopped after 4h; capture continues without enhancement.");
+      this.#emit(
+        "expired",
+        `Enhancement stopped after ${formatDurationLabel(this.#options.maxDurationMs)}; capture continues without enhancement.`,
+      );
     }
     return { status: "expired" };
   }
@@ -346,7 +349,11 @@ export class EnhanceRunner {
   #trackTimedOutResult(contractPromise: Promise<Awaited<ReturnType<typeof queryForSections>>>): void {
     void contractPromise.then((lateResult) => {
       this.#passCount += lateResult.attempts;
-      this.#sessionId = lateResult.sessionId ?? this.#sessionId;
+      // A later, successfully-completed pass may already have established a session id
+      // by the time this abandoned pass finally settles. Only adopt the late result's
+      // session id as a last-resort bootstrap value — never let it displace one a
+      // later pass already set.
+      if (this.#sessionId === undefined && isResumableSessionId(lateResult.sessionId)) this.#sessionId = lateResult.sessionId;
       this.#reportNewlyExpired();
       this.#scheduleTick();
     }).catch(() => {
@@ -452,4 +459,26 @@ function safeJson(value: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * `maxDurationMs` is overridable (`HANDY_NOTES_MAX_DURATION_MS`), so the expiry message
+ * must not hardcode "4h" — that would lie for anyone who overrides the window. Whole
+ * hours render as e.g. "4h"; anything else falls back to whole minutes.
+ */
+function formatDurationLabel(durationMs: number): string {
+  const totalMinutes = Math.round(durationMs / 60_000);
+  if (totalMinutes > 0 && totalMinutes % 60 === 0) return `${totalMinutes / 60}h`;
+  if (totalMinutes >= 60) return `${Math.floor(totalMinutes / 60)}h${totalMinutes % 60}m`;
+  return `${totalMinutes}m`;
+}
+
+/**
+ * A stub agent response that omits `sessionId` falls back to `""` (see
+ * `ExecutableAgentStub` in `client.ts`), which is a valid `string` but never a real,
+ * resumable session id. Treating it as one would poison `#sessionId` with `""` and
+ * eventually produce an empty `--resume` flag downstream.
+ */
+function isResumableSessionId(sessionId: string | undefined): sessionId is string {
+  return typeof sessionId === "string" && sessionId.length > 0;
 }

@@ -46,6 +46,9 @@ export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
 
 export { DEFAULT_EDITORIAL_GUIDANCE, ENHANCEMENT_SAFETY_PREAMBLE, MAX_GUIDANCE_CHARACTERS } from "./agent/contract.js";
 
+export { parseTemplateSections } from "./note/template.js";
+export type { TemplateSectionsResult } from "./note/template.js";
+
 export type {
   AgentClient,
   AgentQueryRequest,

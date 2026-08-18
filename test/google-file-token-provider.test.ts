@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileTokenProvider, mergeCredentials, readCredentials, writeCredentials } from "../src/google/file-token-provider.js";
+import { FileTokenProvider, defaultRefresher, mergeCredentials, readCredentials, writeCredentials } from "../src/google/file-token-provider.js";
 import type { GoogleCredentials } from "../src/google/file-token-provider.js";
 
 async function scratchPath(): Promise<string> {
@@ -104,5 +104,24 @@ describe("FileTokenProvider.getAccessToken", () => {
       refreshAccessToken: async () => { throw new Error("ENOTFOUND"); },
     } as never);
     expect(await provider.getAccessToken()).toEqual({ ok: false, error: { code: "transport", message: expect.any(String) } });
+  });
+});
+
+describe("defaultRefresher's client caching", () => {
+  test("constructs the underlying client once, not once per call", async () => {
+    let clientsCreated = 0;
+    const refresher = defaultRefresher("client-id", "client-secret", () => {
+      clientsCreated += 1;
+      let accessToken = "token-from-first-refresh";
+      return {
+        setCredentials: () => {},
+        getAccessToken: async () => ({ token: accessToken }),
+      };
+    });
+    const first = await refresher("refresh-token-1");
+    const second = await refresher("refresh-token-1");
+    expect(first).toEqual({ ok: true, token: "token-from-first-refresh" });
+    expect(second).toEqual({ ok: true, token: "token-from-first-refresh" });
+    expect(clientsCreated).toBe(1);
   });
 });

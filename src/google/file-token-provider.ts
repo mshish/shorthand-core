@@ -93,10 +93,30 @@ export class FileTokenProvider implements TokenProvider {
   }
 }
 
-function defaultRefresher(clientId: string, clientSecret: string): (refreshToken: string) => Promise<TokenResult> {
+type RefreshableClient = Pick<OAuth2Client, "setCredentials" | "getAccessToken">;
+
+/**
+ * Constructs the OAuth2Client once and reuses it across calls, rather than once per call.
+ *
+ * Verified against the installed google-auth-library source
+ * (node_modules/google-auth-library/build/src/auth/oauth2client.js): getAccessTokenAsync()
+ * only refreshes when `!this.credentials.access_token || this.isTokenExpiring()`, and
+ * isTokenExpiring() returns false when credentials.expiry_date is unset. So a client that
+ * lives across calls and already holds a cached access_token (no expiry_date) short-circuits
+ * the network round-trip on every call after the first; a client rebuilt per call never has
+ * anything cached to check, so it always refreshes over the network.
+ */
+export function defaultRefresher(
+  clientId: string,
+  clientSecret: string,
+  createClient: () => RefreshableClient = () => new OAuth2Client({ clientId, clientSecret }),
+): (refreshToken: string) => Promise<TokenResult> {
+  let client: RefreshableClient | undefined;
   return async (refreshToken: string): Promise<TokenResult> => {
-    const client = new OAuth2Client({ clientId, clientSecret });
-    client.setCredentials({ refresh_token: refreshToken });
+    if (client === undefined) {
+      client = createClient();
+      client.setCredentials({ refresh_token: refreshToken });
+    }
     const { token } = await client.getAccessToken();
     if (token === null || token === undefined) {
       return { ok: false, error: tokenError("transport", "Token refresh returned no access token") };

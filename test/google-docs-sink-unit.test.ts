@@ -91,6 +91,14 @@ describe("GoogleDocsNoteSink.read", () => {
     });
     expect(await sink.read()).toMatchObject({ ok: false, error: { code } });
   });
+
+  test("httpStatus 503 maps to busy with retryAfterMs carried through, not transport", async () => {
+    const sink = new GoogleDocsNoteSink({
+      documentId: "d1", tabId: "owned",
+      api: fakeApi({ getDocument: async () => ({ ok: false, error: { httpStatus: 503, retryAfterMs: 2000, message: "x" } }) }),
+    });
+    expect(await sink.read()).toMatchObject({ ok: false, error: { code: "busy", retryAfterMs: 2000 } });
+  });
 });
 
 describe("GoogleDocsNoteSink.write", () => {
@@ -175,6 +183,14 @@ describe("GoogleDocsNoteSink.write", () => {
       api: fakeApi({ batchUpdate: async () => ({ ok: false, error: { httpStatus: 429, retryAfterMs: 3000, message: "x" } }) }),
     });
     expect(await sink.write([{ heading: "Summary", markdown: "x" }], "rev1")).toEqual({ status: "busy", retryAfterMs: 3000 });
+  });
+
+  test("httpStatus 503 maps to busy with retryAfterMs carried through, not transport", async () => {
+    const sink = new GoogleDocsNoteSink({
+      documentId: "d1", tabId: "owned",
+      api: fakeApi({ batchUpdate: async () => ({ ok: false, error: { httpStatus: 503, retryAfterMs: 4000, message: "x" } }) }),
+    });
+    expect(await sink.write([{ heading: "Summary", markdown: "x" }], "rev1")).toEqual({ status: "busy", retryAfterMs: 4000 });
   });
 
   test("httpStatus 401/403 maps to a forbidden error status", async () => {

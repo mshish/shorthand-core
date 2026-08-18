@@ -59,7 +59,11 @@ export class GoogleDocsNoteSink implements NoteSink {
     // Comparing both sides through the same renderer means the lossy Docs
     // round-trip (parseTabToSections drops markdown syntax) never causes a
     // false "changed" — whatever fidelity is lost is lost identically on both
-    // operands.
+    // operands. This compares .text only, not .spans: a revision that changes
+    // only inline styling (e.g. adding **bold** around text that renders the
+    // same) is indistinguishable here and reports unchanged. That's the same
+    // lossy round-trip as Ruling 2 (parseTabToSections can't recover prior
+    // styling to compare against), not a separate gap.
     if (read.value.revisionId === expectedRevision && text === renderSections(parseTabToSections(tab)).text) {
       return { status: "unchanged", revision: read.value.revisionId };
     }
@@ -105,13 +109,19 @@ function findTab(tabs: readonly DocsTab[], tabId: string): DocsTab | undefined {
 function readErrorFor(error: DocsApiError): SinkError {
   if (error.httpStatus === 404) return sinkError("not-found", error.message);
   if (error.httpStatus === 401 || error.httpStatus === 403) return sinkError("forbidden", error.message);
-  if (error.httpStatus === 429) return busySinkError(error.message, error.retryAfterMs);
+  // 503 (backend overload) is transient exactly like 429 (docs/CONTRACT.md §4:
+  // "503 with Retry-After is busy, not transport") — core must re-queue it
+  // cheaply rather than counting it as a permanent failure.
+  if (error.httpStatus === 429 || error.httpStatus === 503) return busySinkError(error.message, error.retryAfterMs);
   return sinkError("transport", error.message);
 }
 
 function writeErrorFor(error: DocsApiError): SinkWriteResult {
   if (error.httpStatus === 409 || error.httpStatus === 412) return { status: "stale" };
-  if (error.httpStatus === 429) return { status: "busy", ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }) };
+  // See the matching comment in readErrorFor: 503 is treated identically to 429.
+  if (error.httpStatus === 429 || error.httpStatus === 503) {
+    return { status: "busy", ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }) };
+  }
   if (error.httpStatus === 404) return { status: "error", error: sinkError("not-found", error.message) };
   if (error.httpStatus === 401 || error.httpStatus === 403) return { status: "error", error: sinkError("forbidden", error.message) };
   return { status: "error", error: sinkError("transport", error.message) };

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { AI_BLOCK_END, type Section } from "../src/note/markers.js";
 import {
   buildSectionOutputSchema,
+  DEFAULT_EDITORIAL_GUIDANCE,
+  ENHANCEMENT_SAFETY_PREAMBLE,
   extractLastFencedJson,
   MAX_HEADING_CHARACTERS,
   MAX_MARKDOWN_CHARACTERS,
@@ -161,6 +163,37 @@ describe("structured output schema", () => {
   test("omits the dialect declaration, which is meaningless on a nested subschema", () => {
     const sections = node(buildSectionOutputSchema(), "properties", "sections");
     expect(sections).not.toHaveProperty("$schema");
+  });
+});
+
+describe("enhancement system prompt", () => {
+  test("carries no machine format contract any more", () => {
+    const prompt = `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${DEFAULT_EDITORIAL_GUIDANCE}`;
+    expect(prompt).not.toContain("```json");
+    expect(prompt.toLowerCase()).not.toContain("fenced");
+    expect(prompt.toLowerCase()).not.toContain("escape");
+    expect(prompt).not.toContain('{"heading"');
+  });
+
+  test("the fixed half keeps every guard neither the schema nor a refinement can do", () => {
+    expect(ENHANCEMENT_SAFETY_PREAMBLE).toContain("untrusted data");
+    expect(ENHANCEMENT_SAFETY_PREAMBLE).toContain("marker tokens");
+    expect(ENHANCEMENT_SAFETY_PREAMBLE).toContain("level-two headings");
+    expect(ENHANCEMENT_SAFETY_PREAMBLE).toContain("host application alone owns writes");
+    expect(ENHANCEMENT_SAFETY_PREAMBLE).toContain("authoritative");
+  });
+
+  test("the overridable half carries only editorial voice", () => {
+    expect(DEFAULT_EDITORIAL_GUIDANCE).toContain("AI-owned section block");
+    expect(DEFAULT_EDITORIAL_GUIDANCE).toContain("add, rename, reorder, or drop");
+    expect(DEFAULT_EDITORIAL_GUIDANCE).not.toContain("untrusted");
+    expect(DEFAULT_EDITORIAL_GUIDANCE).not.toContain("marker");
+  });
+
+  test("both halves reach the package entry point, since Phase B seeds a setting from the guidance", async () => {
+    const entry = await import("../src/index.js");
+    expect(entry.ENHANCEMENT_SAFETY_PREAMBLE).toBe(ENHANCEMENT_SAFETY_PREAMBLE);
+    expect(entry.DEFAULT_EDITORIAL_GUIDANCE).toBe(DEFAULT_EDITORIAL_GUIDANCE);
   });
 });
 

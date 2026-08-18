@@ -1,7 +1,8 @@
 import type { Section } from "../note/markers.js";
 import type { NoteSink, SinkReadResult, SinkSnapshot, SinkWriteResult } from "../note/sink.js";
 import {
-  ENHANCEMENT_SYSTEM_PROMPT,
+  DEFAULT_EDITORIAL_GUIDANCE,
+  ENHANCEMENT_SAFETY_PREAMBLE,
   queryForSections,
   type AgentClient,
   type AgentTier,
@@ -209,7 +210,10 @@ export class EnhanceRunner {
     const abortController = new AbortController();
     const request = {
       prompt: buildPassPrompt(observed.sections, input.transcript, observed.userNotes, tier),
-      systemPrompt: ENHANCEMENT_SYSTEM_PROMPT,
+      // The preamble is always prepended, never merged into the guidance: the guidance is
+      // the half that becomes user-replaceable, and a replacement must not be able to drop
+      // the untrusted-data framing or the marker-token rule with it.
+      systemPrompt: `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${DEFAULT_EDITORIAL_GUIDANCE}`,
       ...(agentContext === undefined ? {} : { cwd: agentContext.cwd }),
       tools: tier === "tick" ? [] : ["Read", "Glob", "Grep"],
       settingSources: [],

@@ -133,8 +133,8 @@ model carry its own reasoning forward instead of re-deriving it from a bare snap
 tick. This does **not** make the SDK session the source of truth: the full current section
 array and only the transcript delta since the last pass are still resent on every pass
 regardless of what the session remembers, and `ENHANCEMENT_SAFETY_PREAMBLE` explicitly tells the
-model to trust that resent JSON over its own memory when the two disagree — the note stays
-authoritative, the session is memory, not state.
+model that the sections it was given are authoritative when they disagree with its memory of
+earlier passes — the note stays authoritative, the session is memory, not state.
 
 This reverses an earlier documented decision, not an accidental regression of one: see
 `docs/original-plan.md`'s "Enhancement passes: stateless and bounded (Codex blocker 3)" for the

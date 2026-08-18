@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { buildSectionOutputSchema, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "../src/agent/contract.js";
+import {
+  buildSectionOutputSchema,
+  DEFAULT_EDITORIAL_GUIDANCE,
+  ENHANCEMENT_SAFETY_PREAMBLE,
+  type AgentClient,
+  type AgentQueryRequest,
+  type AgentQueryResponse,
+} from "../src/agent/contract.js";
 import { buildClaudeAgentOptions } from "../src/agent/client.js";
 import { EnhanceRunner, type EnhanceRunnerOptions, type EnhanceStatus } from "../src/agent/runner.js";
 import type { Section } from "../src/note/markers.js";
@@ -425,6 +432,24 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     runner.updateTranscript("enough transcript");
     expect((await runner.enhanceNow("tick")).status).toBe("completed");
     expect(agent.requests[0]!.outputSchema).toEqual(buildSectionOutputSchema());
+  });
+
+  test("every pass carries the safety preamble whole, and ahead of the replaceable half", async () => {
+    // The guard the split exists to protect. Phase B makes the editorial guidance
+    // user-overridable; nothing about that may drop the untrusted-data framing, the
+    // marker-token rule, or the "the given sections are authoritative" instruction.
+    const agent = new FakeAgent([Promise.resolve(response()), Promise.resolve(response())]);
+    const runner = makeRunner({ agent, sink: new FakeSink({ cwd: process.cwd() }) });
+    runner.updateTranscript("enough transcript");
+    await runner.enhanceNow("tick");
+    runner.updateTranscript(" more transcript");
+    await runner.enhanceNow("link");
+    for (const request of agent.requests) {
+      expect(request.systemPrompt).toContain(ENHANCEMENT_SAFETY_PREAMBLE);
+      expect(request.systemPrompt).toContain(DEFAULT_EDITORIAL_GUIDANCE);
+      expect(request.systemPrompt.indexOf(ENHANCEMENT_SAFETY_PREAMBLE))
+        .toBeLessThan(request.systemPrompt.indexOf(DEFAULT_EDITORIAL_GUIDANCE));
+    }
   });
 });
 

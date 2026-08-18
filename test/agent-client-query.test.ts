@@ -35,7 +35,7 @@ describe("ClaudeAgentClient result harvesting", () => {
   test("exhausted schema retries come back as absent output, not a thrown error", async () => {
     // The SDK reports this as an ERROR result (SDKResultError), so the generic is_error
     // throw would end the pass here. The contract loop's second attempt is worth taking:
-    // it appends the validation error to the prompt, which the SDK's own retries never saw.
+    // it re-asks on a clean turn with the failure stated in the prompt.
     messages = [{
       type: "result", subtype: "error_max_structured_output_retries", is_error: true,
       session_id: "session-2", terminal_reason: "structured_output_retry_exhausted",
@@ -50,14 +50,41 @@ describe("ClaudeAgentClient result harvesting", () => {
     });
   });
 
-  test("a result carrying no diagnostics leaves the field off rather than empty", async () => {
+  test("the exhaustion subtype alone is enough, with no terminal_reason to corroborate it", async () => {
+    // `terminal_reason` is optional on SDKResultError. A fixture that sets both fields
+    // proves neither clause of the check on its own, and the missing clause would only
+    // surface as a whole pass ending on a rejection the loop could have corrected.
     messages = [{
       type: "result", subtype: "error_max_structured_output_retries", is_error: true,
-      session_id: "session-7", errors: [],
+      session_id: "session-7", errors: ["schema validation failed 3 times"],
     }];
     expect(await new ClaudeAgentClient().query(agentRequest())).toEqual({
       structuredOutput: undefined,
       sessionId: "session-7",
+      diagnostics: ["schema validation failed 3 times"],
+    });
+  });
+
+  test("the exhaustion terminal_reason alone is enough, under a subtype that would otherwise throw", async () => {
+    messages = [{
+      type: "result", subtype: "error_during_execution", is_error: true, session_id: "session-8",
+      terminal_reason: "structured_output_retry_exhausted", errors: ["schema validation failed 3 times"],
+    }];
+    expect(await new ClaudeAgentClient().query(agentRequest())).toEqual({
+      structuredOutput: undefined,
+      sessionId: "session-8",
+      diagnostics: ["schema validation failed 3 times"],
+    });
+  });
+
+  test("an exhaustion result with an empty errors array reports no diagnostics rather than an empty one", async () => {
+    messages = [{
+      type: "result", subtype: "error_max_structured_output_retries", is_error: true,
+      session_id: "session-9", errors: [],
+    }];
+    expect(await new ClaudeAgentClient().query(agentRequest())).toEqual({
+      structuredOutput: undefined,
+      sessionId: "session-9",
     });
   });
 
@@ -70,6 +97,23 @@ describe("ClaudeAgentClient result harvesting", () => {
     }];
     await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow(AgentQueryError);
     await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow("upstream 500; retry budget spent");
+  });
+
+  test("a failure with no diagnostics still names the subtype instead of reporting nothing", async () => {
+    // `errors` is absent from SDKResultSuccess and may be empty on SDKResultError, so the
+    // message must degrade to something an operator can act on — never an empty fragment
+    // or the string "undefined".
+    for (const [subtype, session, errors] of [
+      ["error_max_turns", "session-a", undefined],
+      ["error_max_budget_usd", "session-b", []],
+    ] as const) {
+      messages = [{
+        type: "result", subtype, is_error: true, session_id: session,
+        ...(errors === undefined ? {} : { errors }),
+      }];
+      await expect(new ClaudeAgentClient().query(agentRequest()))
+        .rejects.toThrow(`Claude Agent SDK result failed (${subtype}).`);
+    }
   });
 
   test("a stream that never named a session is a transport failure", async () => {

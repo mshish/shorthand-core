@@ -160,7 +160,14 @@ export function validateSectionOutput(value: unknown, diagnostics: readonly stri
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, error: "Structured output was not the expected object with a sections array." };
   }
-  const parsed = sectionArraySchema.safeParse((value as Record<string, unknown>).sections);
+  // Named explicitly, because zod reports a missing or misnamed key as "expected array,
+  // received undefined" — and this error is handed verbatim to the model as the whole of
+  // the corrective prompt, which cannot ask it to fix a key it never names.
+  const sections = (value as Record<string, unknown>).sections;
+  if (sections === undefined) {
+    return { ok: false, error: 'Structured output has no "sections" key; it must be an object with a "sections" array.' };
+  }
+  const parsed = sectionArraySchema.safeParse(sections);
   if (!parsed.success) return { ok: false, error: z.prettifyError(parsed.error) };
   const writerValidation = renderSections(parsed.data);
   if (!writerValidation.ok) return { ok: false, error: writerValidation.error.message };

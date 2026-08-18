@@ -150,6 +150,17 @@ describe("structured section validation", () => {
     if (!exhausted.ok && !rejected.ok) expect(exhausted.error).not.toBe(rejected.error);
   });
 
+  test("names the envelope key when it is missing or misspelled, since the model is told this verbatim", () => {
+    // zod alone reports "expected array, received undefined" here, which never mentions the
+    // key the model has to fix — and this string is the corrective prompt's whole payload.
+    for (const value of [{}, { Sections: valid }, { section: valid }, { sections: undefined }]) {
+      expect(validateSectionOutput(value)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('"sections"'),
+      });
+    }
+  });
+
   test("rejects a bare array, because the envelope is the contract", () => {
     expect(validateSectionOutput(valid)).toMatchObject({
       ok: false,

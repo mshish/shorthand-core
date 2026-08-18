@@ -36,18 +36,22 @@ export class GoogleApiDocsClient implements GoogleDocsApi {
     }
     const auth = new OAuth2Client();
     auth.setCredentials({});
-    // getRequestHeaders is overridden so every call asks the TokenProvider fresh,
-    // rather than caching a token this client has no way to invalidate on `revoked`.
-    // NOTE: OAuth2Client.requestAsync() (the method googleapis actually calls for
-    // every non-http2 request) reads credentials via getRequestMetadataAsync(), not
-    // getRequestHeaders() — getRequestHeaders is only consulted on the http2 path,
-    // which this client never takes. Overriding getRequestHeaders alone left the
-    // TokenProvider unreachable in production (requestAsync's own preflight check
-    // rejects the empty setCredentials({}) with a generic "No access, refresh
-    // token..." Error before the TokenProvider is ever consulted). Both methods are
-    // overridden here, to the same logic, so the TokenProvider is actually asked on
-    // every real request.
-    const requestHeadersFromTokenProvider = async (): Promise<Headers> => {
+    // refreshHandler is google-auth-library's own public, documented seam for
+    // exactly this "bring your own token supplier" case (see its README's
+    // refreshHandler example). OAuth2Client.requestAsync() -> getRequestMetadataAsync()
+    // calls refreshHandler() whenever there's no cached, non-expiring access_token,
+    // then setCredentials()s the result — so returning an already-expired
+    // expiry_date below makes isTokenExpiring() true on every subsequent call,
+    // which means every request re-invokes refreshHandler and asks the
+    // TokenProvider fresh, rather than caching a token this client has no way to
+    // invalidate on `revoked` (that invalidation is the TokenProvider's job).
+    // An earlier version of this reached the same behavior by overriding
+    // getRequestMetadataAsync directly, which required a cast because that method
+    // is `protected` — internal to OAuth2Client, not part of its public contract,
+    // so depending on its exact name/behavior could silently break on a future
+    // patch/minor bump. refreshHandler is the field the library documents for this
+    // purpose, so it needs no cast and is safe to rely on across versions.
+    auth.refreshHandler = async () => {
       const result = await tokenProvider.getAccessToken();
       if (!result.ok) {
         // A synthetic httpStatus so toDocsApiError's catch handler preserves the
@@ -68,14 +72,11 @@ export class GoogleApiDocsClient implements GoogleDocsApi {
           { response: { status: httpStatus, config: {} }, cause: result.error },
         );
       }
-      return new Headers({ Authorization: `Bearer ${result.token}` });
+      // expiry_date 0 is always in the past, so isTokenExpiring() is always true
+      // and OAuth2Client never serves a cached access_token — see the comment
+      // above auth.refreshHandler.
+      return { access_token: result.token, expiry_date: 0 };
     };
-    auth.getRequestHeaders = requestHeadersFromTokenProvider;
-    // getRequestMetadataAsync is `protected` on OAuth2Client, but it is the method
-    // requestAsync actually calls (see the comment above) — this override has to
-    // reach it from outside the class, hence the cast.
-    (auth as unknown as { getRequestMetadataAsync: () => Promise<{ headers: Headers }> }).getRequestMetadataAsync =
-      async () => ({ headers: await requestHeadersFromTokenProvider() });
     this.#documents = google.docs({ version: "v1", auth }).documents;
   }
 

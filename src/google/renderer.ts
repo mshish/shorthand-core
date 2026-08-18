@@ -65,12 +65,7 @@ function renderBlockToken(
     return;
   }
   if (token.type === "list") {
-    for (const item of (token as Tokens.List).items) {
-      const bulletStart = currentLength();
-      renderInline(item.tokens.flatMap(extractInline), append, currentLength, spans);
-      spans.push({ start: bulletStart, end: currentLength(), style: { kind: "bullet" } });
-      append("\n");
-    }
+    renderListItems((token as Tokens.List).items, append, currentLength, spans);
     return;
   }
   // Anything else (heading inside a section body, code, blockquote, table, image):
@@ -79,10 +74,60 @@ function renderBlockToken(
   append("\n");
 }
 
-/** Unwraps a list item's leading "text" wrapper token to its inline contents. */
-function extractInline(token: Token): Token[] {
-  if (token.type === "text" && "tokens" in token && token.tokens) return token.tokens;
-  return [token];
+/**
+ * Renders each list item as its own bullet span. A nested list inside an
+ * item (marked emits it as a sibling "list" token within item.tokens, next
+ * to the item's own text/paragraph wrapper — see splitListItemTokens) is
+ * flattened to additional same-level bullets rather than indented, per the
+ * brief's "nested lists render as bullets at the same level" scope.
+ */
+function renderListItems(
+  items: readonly Tokens.ListItem[],
+  append: (chunk: string) => void,
+  currentLength: () => number,
+  spans: StyleSpan[],
+): void {
+  for (const item of items) {
+    const { inlineTokens, nestedLists } = splitListItemTokens(item.tokens);
+
+    const bulletStart = currentLength();
+    renderInline(inlineTokens, append, currentLength, spans);
+    spans.push({ start: bulletStart, end: currentLength(), style: { kind: "bullet" } });
+    append("\n");
+
+    for (const nestedList of nestedLists) {
+      renderListItems(nestedList.items, append, currentLength, spans);
+    }
+  }
+}
+
+/**
+ * Splits a list item's tokens into its own inline content and any nested
+ * list(s). Tight lists wrap an item's inline content in a "text" token whose
+ * own .tokens holds the real inline tokens; loose lists (a blank line
+ * between `- ` items) wrap it in a full "paragraph" token instead. Both need
+ * unwrapping to reach the actual strong/link/text tokens — falling back to
+ * the wrapper's raw/verbatim text (as a naive single-token fallback would)
+ * loses bold/link spans and leaks `**`/`[]()` markdown syntax into the
+ * output.
+ */
+function splitListItemTokens(
+  tokens: readonly Token[],
+): { inlineTokens: Token[]; nestedLists: Tokens.List[] } {
+  const inlineTokens: Token[] = [];
+  const nestedLists: Tokens.List[] = [];
+  for (const token of tokens) {
+    if (token.type === "list") {
+      nestedLists.push(token as Tokens.List);
+    } else if (token.type === "paragraph") {
+      inlineTokens.push(...((token as Tokens.Paragraph).tokens ?? []));
+    } else if (token.type === "text" && "tokens" in token && token.tokens) {
+      inlineTokens.push(...token.tokens);
+    } else {
+      inlineTokens.push(token);
+    }
+  }
+  return { inlineTokens, nestedLists };
 }
 
 function renderInline(

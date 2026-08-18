@@ -62,4 +62,49 @@ describe("renderSections", () => {
     expect(text.indexOf("Summary")).toBeLessThan(text.indexOf("Decisions"));
     expect(spans.filter((span) => span.style.kind === "heading")).toHaveLength(2);
   });
+
+  test("renders a bold run inside a loose bullet list item", () => {
+    // A blank line between "- " items makes the list "loose": marked wraps
+    // each item's content in a full "paragraph" token instead of the
+    // tight-list "text" wrapper, which previously fell through to a raw-text
+    // fallback and leaked "**Ship**" verbatim with no bold span.
+    const sections: readonly Section[] = [
+      { heading: "Decisions", markdown: "- **Ship** Friday\n\n- Skip the retro\n" },
+    ];
+    const { text, spans } = renderSections(sections);
+    expect(text).not.toContain("**");
+    const bold = spans.find((span) => span.style.kind === "bold");
+    expect(bold).toBeDefined();
+    expect(text.slice(bold!.start, bold!.end)).toBe("Ship");
+    expect(spans.filter((span) => span.style.kind === "bullet")).toHaveLength(2);
+  });
+
+  test("renders a link inside a loose bullet list item", () => {
+    const sections: readonly Section[] = [
+      {
+        heading: "Decisions",
+        markdown: "- See [the doc](https://example.com/x)\n\n- Skip the retro\n",
+      },
+    ];
+    const { text, spans } = renderSections(sections);
+    expect(text).not.toContain("[the doc]");
+    expect(text).not.toContain("(https://example.com/x)");
+    const link = spans.find((span) => span.style.kind === "link");
+    expect(link).toBeDefined();
+    expect(link!.style.kind === "link" && link!.style.url).toBe("https://example.com/x");
+    expect(text.slice(link!.start, link!.end)).toBe("the doc");
+    expect(spans.filter((span) => span.style.kind === "bullet")).toHaveLength(2);
+  });
+
+  test("flattens a nested bullet list to same-level bullets, each with its own span", () => {
+    const sections: readonly Section[] = [
+      { heading: "Notes", markdown: "- Top item\n  - Nested item\n- Another top\n" },
+    ];
+    const { text, spans } = renderSections(sections);
+    const bullets = spans.filter((span) => span.style.kind === "bullet");
+    expect(bullets).toHaveLength(3);
+    expect(text.slice(bullets[0]!.start, bullets[0]!.end)).toBe("Top item");
+    expect(text.slice(bullets[1]!.start, bullets[1]!.end)).toBe("Nested item");
+    expect(text.slice(bullets[2]!.start, bullets[2]!.end)).toBe("Another top");
+  });
 });

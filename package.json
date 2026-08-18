@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./markdown": "./src/markdown.ts",
+    "./google": "./src/google.ts",
     "./testing": "./src/testing/sink-conformance.ts"
   },
   "bin": {

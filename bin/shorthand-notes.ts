@@ -50,7 +50,7 @@ const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude",
-  "--client-id", "--client-secret", "--port",
+  "--client-id", "--client-secret", "--port", "--create",
 ]);
 
 class ArgumentError extends Error {}
@@ -488,6 +488,7 @@ async function runGoogleLogin(args: readonly string[], environment: NodeJS.Proce
   if (clientId === undefined || clientSecret === undefined) {
     return usage("google-login requires --client-id/--client-secret or GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET.");
   }
+  const createMode = args.includes("--create");
   const port = Number(argumentValue(args, "--port") ?? "0") || 8721;
   const { OAuth2Client } = await import("google-auth-library");
   const client = new OAuth2Client({ clientId, clientSecret });
@@ -497,20 +498,46 @@ async function runGoogleLogin(args: readonly string[], environment: NodeJS.Proce
   const { GOOGLE_DOCS_SCOPE } = await import("../src/google/docs-sink.js");
 
   const { codeVerifier, codeChallenge } = await generatePkceChallenge(client);
-  const authorizationUrl = buildAuthorizationUrl({ clientId, redirectUri, codeChallenge, scope: GOOGLE_DOCS_SCOPE });
+  const authorizationUrl = buildAuthorizationUrl({ clientId, redirectUri, codeChallenge, scope: GOOGLE_DOCS_SCOPE, usePicker: !createMode });
   console.log(`Opening your browser to authorize Shorthand:\n${authorizationUrl}`);
   await openInBrowser(authorizationUrl, environment);
 
   const redirect = await listenForRedirect(port);
-  const documentId = redirect.pickedFileIds[0];
-  if (documentId === undefined) {
-    console.error("No document was picked. Re-run google-login and choose a Google Doc.");
-    return 1;
-  }
   const { refreshToken } = await exchangeCode(client, redirect.code, codeVerifier, redirectUri);
+  // exchangeCode's returned refreshToken is what every downstream Drive/Docs
+  // call in this function authenticates with — set it explicitly rather than
+  // relying on getToken() having already done so as a side effect, so this
+  // doesn't depend on an unverified library internal.
+  client.setCredentials({ refresh_token: refreshToken });
   const existingCredentials = await readCredentials();
-  await writeCredentials(mergeCredentials(existingCredentials, { refreshToken, documentId }));
-  console.log(`Google account connected. Target document: ${documentId}`);
+
+  let documentId: string;
+  let folderId: string | undefined;
+  if (createMode) {
+    const { ensureContainerDoc } = await import("../src/google/container-doc.js");
+    const created = await ensureContainerDoc(client, {
+      ...(existingCredentials?.folderId === undefined ? {} : { folderId: existingCredentials.folderId }),
+      ...(existingCredentials?.documentId === undefined ? {} : { documentId: existingCredentials.documentId }),
+    });
+    documentId = created.documentId;
+    folderId = created.folderId;
+  } else {
+    const picked = redirect.pickedFileIds[0];
+    if (picked === undefined) {
+      console.error("No document was picked. Re-run google-login and choose a Google Doc.");
+      return 1;
+    }
+    documentId = picked;
+  }
+
+  await writeCredentials(mergeCredentials(existingCredentials, {
+    refreshToken,
+    documentId,
+    ...(folderId === undefined ? {} : { folderId }),
+  }));
+  console.log(createMode
+    ? `Google account connected. Created (or reused) folder ${folderId} and container doc ${documentId}.`
+    : `Google account connected. Target document: ${documentId}.`);
   // `enhance` does not yet accept a --sink flag or otherwise construct a
   // GoogleDocsNoteSink; that integration is a later, not-yet-built increment.
   // Don't imply it already works.

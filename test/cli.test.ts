@@ -259,6 +259,13 @@ describe("shorthand-notes CLI", () => {
     expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
   });
 
+  test("google-login --create still requires a client id and secret", async () => {
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    const result = await run(entry, ["google-login", "--create"], withoutGoogleOAuthEnv());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
+  });
+
   test("--no-env-file prevents .env file leaks to subprocesses", async () => {
     // Regression test: ensures that even if a .env file exists in the subprocess's
     // working directory with GOOGLE_OAUTH_CLIENT_ID/SECRET, the --no-env-file flag

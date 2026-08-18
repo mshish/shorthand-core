@@ -149,6 +149,25 @@ export function parseSectionOutput(message: string):
   return { ok: true, sections: parsed.data };
 }
 
+export function validateSectionOutput(value: unknown):
+  | Readonly<{ ok: true; sections: readonly Section[] }>
+  | Readonly<{ ok: false; error: string }> {
+  // Two different failures that must not be conflated in the operator log: the SDK
+  // giving up after its own schema retries, versus output the SDK accepted and the
+  // zod gate then rejected.
+  if (value === undefined) {
+    return { ok: false, error: "The agent returned no structured output; the SDK exhausted its own schema retries." };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "Structured output was not the expected object with a sections array." };
+  }
+  const parsed = sectionArraySchema.safeParse((value as Record<string, unknown>).sections);
+  if (!parsed.success) return { ok: false, error: z.prettifyError(parsed.error) };
+  const writerValidation = renderSections(parsed.data);
+  if (!writerValidation.ok) return { ok: false, error: writerValidation.error.message };
+  return { ok: true, sections: parsed.data };
+}
+
 export async function queryForSections(
   agent: AgentClient,
   request: AgentQueryRequest,

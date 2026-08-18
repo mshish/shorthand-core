@@ -14,6 +14,12 @@ export type EnhanceRunnerOptions = Readonly<{
   /** Where enhanced sections are read from and written back to. */
   sink: NoteSink;
   agent: AgentClient;
+  /**
+   * Replaces `DEFAULT_EDITORIAL_GUIDANCE`. `ENHANCEMENT_SAFETY_PREAMBLE` is always prepended
+   * and is never replaceable, so no value here can drop the untrusted-data framing, the
+   * marker-token ban, or the "the given sections are authoritative" instruction.
+   */
+  guidance?: string;
   minNewChars?: number;
   minIntervalMs?: number;
   maxDurationMs?: number;
@@ -58,7 +64,7 @@ const REQUEUE_DROP_MARKER = "[...earlier transcript dropped...]";
 
 export class EnhanceRunner {
   readonly #options: Required<Pick<EnhanceRunnerOptions,
-    "minNewChars" | "minIntervalMs" | "maxDurationMs" | "timeoutMs" | "maxTurns" | "maxRequeuedCharacters" | "maxRequeuesPerDelta" | "maxConsecutiveReadFailures" | "dryRun">>
+    "minNewChars" | "minIntervalMs" | "maxDurationMs" | "timeoutMs" | "maxTurns" | "maxRequeuedCharacters" | "maxRequeuesPerDelta" | "maxConsecutiveReadFailures" | "dryRun" | "guidance">>
     & EnhanceRunnerOptions;
   readonly #now: () => number;
   readonly #logger: ContractLogger & Pick<Console, "info">;
@@ -88,6 +94,7 @@ export class EnhanceRunner {
       maxRequeuesPerDelta: options.maxRequeuesPerDelta ?? 3,
       maxConsecutiveReadFailures: options.maxConsecutiveReadFailures ?? 3,
       dryRun: options.dryRun ?? false,
+      guidance: resolveGuidance(options.guidance),
     };
     this.#now = options.now ?? Date.now;
     this.#logger = options.logger ?? console;
@@ -211,10 +218,10 @@ export class EnhanceRunner {
     const abortController = new AbortController();
     const request = {
       prompt: buildPassPrompt(observed.sections, input.transcript, observed.userNotes, tier),
-      // The preamble is always prepended, never merged into the guidance: the guidance is
-      // the half that becomes user-replaceable, and a replacement must not be able to drop
-      // the untrusted-data framing or the marker-token rule with it.
-      systemPrompt: `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${DEFAULT_EDITORIAL_GUIDANCE}`,
+      // The preamble is always prepended, never merged into the guidance: the guidance is the
+      // half a user may replace, and a replacement must not be able to drop the untrusted-data
+      // framing or the marker-token rule with it. This is the only place the two are joined.
+      systemPrompt: `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${this.#options.guidance}`,
       ...(agentContext === undefined ? {} : { cwd: agentContext.cwd }),
       tools: tier === "tick" ? [] : ["Read", "Glob", "Grep"],
       settingSources: [],
@@ -487,4 +494,16 @@ function formatDurationLabel(durationMs: number): string {
  */
 function isResumableSessionId(sessionId: string | undefined): sessionId is string {
   return typeof sessionId === "string" && sessionId.length > 0;
+}
+
+/**
+ * An all-whitespace override is a user mistake, not a request for a preamble-only prompt.
+ * Shipping a system prompt with no editorial instruction at all would produce baffling notes
+ * and raise no error anywhere to explain them, so empty always means "use the default".
+ * Trimmed rather than passed through, so a trailing newline from a text field cannot change
+ * what the model is sent.
+ */
+function resolveGuidance(guidance: string | undefined): string {
+  const trimmed = guidance?.trim() ?? "";
+  return trimmed.length === 0 ? DEFAULT_EDITORIAL_GUIDANCE : trimmed;
 }

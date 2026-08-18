@@ -44,7 +44,7 @@ export type { SidecarWriterOptions } from "./note/sidecar.js";
 
 export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
 
-export { DEFAULT_EDITORIAL_GUIDANCE, ENHANCEMENT_SAFETY_PREAMBLE } from "./agent/contract.js";
+export { DEFAULT_EDITORIAL_GUIDANCE, ENHANCEMENT_SAFETY_PREAMBLE, MAX_GUIDANCE_CHARACTERS } from "./agent/contract.js";
 
 export type {
   AgentClient,

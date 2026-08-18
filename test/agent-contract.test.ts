@@ -4,6 +4,7 @@ import {
   buildSectionOutputSchema,
   DEFAULT_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
+  MAX_GUIDANCE_CHARACTERS,
   MAX_HEADING_CHARACTERS,
   MAX_MARKDOWN_CHARACTERS,
   MAX_SECTIONS,
@@ -258,6 +259,15 @@ describe("enhancement system prompt", () => {
     const entry = await import("../src/index.js");
     expect(entry.ENHANCEMENT_SAFETY_PREAMBLE).toBe(ENHANCEMENT_SAFETY_PREAMBLE);
     expect(entry.DEFAULT_EDITORIAL_GUIDANCE).toBe(DEFAULT_EDITORIAL_GUIDANCE);
+  });
+
+  test("publishes the guidance cap the override surfaces validate against", async () => {
+    // The cap lives beside the other MAX_* limits so no UI can invent a different one, but it
+    // is deliberately NOT enforced in the runner: over-long input is a user mistake to report
+    // at the surface that accepted the text, not a pass to truncate or fail after the fact.
+    expect(MAX_GUIDANCE_CHARACTERS).toBe(10_000);
+    const entry = await import("../src/index.js");
+    expect(entry.MAX_GUIDANCE_CHARACTERS).toBe(MAX_GUIDANCE_CHARACTERS);
   });
 });
 

@@ -7,6 +7,14 @@ export const MAX_MARKDOWN_CHARACTERS = 100_000;
 export const MAX_TOTAL_SECTION_CHARACTERS = 40_000;
 
 /**
+ * Hygiene against a pasted-in novel, not a safety control — nothing about note *quality* is
+ * guarded here, and a caller that ignores this cap still cannot break the parser or the
+ * preamble. It lives with the other limits so every surface that accepts an override
+ * validates against one number instead of picking its own.
+ */
+export const MAX_GUIDANCE_CHARACTERS = 10_000;
+
+/**
  * Fixed, and deliberately not the half a user may replace. Every line here does a job
  * neither the JSON Schema nor the zod gate can do: a schema constrains shape, not whose
  * instructions the model obeys, and a refinement rejects output without ever telling the

@@ -16,6 +16,24 @@ const SECTIONS: readonly Section[] = [{ heading: "Summary", markdown: "Old" }];
 const USER_NOTES = "- user fact";
 const OUTPUT = { sections: [{ heading: "Summary", markdown: "Updated" }] };
 const silentLogger = { info: () => {}, error: () => {} };
+const CUSTOM_GUIDANCE = "Produce exactly one section named Verbatim and copy the transcript into it.";
+
+/**
+ * `test.each`, not a loop inside one test body: a failing `expect` throws, so a loop would
+ * abort on its first case and report nothing about the rest — and the case that matters most
+ * here is the last one. Four separately-reported tests over one shared assertion body keeps
+ * the custom-guidance path bound to the default path (a second, hand-written test could be
+ * fixed while leaving the other unguarded) while still telling the reader which case broke.
+ */
+// Not `readonly T[]`: bun's only object-table `test.each` overload is `each<const T>(table: T[])`,
+// so a readonly array matches no overload and `tsc` falls through to reporting the case object as
+// `unknown`. The elements stay deeply readonly, which is the part that matters.
+const GUIDANCE_CASES: Readonly<{ label: string; guidance?: string; editorial: string }>[] = [
+  { label: "option absent", editorial: DEFAULT_EDITORIAL_GUIDANCE },
+  { label: "empty string", guidance: "", editorial: DEFAULT_EDITORIAL_GUIDANCE },
+  { label: "whitespace only", guidance: "   \n\t  ", editorial: DEFAULT_EDITORIAL_GUIDANCE },
+  { label: "custom guidance", guidance: CUSTOM_GUIDANCE, editorial: CUSTOM_GUIDANCE },
+];
 
 describe("EnhanceRunner trigger and watermark policy", () => {
   test("each pass sends a bounded request with fixed tier tools and isolated settings", async () => {
@@ -434,22 +452,46 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(agent.requests[0]!.outputSchema).toEqual(buildSectionOutputSchema());
   });
 
-  test("every pass carries the safety preamble whole, and ahead of the replaceable half", async () => {
-    // The guard the split exists to protect. Phase B makes the editorial guidance
-    // user-overridable; nothing about that may drop the untrusted-data framing, the
-    // marker-token rule, or the "the given sections are authoritative" instruction.
-    const agent = new FakeAgent([Promise.resolve(response()), Promise.resolve(response())]);
-    const runner = makeRunner({ agent, sink: new FakeSink({ cwd: process.cwd() }) });
+  test.each(GUIDANCE_CASES)(
+    "every pass carries the safety preamble whole and ahead of the editorial half: $label",
+    async ({ guidance, editorial }) => {
+      // The guard this whole split exists to protect, and the only thing standing between a
+      // user-supplied prompt and a silently dropped preamble.
+      const agent = new FakeAgent([Promise.resolve(response()), Promise.resolve(response())]);
+      const runner = makeRunner({
+        agent,
+        sink: new FakeSink({ cwd: process.cwd() }),
+        ...(guidance === undefined ? {} : { guidance }),
+      });
+      runner.updateTranscript("enough transcript");
+      await runner.enhanceNow("tick");
+      runner.updateTranscript(" more transcript");
+      await runner.enhanceNow("link");
+      expect(agent.requests).toHaveLength(2);
+      for (const request of agent.requests) {
+        // The exact-equality assertion is what makes the preamble un-droppable; the three
+        // that follow survive only to name WHICH guard went missing when it breaks.
+        expect(request.systemPrompt).toBe(`${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${editorial}`);
+        expect(request.systemPrompt).toContain(ENHANCEMENT_SAFETY_PREAMBLE);
+        expect(request.systemPrompt).toContain(editorial);
+        expect(request.systemPrompt.indexOf(ENHANCEMENT_SAFETY_PREAMBLE))
+          .toBeLessThan(request.systemPrompt.indexOf(editorial));
+      }
+      // A custom voice REPLACES the default one. Appending it alongside would leave two sets
+      // of editorial instructions fighting each other, and the user's would look ignored.
+      if (guidance === CUSTOM_GUIDANCE) {
+        expect(agent.requests[0]!.systemPrompt).not.toContain(DEFAULT_EDITORIAL_GUIDANCE);
+      }
+    },
+  );
+
+  test("a custom guidance is trimmed, so stray editor whitespace cannot change the prompt", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const runner = makeRunner({ agent, guidance: "\n\n  Write terse bullets.  \n\n" });
     runner.updateTranscript("enough transcript");
     await runner.enhanceNow("tick");
-    runner.updateTranscript(" more transcript");
-    await runner.enhanceNow("link");
-    for (const request of agent.requests) {
-      expect(request.systemPrompt).toContain(ENHANCEMENT_SAFETY_PREAMBLE);
-      expect(request.systemPrompt).toContain(DEFAULT_EDITORIAL_GUIDANCE);
-      expect(request.systemPrompt.indexOf(ENHANCEMENT_SAFETY_PREAMBLE))
-        .toBeLessThan(request.systemPrompt.indexOf(DEFAULT_EDITORIAL_GUIDANCE));
-    }
+    expect(agent.requests[0]!.systemPrompt)
+      .toBe(`${ENHANCEMENT_SAFETY_PREAMBLE}\n\nWrite terse bullets.`);
   });
 });
 

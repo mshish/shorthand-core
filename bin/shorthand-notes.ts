@@ -493,7 +493,7 @@ async function runGoogleLogin(args: readonly string[], environment: NodeJS.Proce
   const client = new OAuth2Client({ clientId, clientSecret });
   const redirectUri = `http://127.0.0.1:${port}/callback`;
   const { generatePkceChallenge, buildAuthorizationUrl, listenForRedirect, exchangeCode } = await import("../src/google/oauth.js");
-  const { writeCredentials } = await import("../src/google/file-token-provider.js");
+  const { readCredentials, writeCredentials, mergeCredentials } = await import("../src/google/file-token-provider.js");
   const { GOOGLE_DOCS_SCOPE } = await import("../src/google/docs-sink.js");
 
   const { codeVerifier, codeChallenge } = await generatePkceChallenge(client);
@@ -508,9 +508,13 @@ async function runGoogleLogin(args: readonly string[], environment: NodeJS.Proce
     return 1;
   }
   const { refreshToken } = await exchangeCode(client, redirect.code, codeVerifier, redirectUri);
-  await writeCredentials({ refreshToken, documentId });
+  const existingCredentials = await readCredentials();
+  await writeCredentials(mergeCredentials(existingCredentials, { refreshToken, documentId }));
   console.log(`Google account connected. Target document: ${documentId}`);
-  console.log("Run `shorthand-notes enhance` with a Google Docs sink to start writing to it.");
+  // `enhance` does not yet accept a --sink flag or otherwise construct a
+  // GoogleDocsNoteSink; that integration is a later, not-yet-built increment.
+  // Don't imply it already works.
+  console.log("Credentials saved. Google Docs sink support is not yet wired into `shorthand-notes enhance`.");
   return 0;
 }
 

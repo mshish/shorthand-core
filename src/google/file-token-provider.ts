@@ -25,6 +25,24 @@ export async function readCredentials(path = credentialsPath()): Promise<GoogleC
   }
 }
 
+/**
+ * Merges a fresh refreshToken/documentId (from a `google-login` run) with any
+ * credentials already on disk, preserving an existing `tabId`. writeCredentials
+ * overwrites the whole file, so a re-login that only ever passed the two fields
+ * it obtained would otherwise silently drop a `tabId` some other path had
+ * stored there.
+ */
+export function mergeCredentials(
+  existing: GoogleCredentials | undefined,
+  update: Readonly<{ refreshToken: string; documentId: string }>,
+): GoogleCredentials {
+  return {
+    refreshToken: update.refreshToken,
+    documentId: update.documentId,
+    ...(existing?.tabId === undefined ? {} : { tabId: existing.tabId }),
+  };
+}
+
 export type FileTokenProviderOptions = Readonly<{
   clientId: string;
   clientSecret: string;

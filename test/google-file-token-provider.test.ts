@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileTokenProvider, readCredentials, writeCredentials } from "../src/google/file-token-provider.js";
+import { FileTokenProvider, mergeCredentials, readCredentials, writeCredentials } from "../src/google/file-token-provider.js";
+import type { GoogleCredentials } from "../src/google/file-token-provider.js";
 
 async function scratchPath(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "google-token-"));
@@ -23,6 +24,23 @@ describe("writeCredentials / readCredentials", () => {
 
   test("readCredentials returns undefined when the file does not exist", async () => {
     expect(await readCredentials(await scratchPath())).toBeUndefined();
+  });
+});
+
+describe("mergeCredentials", () => {
+  test("preserves an existing tabId when a google-login run doesn't specify one", () => {
+    // Regression: writeCredentials({ refreshToken, documentId }) overwrites the
+    // whole credentials file unconditionally. A re-login that only ever passed
+    // the two fields it obtained from the OAuth exchange would otherwise
+    // silently drop a tabId some other path had stored there.
+    const existing: GoogleCredentials = { refreshToken: "old-rt", documentId: "old-doc", tabId: "tab-1" };
+    const merged = mergeCredentials(existing, { refreshToken: "new-rt", documentId: "new-doc" });
+    expect(merged).toEqual({ refreshToken: "new-rt", documentId: "new-doc", tabId: "tab-1" });
+  });
+
+  test("produces credentials without a tabId when none existed before", () => {
+    const merged = mergeCredentials(undefined, { refreshToken: "new-rt", documentId: "new-doc" });
+    expect(merged).toEqual({ refreshToken: "new-rt", documentId: "new-doc" });
   });
 });
 

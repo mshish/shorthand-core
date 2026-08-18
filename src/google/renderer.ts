@@ -104,6 +104,16 @@ function renderInline(
       spans.push({ start, end: currentLength(), style: { kind: "link", url: link.href } });
     } else if (token.type === "text" || token.type === "codespan" || token.type === "em") {
       append((token as Tokens.Text | Tokens.Codespan | Tokens.Em).text ?? token.raw);
+    } else {
+      // Any other inline construct (image, strikethrough, escape, raw HTML, etc.):
+      // fall back to its plain text rather than silently dropping the content.
+      append(inlineFallbackText(token));
     }
   }
+}
+
+function inlineFallbackText(token: Token): string {
+  const text = (token as { text?: unknown }).text;
+  if (typeof text === "string") return text;
+  return token.raw.replace(/[*_`>#|~[\]()!]/g, "").trim();
 }

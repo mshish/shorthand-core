@@ -47,6 +47,14 @@ export class GoogleDocsNoteSink implements NoteSink {
   }
 
   async write(sections: readonly Section[], expectedRevision: string): Promise<SinkWriteResult> {
+    // A blank heading can't be represented as a Docs paragraph that
+    // parseTabToSections could ever recover a section boundary from (its
+    // heading-detection is `headingLevel !== undefined`, not text content),
+    // so refuse it here rather than silently rendering an empty title.
+    const blankHeading = sections.find((section) => section.heading.trim().length === 0);
+    if (blankHeading !== undefined) {
+      return { status: "error", error: sinkError("invalid-content", "Section heading must not be empty") };
+    }
     const read = await this.#api.getDocument(this.#documentId);
     if (!read.ok) return writeErrorFor(read.error);
     const tab = findTab(read.value.tabs, this.#tabId);

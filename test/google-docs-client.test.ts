@@ -10,16 +10,40 @@ function gaxiosError(status: number, headers: Record<string, string> = {}): Erro
   return error;
 }
 
+function gaxiosErrorWithRealHeaders(status: number, headers: Record<string, string> = {}): Error & { response: unknown } {
+  const error = new Error(`request failed with status code ${status}`) as Error & { response: unknown };
+  error.response = { status, headers: new Headers(headers) };
+  return error;
+}
+
 describe("GoogleApiDocsClient", () => {
   test("maps a 429 with Retry-After seconds to retryAfterMs milliseconds", async () => {
+    // Regression: gaxios's GaxiosResponse extends the real fetch Response type,
+    // so `.headers` is a real Headers instance in production, not a plain
+    // object — `headers["retry-after"]` on a Headers instance is always
+    // undefined. This uses a real `Headers` instance (not a plain object) so
+    // the test actually exercises that shape.
     const client = new GoogleApiDocsClient(okTokenProvider, {
       documents: {
-        get: async () => { throw gaxiosError(429, { "retry-after": "2" }); },
-        batchUpdate: async () => { throw gaxiosError(429, { "retry-after": "2" }); },
+        get: async () => { throw gaxiosErrorWithRealHeaders(429, { "retry-after": "2" }); },
+        batchUpdate: async () => { throw gaxiosErrorWithRealHeaders(429, { "retry-after": "2" }); },
       },
     } as never);
     const result = await client.getDocument("doc1");
-    expect(result).toEqual({ ok: false, error: { httpStatus: 429, retryAfterMs: 2000, message: expect.any(String) } });
+    expect(result).toEqual({ ok: false, error: { httpStatus: 429, retryAfterMs: 2000, message: expect.any(String), cause: expect.anything() } });
+  });
+
+  test("a non-numeric (HTTP-date-format) Retry-After does not produce NaN", async () => {
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => { throw gaxiosErrorWithRealHeaders(429, { "retry-after": "Wed, 21 Oct 2026 07:28:00 GMT" }); },
+        batchUpdate: async () => { throw new Error("not used in this test"); },
+      },
+    } as never);
+    const result = await client.getDocument("doc1");
+    if (result.ok) throw new Error("expected an error result");
+    expect(result.error.retryAfterMs).toBeUndefined();
+    expect(Number.isNaN(result.error.retryAfterMs)).toBe(false);
   });
 
   test("maps a 401 and a 403 to the same httpStatus shape", async () => {
@@ -139,5 +163,83 @@ describe("GoogleApiDocsClient", () => {
     const result = await client.batchUpdate("doc1", [], "rev1");
     expect(capturedWriteControl).toEqual({ targetRevisionId: "rev1" });
     expect(result).toEqual({ ok: true, value: { revisionId: "rev2" } });
+  });
+
+  test("getDocument rejects a response with no revisionId rather than defaulting to an empty string", async () => {
+    // docs/CONTRACT.md §2.3 requires revision to be a non-empty string. Silently
+    // defaulting a missing field to "" would hand that "" straight back as the
+    // next expectedRevision.
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => ({ data: { tabs: [] } }),
+        batchUpdate: async () => { throw new Error("not used in this test"); },
+      },
+    } as never);
+    const result = await client.getDocument("doc1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.httpStatus).toBe(0);
+      expect(result.error.message).toContain("revisionId");
+    }
+  });
+
+  test("batchUpdate rejects a response with no revisionId rather than defaulting to an empty string", async () => {
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => { throw new Error("not used in this test"); },
+        batchUpdate: async () => ({ data: {} }),
+      },
+    } as never);
+    const result = await client.batchUpdate("doc1", [], "rev1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.httpStatus).toBe(0);
+      expect(result.error.message).toContain("revisionId");
+    }
+  });
+
+  test("cause is populated on the DocsApiError from the caught error", async () => {
+    const originalError = gaxiosErrorWithRealHeaders(500);
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => { throw originalError; },
+        batchUpdate: async () => { throw new Error("not used in this test"); },
+      },
+    } as never);
+    const result = await client.getDocument("doc1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.cause).toBe(originalError);
+  });
+
+  describe("TokenProvider error mapping through getRequestHeaders", () => {
+    // These tests deliberately do NOT inject a docsResource, so the real
+    // OAuth2Client/getRequestHeaders override runs. A TokenProvider failure
+    // throws before any network request is made, so this needs no live network.
+    test("a not-authorized TokenProvider error maps to httpStatus 401 (forbidden upstream)", async () => {
+      const client = new GoogleApiDocsClient({
+        getAccessToken: async () => ({ ok: false, error: { code: "not-authorized", message: "no credentials" } }),
+      });
+      const result = await client.getDocument("doc1");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.httpStatus).toBe(401);
+    });
+
+    test("a revoked TokenProvider error maps to httpStatus 401 (forbidden upstream), not a generic transport error", async () => {
+      const client = new GoogleApiDocsClient({
+        getAccessToken: async () => ({ ok: false, error: { code: "revoked", message: "credential revoked" } }),
+      });
+      const result = await client.getDocument("doc1");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.httpStatus).toBe(401);
+    });
+
+    test("a transport TokenProvider error maps to httpStatus 0 (transport)", async () => {
+      const client = new GoogleApiDocsClient({
+        getAccessToken: async () => ({ ok: false, error: { code: "transport", message: "network down" } }),
+      });
+      const result = await client.getDocument("doc1");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.httpStatus).toBe(0);
+    });
   });
 });

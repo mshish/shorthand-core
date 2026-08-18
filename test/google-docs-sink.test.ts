@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { describeNoteSinkConformance, type SinkHarness } from "shorthand-core/testing";
 import { GoogleDocsNoteSink } from "../src/google/docs-sink.js";
 import type { BatchUpdateValue, DocsApiResult, GetDocumentValue, GoogleDocsApi } from "../src/google/docs-client.js";
@@ -45,7 +45,10 @@ class FakeDocsApi implements GoogleDocsApi {
   async batchUpdate(_documentId: string, requests: readonly unknown[], targetRevisionId?: string): Promise<DocsApiResult<BatchUpdateValue>> {
     if (this.#busy) return { ok: false, error: { httpStatus: 429, retryAfterMs: 500, message: "busy" } };
     if (targetRevisionId !== undefined && targetRevisionId !== String(this.#revisionId)) {
-      return { ok: false, error: { httpStatus: 409, message: "stale" } };
+      // The real Google Docs API returns 400 (not 409/412) for a
+      // targetRevisionId conflict; see docs-sink.ts's writeErrorFor and this
+      // feature's spec's "Concurrency" section. This fake matches that.
+      return { ok: false, error: { httpStatus: 400, message: "stale" } };
     }
     type Req = {
       insertText?: { location: { index: number; tabId?: string }; text: string };
@@ -153,3 +156,65 @@ describeNoteSinkConformance(
   },
   { missing: true, forbidden: true },
 );
+
+// Dedicated regression tests, run through the same FakeDocsApi as the
+// conformance suite above but outside describeNoteSinkConformance: the
+// invariants below need markdown fixture shapes (a multi-paragraph section
+// body, an empty bullet item) that the shared SECTIONS/ALTERNATE fixtures
+// deliberately avoid, because parseTabToSections' lossy reconstruction
+// (blank-line paragraph separation and inline **bold**/[link]() markdown
+// syntax are not recovered, per its own doc comment in docs-sink.ts) would
+// break the conformance suite's own "round-trips: sections written ... are
+// the sections read back" exact-equality assertion if those fixtures grew
+// this content instead.
+describe("GoogleDocsNoteSink regression coverage (full renderer -> requests -> docs-client -> docs-sink chain)", () => {
+  test("a multi-paragraph section settles to unchanged on a repeat write with the same sections (regression: marked's space token)", async () => {
+    const api = new FakeDocsApi();
+    const sink = new GoogleDocsNoteSink({ documentId: "doc1", tabId: OWNED_TAB, api });
+    const sections: readonly Section[] = [{ heading: "Summary", markdown: "One.\n\nTwo." }];
+
+    const before = await sink.read();
+    if (!before.ok) throw new Error("expected ok");
+    const first = await sink.write(sections, before.value.revision);
+    expect(first.status).toBe("written");
+
+    const afterFirst = await sink.read();
+    if (!afterFirst.ok) throw new Error("expected ok");
+    // Before the fix, marked's "space" token between the two paragraphs
+    // rendered as a spurious empty paragraph on every call to
+    // renderSections, so the freshly-rendered text for these UNCHANGED
+    // sections never matched what read-back reconstructed and re-rendered —
+    // write() kept reporting "written" (a full delete+insert) forever
+    // instead of settling to "unchanged".
+    const second = await sink.write(sections, afterFirst.value.revision);
+    expect(second).toEqual({ status: "unchanged", revision: afterFirst.value.revision });
+  });
+
+  test("a section with a bullet, a bold run, and a link writes successfully in one atomic batch (regression: zero-length empty-bullet span)", async () => {
+    const api = new FakeDocsApi();
+    const sink = new GoogleDocsNoteSink({ documentId: "doc1", tabId: OWNED_TAB, api });
+    // A stray blank bullet line ("- " with nothing after it) alongside real
+    // content: before the fix this produced a zero-length bullet span, which
+    // buildWriteRequests turned into a degenerate startIndex === endIndex
+    // createParagraphBullets request. The real Docs API rejects that with a
+    // 400 that fails the entire atomic batchUpdate, losing the whole pass's
+    // work — not just the bad bullet.
+    const sections: readonly Section[] = [
+      {
+        heading: "Decisions",
+        markdown: "- \n- **Ship** it\n- See [the doc](https://example.com/x)\n",
+      },
+    ];
+
+    const before = await sink.read();
+    if (!before.ok) throw new Error("expected ok");
+    const result = await sink.write(sections, before.value.revision);
+    expect(result.status).toBe("written");
+
+    const after = await sink.read();
+    if (!after.ok) throw new Error("expected ok");
+    expect(after.value.sections).toEqual([
+      { heading: "Decisions", markdown: "- Ship it\n- See the doc" },
+    ]);
+  });
+});

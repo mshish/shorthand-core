@@ -115,22 +115,29 @@ function findTab(tabs: readonly DocsTab[], tabId: string): DocsTab | undefined {
 }
 
 function readErrorFor(error: DocsApiError): SinkError {
-  if (error.httpStatus === 404) return sinkError("not-found", error.message);
-  if (error.httpStatus === 401 || error.httpStatus === 403) return sinkError("forbidden", error.message);
+  if (error.httpStatus === 404) return sinkError("not-found", error.message, error.cause);
+  if (error.httpStatus === 401 || error.httpStatus === 403) return sinkError("forbidden", error.message, error.cause);
   // 503 (backend overload) is transient exactly like 429 (docs/CONTRACT.md §4:
   // "503 with Retry-After is busy, not transport") — core must re-queue it
   // cheaply rather than counting it as a permanent failure.
-  if (error.httpStatus === 429 || error.httpStatus === 503) return busySinkError(error.message, error.retryAfterMs);
-  return sinkError("transport", error.message);
+  if (error.httpStatus === 429 || error.httpStatus === 503) return busySinkError(error.message, error.retryAfterMs, error.cause);
+  return sinkError("transport", error.message, error.cause);
 }
 
 function writeErrorFor(error: DocsApiError): SinkWriteResult {
-  if (error.httpStatus === 409 || error.httpStatus === 412) return { status: "stale" };
+  // The real Google Docs API returns 400 (not 409/412) for a targetRevisionId
+  // conflict (see Schema$WriteControl's doc comment in the googleapis types,
+  // and this feature's spec's "Concurrency" section: "Treat the resulting 400
+  // ... as an expected, retryable condition"). 400 is technically overloaded
+  // with "malformed request" too, but buildWriteRequests is the sole source of
+  // requests here, so a malformed request would be a bug worth surfacing as a
+  // retry-then-fail rather than a special case.
+  if (error.httpStatus === 409 || error.httpStatus === 412 || error.httpStatus === 400) return { status: "stale" };
   // See the matching comment in readErrorFor: 503 is treated identically to 429.
   if (error.httpStatus === 429 || error.httpStatus === 503) {
     return { status: "busy", ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }) };
   }
-  if (error.httpStatus === 404) return { status: "error", error: sinkError("not-found", error.message) };
-  if (error.httpStatus === 401 || error.httpStatus === 403) return { status: "error", error: sinkError("forbidden", error.message) };
-  return { status: "error", error: sinkError("transport", error.message) };
+  if (error.httpStatus === 404) return { status: "error", error: sinkError("not-found", error.message, error.cause) };
+  if (error.httpStatus === 401 || error.httpStatus === 403) return { status: "error", error: sinkError("forbidden", error.message, error.cause) };
+  return { status: "error", error: sinkError("transport", error.message, error.cause) };
 }

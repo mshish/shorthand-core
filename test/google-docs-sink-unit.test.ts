@@ -99,6 +99,16 @@ describe("GoogleDocsNoteSink.read", () => {
     });
     expect(await sink.read()).toMatchObject({ ok: false, error: { code: "busy", retryAfterMs: 2000 } });
   });
+
+  test("cause is carried through from the DocsApiError to the resulting SinkError", async () => {
+    const cause = new Error("underlying gaxios failure");
+    const sink = new GoogleDocsNoteSink({
+      documentId: "d1", tabId: "owned",
+      api: fakeApi({ getDocument: async () => ({ ok: false, error: { httpStatus: 500, message: "x", cause } }) }),
+    });
+    const result = await sink.read();
+    expect(result).toMatchObject({ ok: false, error: { code: "transport", cause } });
+  });
 });
 
 describe("GoogleDocsNoteSink.write", () => {
@@ -168,8 +178,10 @@ describe("GoogleDocsNoteSink.write", () => {
   });
 
   test.each([
-    [409, "stale"], [412, "stale"],
+    [400, "stale"], [409, "stale"], [412, "stale"],
   ])("httpStatus %d maps to write status %s", async (httpStatus, status) => {
+    // The real Google Docs API returns 400 (not 409/412) for a targetRevisionId
+    // conflict; see the "Concurrency" section of this feature's spec.
     const sink = new GoogleDocsNoteSink({
       documentId: "d1", tabId: "owned",
       api: fakeApi({ batchUpdate: async () => ({ ok: false, error: { httpStatus, message: "x" } }) }),
@@ -199,6 +211,32 @@ describe("GoogleDocsNoteSink.write", () => {
       api: fakeApi({ batchUpdate: async () => ({ ok: false, error: { httpStatus: 403, message: "x" } }) }),
     });
     expect(await sink.write([{ heading: "Summary", markdown: "x" }], "rev1")).toMatchObject({ status: "error", error: { code: "forbidden" } });
+  });
+
+  test("a token-provider revoked error (mapped to httpStatus 401) reports forbidden, not transport", async () => {
+    // The 401 mapping is produced upstream by GoogleApiDocsClient's
+    // getRequestHeaders/getRequestMetadataAsync override (see
+    // test/google-docs-client.test.ts's "TokenProvider error mapping"
+    // suite); this confirms the sink's own 401 handling completes that chain
+    // by reporting "forbidden" rather than a generic transport failure.
+    const sink = new GoogleDocsNoteSink({
+      documentId: "d1", tabId: "owned",
+      api: fakeApi({ batchUpdate: async () => ({ ok: false, error: { httpStatus: 401, message: "revoked" } }) }),
+    });
+    expect(await sink.write([{ heading: "Summary", markdown: "x" }], "rev1")).toMatchObject({
+      status: "error",
+      error: { code: "forbidden" },
+    });
+  });
+
+  test("cause is carried through from the DocsApiError to the resulting write SinkError", async () => {
+    const cause = new Error("underlying gaxios failure");
+    const sink = new GoogleDocsNoteSink({
+      documentId: "d1", tabId: "owned",
+      api: fakeApi({ batchUpdate: async () => ({ ok: false, error: { httpStatus: 500, message: "x", cause } }) }),
+    });
+    const result = await sink.write([{ heading: "Summary", markdown: "x" }], "rev1");
+    expect(result).toMatchObject({ status: "error", error: { code: "transport", cause } });
   });
 
   test("agentContext is never set", () => {

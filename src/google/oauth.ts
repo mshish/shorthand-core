@@ -18,6 +18,8 @@ export function buildAuthorizationUrl(options: Readonly<{
   redirectUri: string;
   codeChallenge: string;
   scope: string;
+  /** Omit the Picker trigger when there's nothing to pick (e.g. the app is about to create its own target). Defaults to true. */
+  usePicker?: boolean;
 }>): string {
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.searchParams.set("client_id", options.clientId);
@@ -28,7 +30,7 @@ export function buildAuthorizationUrl(options: Readonly<{
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("code_challenge", options.codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("trigger_onepick", "true");
+  if (options.usePicker ?? true) url.searchParams.set("trigger_onepick", "true");
   return url.toString();
 }
 

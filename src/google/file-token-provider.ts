@@ -4,7 +4,12 @@ import { OAuth2Client } from "google-auth-library";
 import { shorthandConfigDirectory } from "../config.js";
 import { tokenError, type TokenProvider, type TokenResult } from "../auth/token-provider.js";
 
-export type GoogleCredentials = Readonly<{ refreshToken: string; documentId: string; tabId?: string }>;
+export type GoogleCredentials = Readonly<{
+  refreshToken: string;
+  documentId: string;
+  tabId?: string;
+  folderId?: string;
+}>;
 
 export function credentialsPath(environment: NodeJS.ProcessEnv = process.env): string {
   return join(shorthandConfigDirectory(environment), "google-credentials.json");
@@ -34,12 +39,14 @@ export async function readCredentials(path = credentialsPath()): Promise<GoogleC
  */
 export function mergeCredentials(
   existing: GoogleCredentials | undefined,
-  update: Readonly<{ refreshToken: string; documentId: string }>,
+  update: Readonly<{ refreshToken: string; documentId: string; folderId?: string }>,
 ): GoogleCredentials {
+  const folderId = update.folderId ?? existing?.folderId;
   return {
     refreshToken: update.refreshToken,
     documentId: update.documentId,
     ...(existing?.tabId === undefined ? {} : { tabId: existing.tabId }),
+    ...(folderId === undefined ? {} : { folderId }),
   };
 }
 

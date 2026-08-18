@@ -42,6 +42,24 @@ describe("mergeCredentials", () => {
     const merged = mergeCredentials(undefined, { refreshToken: "new-rt", documentId: "new-doc" });
     expect(merged).toEqual({ refreshToken: "new-rt", documentId: "new-doc" });
   });
+
+  test("preserves an existing folderId when the update doesn't specify one", () => {
+    const existing: GoogleCredentials = { refreshToken: "old-rt", documentId: "old-doc", folderId: "folder-1" };
+    const merged = mergeCredentials(existing, { refreshToken: "new-rt", documentId: "new-doc" });
+    expect(merged).toEqual({ refreshToken: "new-rt", documentId: "new-doc", folderId: "folder-1" });
+  });
+
+  test("a new folderId in the update overrides an existing one", () => {
+    const existing: GoogleCredentials = { refreshToken: "old-rt", documentId: "old-doc", folderId: "folder-1" };
+    const merged = mergeCredentials(existing, { refreshToken: "new-rt", documentId: "new-doc", folderId: "folder-2" });
+    expect(merged).toEqual({ refreshToken: "new-rt", documentId: "new-doc", folderId: "folder-2" });
+  });
+
+  test("omits folderId entirely when neither existing nor update has one", () => {
+    const merged = mergeCredentials(undefined, { refreshToken: "new-rt", documentId: "new-doc" });
+    expect(merged).toEqual({ refreshToken: "new-rt", documentId: "new-doc" });
+    expect("folderId" in merged).toBe(false);
+  });
 });
 
 describe("FileTokenProvider.getAccessToken", () => {

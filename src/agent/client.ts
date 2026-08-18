@@ -21,6 +21,7 @@ export class ClaudeAgentClient implements AgentClient {
     let structuredOutput: unknown;
     let sessionId: string | undefined;
     let sawResult = false;
+    let diagnostics: readonly string[] = [];
     try {
       for await (const rawMessage of stream) {
         const message = rawMessage as unknown as SdkMessage;
@@ -33,7 +34,13 @@ export class ClaudeAgentClient implements AgentClient {
         // so there is no assistant text left to harvest.
         sawResult = true;
         structuredOutput = message.structured_output;
-        if (isStructuredOutputExhaustion(message)) continue;
+        if (isStructuredOutputExhaustion(message)) {
+          // Keep the diagnostics rather than dropping them with the throw below: they are
+          // the only account of what the model got wrong, and the corrective attempt is
+          // where they earn their keep.
+          diagnostics = resultErrors(message);
+          continue;
+        }
         if (message.is_error === true) throw new AgentQueryError(resultFailureMessage(message));
       }
     } finally {
@@ -49,7 +56,7 @@ export class ClaudeAgentClient implements AgentClient {
     // `undefined` here would hand the contract loop a value it cannot tell apart from
     // exhaustion, so every such pass would be logged and reported as bad model output.
     if (!sawResult) throw new AgentQueryError("Claude Agent SDK stream ended without a result message.");
-    return { structuredOutput, sessionId };
+    return { structuredOutput, sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
   }
 }
 
@@ -206,8 +213,12 @@ export function detectClaudeExecutable(override?: string, environment: NodeJS.Pr
 /**
  * Exhausted schema retries arrive as an SDKResultError, not a success result, so the
  * generic is_error throw would swallow them. They are a rejection the contract loop can
- * still correct — its second attempt appends the validation error to the prompt, which is
- * feedback none of the SDK's internal retries ever saw — so they must not end the pass.
+ * still correct, so they must not end the pass: its second attempt is a fresh turn that
+ * re-sends the whole prompt — sections, transcript, and user notes — with the SDK's own
+ * `errors` appended, rather than another schema-constrained retry inside a turn that has
+ * already gone wrong. Whether the SDK's internal retries saw those same errors is not
+ * observable from here, so the retry is not claimed to tell the model something new; what
+ * it reliably buys is a clean turn that states the failure in the prompt.
  */
 function isStructuredOutputExhaustion(message: SdkMessage): boolean {
   return message.subtype === "error_max_structured_output_retries"
@@ -219,11 +230,18 @@ function isStructuredOutputExhaustion(message: SdkMessage): boolean {
  * `result` would report every real failure as the bare generic message below.
  */
 function resultFailureMessage(message: SdkMessage): string {
-  const errors = Array.isArray(message.errors)
-    ? message.errors.filter((entry): entry is string => typeof entry === "string")
-    : [];
   const detail = typeof message.result === "string" && message.result.length > 0
     ? message.result
-    : errors.join("; ");
+    : resultErrors(message).join("; ");
   return detail.length > 0 ? detail : `Claude Agent SDK result failed (${String(message.subtype)}).`;
+}
+
+/**
+ * `errors` is declared `string[]` on SDKResultError but is absent from SDKResultSuccess and
+ * may legitimately be empty, so neither its presence nor its contents can be assumed.
+ */
+function resultErrors(message: SdkMessage): readonly string[] {
+  return Array.isArray(message.errors)
+    ? message.errors.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
 }

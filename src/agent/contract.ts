@@ -107,6 +107,13 @@ export type AgentQueryResponse = Readonly<{
    */
   structuredOutput: unknown;
   sessionId: string;
+  /**
+   * Whatever the transport learned about why `structuredOutput` is absent — for the
+   * Agent SDK, the result message's own `errors`. Fed to the model on the corrective
+   * attempt, which is otherwise a re-ask with nothing new to say. Absent, never empty:
+   * a transport with nothing to report says nothing.
+   */
+  diagnostics?: readonly string[];
 }>;
 
 export interface AgentClient {
@@ -133,7 +140,7 @@ export type ContractResult =
 
 export type ContractLogger = Pick<Console, "error">;
 
-export function validateSectionOutput(value: unknown):
+export function validateSectionOutput(value: unknown, diagnostics: readonly string[] = []):
   | Readonly<{ ok: true; sections: readonly Section[] }>
   | Readonly<{ ok: false; error: string }> {
   // Two different failures that must not be conflated in the operator log: a turn that
@@ -142,7 +149,13 @@ export function validateSectionOutput(value: unknown):
   // cause and this function cannot see which, so it names what was observed rather than
   // asserting a reason.
   if (value === undefined) {
-    return { ok: false, error: "The agent returned no structured output." };
+    const detail = diagnostics.filter((entry) => entry.length > 0).join("; ");
+    return {
+      ok: false,
+      error: detail.length > 0
+        ? `The agent returned no structured output. The SDK reported: ${detail}`
+        : "The agent returned no structured output.",
+    };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, error: "Structured output was not the expected object with a sections array." };
@@ -173,7 +186,7 @@ export async function queryForSections(
       const attemptRequest = { ...request, prompt, ...(sessionId === undefined ? {} : { sessionId }) };
       const response = await agent.query(attemptRequest);
       sessionId = response.sessionId;
-      const parsed = validateSectionOutput(response.structuredOutput);
+      const parsed = validateSectionOutput(response.structuredOutput, response.diagnostics ?? []);
       if (parsed.ok) return { status: "valid", sections: parsed.sections, attempts: attempt, sessionId };
       lastError = parsed.error;
     } catch (error) {

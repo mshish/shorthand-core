@@ -56,6 +56,20 @@ describe("the two-attempt contract loop over structured output", () => {
     expect(agent.requests[1]?.prompt).toContain("no structured output");
     expect(result).toEqual(expect.objectContaining({ status: "valid", attempts: 2 }));
   });
+
+  test("the corrective attempt carries the transport's diagnostics, or it is a retry with nothing new to say", async () => {
+    const agent = new SequenceAgent([
+      {
+        structuredOutput: undefined,
+        sessionId: "session-exhausted",
+        diagnostics: ["sections.0.heading: expected string, received number"],
+      },
+      { structuredOutput: envelope(valid), sessionId: "session-recovered" },
+    ]);
+    const errors: string[] = [];
+    await queryForSections(agent, request(), [], { error: (message) => errors.push(String(message)) });
+    expect(agent.requests[1]?.prompt).toContain("sections.0.heading: expected string, received number");
+  });
 });
 
 class SequenceAgent implements AgentClient {

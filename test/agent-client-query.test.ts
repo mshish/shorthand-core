@@ -41,9 +41,23 @@ describe("ClaudeAgentClient result harvesting", () => {
       session_id: "session-2", terminal_reason: "structured_output_retry_exhausted",
       errors: ["schema validation failed 3 times"],
     }];
+    // The SDK's own diagnostics come back with it: they are the only description of what
+    // the model got wrong, and the corrective attempt is worthless without them.
     expect(await new ClaudeAgentClient().query(agentRequest())).toEqual({
       structuredOutput: undefined,
       sessionId: "session-2",
+      diagnostics: ["schema validation failed 3 times"],
+    });
+  });
+
+  test("a result carrying no diagnostics leaves the field off rather than empty", async () => {
+    messages = [{
+      type: "result", subtype: "error_max_structured_output_retries", is_error: true,
+      session_id: "session-7", errors: [],
+    }];
+    expect(await new ClaudeAgentClient().query(agentRequest())).toEqual({
+      structuredOutput: undefined,
+      sessionId: "session-7",
     });
   });
 

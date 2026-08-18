@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { chmod } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { detectShorthandExecutable } from "../src/config.js";
+import { homedir, tmpdir } from "node:os";
+import { detectShorthandExecutable, shorthandConfigDirectory } from "../src/config.js";
 
 const binaryName = process.platform === "win32" ? "shorthand.exe" : "shorthand";
 
@@ -51,5 +51,36 @@ describe("detectShorthandExecutable", () => {
 
   test("an empty override is treated as absent rather than as a path", () => {
     expect(detectShorthandExecutable("", { PATH: "" })).toBe(binaryName);
+  });
+});
+
+describe("shorthandConfigDirectory", () => {
+  test("uses APPDATA on Windows", () => {
+    if (process.platform !== "win32") return;
+    expect(shorthandConfigDirectory({ APPDATA: "C:\\Users\\me\\AppData\\Roaming" }))
+      .toBe(join("C:\\Users\\me\\AppData\\Roaming", "Shorthand"));
+  });
+
+  test("uses Library/Application Support on macOS", () => {
+    if (process.platform !== "darwin") return;
+    expect(shorthandConfigDirectory({ HOME: "/Users/me" }))
+      .toBe(join("/Users/me", "Library", "Application Support", "Shorthand"));
+  });
+
+  test("uses XDG_CONFIG_HOME when set on Linux", () => {
+    if (process.platform === "win32" || process.platform === "darwin") return;
+    expect(shorthandConfigDirectory({ XDG_CONFIG_HOME: "/xdg", HOME: "/home/me" }))
+      .toBe(join("/xdg", "shorthand"));
+  });
+
+  test("falls back to ~/.config on Linux when XDG_CONFIG_HOME is unset", () => {
+    if (process.platform === "win32" || process.platform === "darwin") return;
+    expect(shorthandConfigDirectory({ HOME: "/home/me" }))
+      .toBe(join("/home/me", ".config", "shorthand"));
+  });
+
+  test("falls back to os.homedir() when neither USERPROFILE nor HOME is set", () => {
+    const detected = shorthandConfigDirectory({});
+    expect(detected.startsWith(homedir()) || detected.includes(homedir())).toBe(true);
   });
 });

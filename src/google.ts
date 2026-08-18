@@ -20,3 +20,6 @@ export type {
 
 export { FileTokenProvider, credentialsPath, readCredentials, writeCredentials } from "./google/file-token-provider.js";
 export type { FileTokenProviderOptions, GoogleCredentials } from "./google/file-token-provider.js";
+
+export { ensureContainerDoc } from "./google/container-doc.js";
+export type { ContainerDocResult } from "./google/container-doc.js";

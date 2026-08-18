@@ -36,7 +36,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n  shorthand-notes google-login [--port <n>] [--client-id <id>] [--client-secret <secret>]",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n  shorthand-notes google-login [--create] [--port <n>] [--client-id <id>] [--client-secret <secret>]",
   );
   return 2;
 }
@@ -50,7 +50,7 @@ const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude",
-  "--client-id", "--client-secret", "--port",
+  "--client-id", "--client-secret", "--port", "--create",
 ]);
 
 class ArgumentError extends Error {}
@@ -488,6 +488,7 @@ async function runGoogleLogin(args: readonly string[], environment: NodeJS.Proce
   if (clientId === undefined || clientSecret === undefined) {
     return usage("google-login requires --client-id/--client-secret or GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET.");
   }
+  const createMode = args.includes("--create");
   const port = Number(argumentValue(args, "--port") ?? "0") || 8721;
   const { OAuth2Client } = await import("google-auth-library");
   const client = new OAuth2Client({ clientId, clientSecret });
@@ -497,25 +498,77 @@ async function runGoogleLogin(args: readonly string[], environment: NodeJS.Proce
   const { GOOGLE_DOCS_SCOPE } = await import("../src/google/docs-sink.js");
 
   const { codeVerifier, codeChallenge } = await generatePkceChallenge(client);
-  const authorizationUrl = buildAuthorizationUrl({ clientId, redirectUri, codeChallenge, scope: GOOGLE_DOCS_SCOPE });
+  const authorizationUrl = buildAuthorizationUrl({ clientId, redirectUri, codeChallenge, scope: GOOGLE_DOCS_SCOPE, usePicker: !createMode });
   console.log(`Opening your browser to authorize Shorthand:\n${authorizationUrl}`);
   await openInBrowser(authorizationUrl, environment);
 
   const redirect = await listenForRedirect(port);
-  const documentId = redirect.pickedFileIds[0];
-  if (documentId === undefined) {
-    console.error("No document was picked. Re-run google-login and choose a Google Doc.");
-    return 1;
-  }
   const { refreshToken } = await exchangeCode(client, redirect.code, codeVerifier, redirectUri);
+  // exchangeCode's returned refreshToken is what every downstream Drive/Docs
+  // call in this function authenticates with — set it explicitly rather than
+  // relying on getToken() having already done so as a side effect, so this
+  // doesn't depend on an unverified library internal.
+  client.setCredentials({ refresh_token: refreshToken });
   const existingCredentials = await readCredentials();
-  await writeCredentials(mergeCredentials(existingCredentials, { refreshToken, documentId }));
-  console.log(`Google account connected. Target document: ${documentId}`);
+
+  let documentId: string;
+  let folderId: string | undefined;
+  let containerDocSummary: { folderCreated: boolean; documentCreated: boolean } | undefined;
+  if (createMode) {
+    const { ensureContainerDoc } = await import("../src/google/container-doc.js");
+    let created;
+    try {
+      created = await ensureContainerDoc(client, {
+        ...(existingCredentials?.folderId === undefined ? {} : { folderId: existingCredentials.folderId }),
+        ...(existingCredentials?.documentId === undefined ? {} : { documentId: existingCredentials.documentId }),
+      });
+    } catch (error) {
+      // ensureContainerDoc itself decorates its thrown error with the created folder's
+      // id when it got far enough to create one (see src/google/container-doc.ts) — this
+      // catch just makes sure that message actually reaches the user, plus a generic
+      // caveat, since nothing has been persisted yet at this point (no credentials
+      // written) and a retry with no other information would create a duplicate folder.
+      console.error(error instanceof Error ? error.message : String(error));
+      console.error("Google credentials were not saved. If a folder was partially created in your Google Drive, check Drive and either delete it or note its ID before retrying.");
+      return 1;
+    }
+    documentId = created.documentId;
+    folderId = created.folderId;
+    containerDocSummary = { folderCreated: created.folderCreated, documentCreated: created.documentCreated };
+  } else {
+    const picked = redirect.pickedFileIds[0];
+    if (picked === undefined) {
+      console.error("No document was picked. Re-run google-login and choose a Google Doc.");
+      return 1;
+    }
+    documentId = picked;
+  }
+
+  await writeCredentials(mergeCredentials(existingCredentials, {
+    refreshToken,
+    documentId,
+    ...(folderId === undefined ? {} : { folderId }),
+  }));
+  console.log(createMode
+    ? `Google account connected. ${describeContainerDocOutcome(containerDocSummary)} (folder ${folderId}, document ${documentId}).`
+    : `Google account connected. Target document: ${documentId}.`);
   // `enhance` does not yet accept a --sink flag or otherwise construct a
   // GoogleDocsNoteSink; that integration is a later, not-yet-built increment.
   // Don't imply it already works.
   console.log("Credentials saved. Google Docs sink support is not yet wired into `shorthand-notes enhance`.");
   return 0;
+}
+
+function describeContainerDocOutcome(summary: { folderCreated: boolean; documentCreated: boolean } | undefined): string {
+  // Distinguishes "created fresh" from "moved your own pre-existing document" so a user
+  // who previously did picker-based login (so a documentId already existed) and then runs
+  // --create isn't left thinking nothing happened to their own doc, when in fact it was
+  // just relocated into a brand-new folder.
+  if (summary === undefined) return "Created folder and container doc.";
+  if (summary.folderCreated && summary.documentCreated) return "Created a new folder and document.";
+  if (summary.folderCreated && !summary.documentCreated) return "Created a new folder and moved your existing document into it.";
+  if (!summary.folderCreated && summary.documentCreated) return "Created a new document in your existing folder.";
+  return "Reused your existing folder and document.";
 }
 
 async function openInBrowser(url: string, environment: NodeJS.ProcessEnv): Promise<void> {

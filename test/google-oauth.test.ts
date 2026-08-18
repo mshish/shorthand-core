@@ -36,6 +36,26 @@ describe("buildAuthorizationUrl", () => {
     }));
     expect(url.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/drive.file");
   });
+
+  test("omits trigger_onepick when usePicker is false", () => {
+    const url = new URL(buildAuthorizationUrl({
+      clientId: "c", redirectUri: "http://127.0.0.1:9999/callback",
+      codeChallenge: "x", scope: "https://www.googleapis.com/auth/drive.file",
+      usePicker: false,
+    }));
+    expect(url.searchParams.has("trigger_onepick")).toBe(false);
+    // Everything else stays present — only the picker trigger is conditional.
+    expect(url.searchParams.get("access_type")).toBe("offline");
+    expect(url.searchParams.get("code_challenge")).toBe("x");
+  });
+
+  test("usePicker defaults to true when omitted", () => {
+    const url = new URL(buildAuthorizationUrl({
+      clientId: "c", redirectUri: "http://127.0.0.1:9999/callback",
+      codeChallenge: "x", scope: "https://www.googleapis.com/auth/drive.file",
+    }));
+    expect(url.searchParams.get("trigger_onepick")).toBe("true");
+  });
 });
 
 describe("listenForRedirect", () => {

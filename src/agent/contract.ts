@@ -99,9 +99,11 @@ export type AgentQueryRequest = Readonly<{
 
 export type AgentQueryResponse = Readonly<{
   /**
-   * Undefined when the SDK exhausted its own schema retries. That is a real outcome
-   * the zod gate turns into a corrective second attempt, so it is carried through
-   * rather than substituted with an empty value or raised as a query error.
+   * Undefined when a result message arrived carrying no structured value — the SDK
+   * exhausted its own schema retries, or a CLI that ignores `outputFormat` reported
+   * success without one. Either way the turn ran, so it is carried through for the
+   * corrective second attempt rather than raised as a query error. A stream that
+   * produced no result at all is a query error and never reaches here.
    */
   structuredOutput: unknown;
   sessionId: string;
@@ -134,11 +136,13 @@ export type ContractLogger = Pick<Console, "error">;
 export function validateSectionOutput(value: unknown):
   | Readonly<{ ok: true; sections: readonly Section[] }>
   | Readonly<{ ok: false; error: string }> {
-  // Two different failures that must not be conflated in the operator log: the SDK
-  // giving up after its own schema retries, versus output the SDK accepted and the
-  // zod gate then rejected.
+  // Two different failures that must not be conflated in the operator log: a turn that
+  // produced no structured value at all, versus a value the SDK accepted and the zod gate
+  // then rejected. Only the second is evidence about the model. Absence has more than one
+  // cause and this function cannot see which, so it names what was observed rather than
+  // asserting a reason.
   if (value === undefined) {
-    return { ok: false, error: "The agent returned no structured output; the SDK exhausted its own schema retries." };
+    return { ok: false, error: "The agent returned no structured output." };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, error: "Structured output was not the expected object with a sections array." };

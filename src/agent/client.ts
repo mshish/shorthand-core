@@ -20,6 +20,7 @@ export class ClaudeAgentClient implements AgentClient {
     request.signal?.addEventListener("abort", interrupt, { once: true });
     let structuredOutput: unknown;
     let sessionId: string | undefined;
+    let sawResult = false;
     try {
       for await (const rawMessage of stream) {
         const message = rawMessage as unknown as SdkMessage;
@@ -30,6 +31,7 @@ export class ClaudeAgentClient implements AgentClient {
         // Only the result message carries the structured output. Under an output format a
         // completed turn ends on a tool_result carrier with no trailing assistant message,
         // so there is no assistant text left to harvest.
+        sawResult = true;
         structuredOutput = message.structured_output;
         if (isStructuredOutputExhaustion(message)) continue;
         if (message.is_error === true) throw new AgentQueryError(resultFailureMessage(message));
@@ -40,6 +42,13 @@ export class ClaudeAgentClient implements AgentClient {
     // Every SDK message type carries session_id, so this only fires for a stream that
     // produced no messages at all.
     if (sessionId === undefined) throw new Error("Claude Agent SDK returned no session id.");
+    // Absent structured output only means the model failed the schema if a result message
+    // said so. A stream that ended without one produced no answer at all — an abort, a killed
+    // subprocess, or a CLI old enough to ignore `outputFormat` (the executable is resolved
+    // from the user's own install and versions independently of the npm SDK). Returning
+    // `undefined` here would hand the contract loop a value it cannot tell apart from
+    // exhaustion, so every such pass would be logged and reported as bad model output.
+    if (!sawResult) throw new AgentQueryError("Claude Agent SDK stream ended without a result message.");
     return { structuredOutput, sessionId };
   }
 }

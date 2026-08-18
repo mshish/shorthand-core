@@ -14,7 +14,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 
 // Imported after the mock is registered, so the client binds to the fake `query`.
 const { ClaudeAgentClient } = await import("../src/agent/client.js");
-const { AgentQueryError } = await import("../src/agent/contract.js");
+const { AgentQueryError, buildSectionOutputSchema, queryForSections } = await import("../src/agent/contract.js");
 
 describe("ClaudeAgentClient result harvesting", () => {
   test("returns the structured output the result message carried", async () => {
@@ -62,6 +62,41 @@ describe("ClaudeAgentClient result harvesting", () => {
     messages = [{ type: "result", subtype: "success", is_error: false, structured_output: {} }];
     await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow("no session id");
   });
+
+  test("a stream that ended without a result message is a transport failure, not an empty answer", async () => {
+    // A CLI too old for `outputFormat`, an abort, or a killed subprocess all end the stream
+    // with no result. Returning `structuredOutput: undefined` here would be indistinguishable
+    // from the SDK exhausting its schema retries, which is a claim about the model.
+    messages = [
+      { type: "system", session_id: "session-4" },
+      { type: "assistant", session_id: "session-4", message: { content: [{ type: "text", text: "thinking" }] } },
+    ];
+    await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow(AgentQueryError);
+    await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow("without a result message");
+  });
+});
+
+describe("what the contract loop makes of a real client's stream", () => {
+  test("a result-less stream is reported as a query error, never as bad model output", async () => {
+    messages = [{ type: "system", session_id: "session-5" }];
+    const errors: string[] = [];
+    const result = await queryForSections(new ClaudeAgentClient(), contractRequest(), [], {
+      error: (message) => errors.push(String(message)),
+    });
+    // One attempt, not two: there is nothing for a corrective prompt to correct.
+    expect(result).toMatchObject({ status: "skipped", reason: "query-error", attempts: 1 });
+    expect(errors[0]).toContain("AGENT PASS FAILED");
+  });
+
+  test("exhausted schema retries still buy the second, corrective attempt", async () => {
+    messages = [{
+      type: "result", subtype: "error_max_structured_output_retries", is_error: true,
+      session_id: "session-6", terminal_reason: "structured_output_retry_exhausted",
+      errors: ["sections: expected array, received string"],
+    }];
+    const result = await queryForSections(new ClaudeAgentClient(), contractRequest(), [], { error: () => {} });
+    expect(result).toMatchObject({ status: "skipped", reason: "invalid-output", attempts: 2 });
+  });
 });
 
 function agentRequest(): AgentQueryRequest {
@@ -73,4 +108,8 @@ function agentRequest(): AgentQueryRequest {
     maxTurns: 1,
     outputSchema: { type: "object" },
   };
+}
+
+function contractRequest(): AgentQueryRequest {
+  return { ...agentRequest(), outputSchema: buildSectionOutputSchema() };
 }

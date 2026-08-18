@@ -85,6 +85,12 @@ export type AgentQueryRequest = Readonly<{
   settingSources: readonly ("user" | "project" | "local")[];
   maxTurns: number;
   maxAttempts?: number;
+  /**
+   * The JSON Schema the SDK enforces on this turn's output. Required, not optional:
+   * an optional field leaves a silently-unenforced path for a future caller to fall
+   * into without noticing the shape gate is gone.
+   */
+  outputSchema: Record<string, unknown>;
   pathToClaudeCodeExecutable?: string;
   signal?: AbortSignal;
   /** The session id to resume. Absent means this is the capture's first pass. */
@@ -92,7 +98,12 @@ export type AgentQueryRequest = Readonly<{
 }>;
 
 export type AgentQueryResponse = Readonly<{
-  finalAssistantMessage: string;
+  /**
+   * Undefined when the SDK exhausted its own schema retries. That is a real outcome
+   * the zod gate turns into a corrective second attempt, so it is carried through
+   * rather than substituted with an empty value or raised as a query error.
+   */
+  structuredOutput: unknown;
   sessionId: string;
 }>;
 
@@ -119,35 +130,6 @@ export type ContractResult =
   }>;
 
 export type ContractLogger = Pick<Console, "error">;
-
-export function extractLastFencedJson(message: string): string | undefined {
-  const openings = [...message.matchAll(/```json[ \t]*\r?\n/gi)];
-  const opening = openings.at(-1);
-  if (opening?.index === undefined) return undefined;
-  const contentStart = opening.index + opening[0].length;
-  const closings = [...message.slice(contentStart).matchAll(/^```[ \t]*(?:\r?\n|$)/gm)];
-  const closing = closings.at(-1);
-  if (closing?.index === undefined) return undefined;
-  return message.slice(contentStart, contentStart + closing.index);
-}
-
-export function parseSectionOutput(message: string):
-  | Readonly<{ ok: true; sections: readonly Section[] }>
-  | Readonly<{ ok: false; error: string }> {
-  const json = extractLastFencedJson(message);
-  if (json === undefined) return { ok: false, error: "No fenced ```json block was found in the final assistant message." };
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(escapeRawJsonStringControls(json));
-  } catch (error) {
-    return { ok: false, error: `Malformed JSON: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const parsed = sectionArraySchema.safeParse(candidate);
-  if (!parsed.success) return { ok: false, error: z.prettifyError(parsed.error) };
-  const writerValidation = renderSections(parsed.data);
-  if (!writerValidation.ok) return { ok: false, error: writerValidation.error.message };
-  return { ok: true, sections: parsed.data };
-}
 
 export function validateSectionOutput(value: unknown):
   | Readonly<{ ok: true; sections: readonly Section[] }>
@@ -187,7 +169,7 @@ export async function queryForSections(
       const attemptRequest = { ...request, prompt, ...(sessionId === undefined ? {} : { sessionId }) };
       const response = await agent.query(attemptRequest);
       sessionId = response.sessionId;
-      const parsed = parseSectionOutput(response.finalAssistantMessage);
+      const parsed = validateSectionOutput(response.structuredOutput);
       if (parsed.ok) return { status: "valid", sections: parsed.sections, attempts: attempt, sessionId };
       lastError = parsed.error;
     } catch (error) {
@@ -238,31 +220,4 @@ function inlineCode(value: string): string {
   const longestRun = Math.max(0, ...[...value.matchAll(/`+/g)].map((match) => match[0].length));
   const delimiter = "`".repeat(longestRun + 1);
   return `${delimiter}${value}${delimiter}`;
-}
-
-function escapeRawJsonStringControls(json: string): string {
-  let output = "";
-  let inString = false;
-  let escaped = false;
-  for (const character of json) {
-    if (!inString) {
-      output += character;
-      if (character === '"') inString = true;
-      continue;
-    }
-    if (escaped) {
-      output += character;
-      escaped = false;
-    } else if (character === "\\") {
-      output += character;
-      escaped = true;
-    } else if (character === '"') {
-      output += character;
-      inString = false;
-    } else if (character === "\n") output += "\\n";
-    else if (character === "\r") output += "\\r";
-    else if (character === "\t") output += "\\t";
-    else output += character;
-  }
-  return output;
 }

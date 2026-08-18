@@ -1,6 +1,7 @@
 import type { Section } from "../note/markers.js";
 import type { NoteSink, SinkReadResult, SinkSnapshot, SinkWriteResult } from "../note/sink.js";
 import {
+  buildSectionOutputSchema,
   DEFAULT_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
   queryForSections,
@@ -219,6 +220,7 @@ export class EnhanceRunner {
       settingSources: [],
       maxTurns: this.#options.maxTurns,
       maxAttempts: allowedAttempts,
+      outputSchema: buildSectionOutputSchema(),
       ...(this.#options.pathToClaudeCodeExecutable === undefined
         ? {}
         : { pathToClaudeCodeExecutable: this.#options.pathToClaudeCodeExecutable }),

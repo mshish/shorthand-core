@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildClaudeAgentOptions, createVaultToolGuard } from "../src/agent/client.js";
+import { buildSectionOutputSchema } from "../src/agent/contract.js";
 
 const scratch: string[] = [];
 afterEach(async () => Promise.all(scratch.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
@@ -46,7 +47,7 @@ describe("Claude Agent vault tool confinement", () => {
     const vault = await temp("vault");
     const options = buildClaudeAgentOptions({
       prompt: "prompt", systemPrompt: "system", cwd: vault,
-      tools: ["Read"], settingSources: ["project"], maxTurns: 2,
+      tools: ["Read"], settingSources: ["project"], maxTurns: 2, outputSchema: buildSectionOutputSchema(),
     });
     expect(options).toMatchObject({
       tools: ["Read"], settingSources: ["project"], permissionMode: "default",
@@ -57,16 +58,26 @@ describe("Claude Agent vault tool confinement", () => {
     expect(typeof options.canUseTool).toBe("function");
   });
 
+  test("the output schema reaches the SDK as a json_schema output format", async () => {
+    const vault = await temp("vault");
+    const options = buildClaudeAgentOptions({
+      prompt: "prompt", systemPrompt: "system", cwd: vault,
+      tools: [], settingSources: [], maxTurns: 2, outputSchema: buildSectionOutputSchema(),
+    });
+    expect(options.outputFormat).toEqual({ type: "json_schema", schema: buildSectionOutputSchema() });
+  });
+
   test("sessionId threads through as resume; its absence leaves resume unset", async () => {
     const vault = await temp("vault");
     const resumed = buildClaudeAgentOptions({
       prompt: "prompt", systemPrompt: "system", cwd: vault,
-      tools: ["Read"], settingSources: ["project"], maxTurns: 2, sessionId: "session-42",
+      tools: ["Read"], settingSources: ["project"], maxTurns: 2,
+      outputSchema: buildSectionOutputSchema(), sessionId: "session-42",
     });
     expect(resumed.resume).toBe("session-42");
     const fresh = buildClaudeAgentOptions({
       prompt: "prompt", systemPrompt: "system", cwd: vault,
-      tools: ["Read"], settingSources: ["project"], maxTurns: 2,
+      tools: ["Read"], settingSources: ["project"], maxTurns: 2, outputSchema: buildSectionOutputSchema(),
     });
     expect(fresh).not.toHaveProperty("resume");
   });

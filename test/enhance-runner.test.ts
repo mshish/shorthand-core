@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentClient, AgentQueryRequest, AgentQueryResponse } from "../src/agent/contract.js";
+import { buildSectionOutputSchema, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "../src/agent/contract.js";
 import { buildClaudeAgentOptions } from "../src/agent/client.js";
 import { EnhanceRunner, type EnhanceRunnerOptions, type EnhanceStatus } from "../src/agent/runner.js";
 import type { Section } from "../src/note/markers.js";
@@ -7,7 +7,7 @@ import { busySinkError, type NoteSink, type SinkReadResult, type SinkWriteResult
 
 const SECTIONS: readonly Section[] = [{ heading: "Summary", markdown: "Old" }];
 const USER_NOTES = "- user fact";
-const OUTPUT = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"Updated\"}]\n```";
+const OUTPUT = { sections: [{ heading: "Summary", markdown: "Updated" }] };
 const silentLogger = { info: () => {}, error: () => {} };
 
 describe("EnhanceRunner trigger and watermark policy", () => {
@@ -234,7 +234,7 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
   });
 
   test("validation retries all count as model attempts toward passCount", async () => {
-    const invalid = { finalAssistantMessage: "not json", sessionId: "session-invalid" };
+    const invalid = { structuredOutput: { sections: [] }, sessionId: "session-invalid" };
     const agent = new FakeAgent([Promise.resolve(invalid), Promise.resolve(response())]);
     const runner = makeRunner({ agent });
     runner.appendTranscript("one attempt then a retry");
@@ -406,10 +406,10 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
   });
 
   test("marker-bearing model output is rejected before the writer is called", async () => {
-    const invalid = "```json\n[{\"heading\":\"Summary\",\"markdown\":\"<!-- shorthand:ai:end -->\"}]\n```";
+    const invalid = { sections: [{ heading: "Summary", markdown: "<!-- shorthand:ai:end -->" }] };
     const agent = new FakeAgent([
-      Promise.resolve({ finalAssistantMessage: invalid, sessionId: "session-marker-1" }),
-      Promise.resolve({ finalAssistantMessage: invalid, sessionId: "session-marker-2" }),
+      Promise.resolve({ structuredOutput: invalid, sessionId: "session-marker-1" }),
+      Promise.resolve({ structuredOutput: invalid, sessionId: "session-marker-2" }),
     ]);
     const sink = new FakeSink({ cwd: process.cwd() });
     const runner = makeRunner({ agent, sink });
@@ -417,6 +417,14 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(await runner.enhanceNow("tick")).toEqual({ status: "skipped", reason: "invalid-output" });
     expect(agent.requests).toHaveLength(2);
     expect(sink.writes).toHaveLength(0);
+  });
+
+  test("every pass carries the derived output schema, so shape enforcement is never optional", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const runner = makeRunner({ agent });
+    runner.updateTranscript("enough transcript");
+    expect((await runner.enhanceNow("tick")).status).toBe("completed");
+    expect(agent.requests[0]!.outputSchema).toEqual(buildSectionOutputSchema());
   });
 });
 
@@ -488,7 +496,7 @@ function makeRunner(overrides: Partial<EnhanceRunnerOptions> & Pick<EnhanceRunne
 }
 
 function response(sessionId = "session-mock"): AgentQueryResponse {
-  return { finalAssistantMessage: OUTPUT, sessionId };
+  return { structuredOutput: OUTPUT, sessionId };
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

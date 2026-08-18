@@ -18,8 +18,7 @@ export class ClaudeAgentClient implements AgentClient {
     const stream = query({ prompt: request.prompt, options });
     const interrupt = () => { void stream.interrupt().catch(() => {}); };
     request.signal?.addEventListener("abort", interrupt, { once: true });
-    let finalAssistantMessage = "";
-    let resultText = "";
+    let structuredOutput: unknown;
     let sessionId: string | undefined;
     try {
       for await (const rawMessage of stream) {
@@ -27,26 +26,21 @@ export class ClaudeAgentClient implements AgentClient {
         // The session id is stable for the life of the stream: capture it off the first
         // message seen and never overwrite it on later messages.
         if (sessionId === undefined && typeof message.session_id === "string") sessionId = message.session_id;
-        if (message.type === "assistant") {
-          const text = assistantText(message);
-          if (text.length > 0) finalAssistantMessage = text;
-        }
-        if (message.type === "result") {
-          if (typeof message.result === "string") resultText = message.result;
-          if (message.is_error === true) {
-            throw new AgentQueryError(resultText || `Claude Agent SDK result failed (${String(message.subtype)}).`);
-          }
-        }
+        if (message.type !== "result") continue;
+        // Only the result message carries the structured output. Under an output format a
+        // completed turn ends on a tool_result carrier with no trailing assistant message,
+        // so there is no assistant text left to harvest.
+        structuredOutput = message.structured_output;
+        if (isStructuredOutputExhaustion(message)) continue;
+        if (message.is_error === true) throw new AgentQueryError(resultFailureMessage(message));
       }
     } finally {
       request.signal?.removeEventListener("abort", interrupt);
     }
-    if (finalAssistantMessage.length === 0) finalAssistantMessage = resultText;
-    if (finalAssistantMessage.length === 0) throw new Error("Claude Agent SDK returned no final assistant text.");
-    // The throw above guarantees at least one message carried assistant text or a result,
-    // and every SDK message type carries session_id, so sessionId is always set by here.
+    // Every SDK message type carries session_id, so this only fires for a stream that
+    // produced no messages at all.
     if (sessionId === undefined) throw new Error("Claude Agent SDK returned no session id.");
-    return { finalAssistantMessage, sessionId };
+    return { structuredOutput, sessionId };
   }
 }
 
@@ -67,6 +61,7 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
     permissionMode: "default" as const,
     canUseTool: cwd === undefined ? denyAllToolGuard() : createVaultToolGuard(cwd, request.tools),
     systemPrompt: request.systemPrompt,
+    outputFormat: { type: "json_schema" as const, schema: request.outputSchema },
     settingSources: [...request.settingSources],
     maxTurns: request.maxTurns,
     ...(request.pathToClaudeCodeExecutable === undefined
@@ -170,12 +165,15 @@ export class ExecutableAgentStub implements AgentClient {
         if (code !== 0) return rejectQuery(new Error(`Agent stub exited ${code}: ${stderr.trim()}`));
         try {
           const parsed = JSON.parse(stdout) as Record<string, unknown>;
-          if (typeof parsed.finalAssistantMessage !== "string") throw new Error("Stub output requires finalAssistantMessage.");
+          // Presence, not type: `structuredOutput` is deliberately `unknown` — a fixture may
+          // legitimately emit `null` or omit the sections to exercise a rejection — but a
+          // fixture that leaves the key out entirely is broken, not modelling a failure.
+          if (!("structuredOutput" in parsed)) throw new Error("Stub output requires structuredOutput.");
           // Stubs are hand-written fixtures that predate session ids; falling back to an
           // empty string keeps the stub JSON contract simple rather than forcing every
           // fixture to invent one.
           const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId : "";
-          resolveQuery({ finalAssistantMessage: parsed.finalAssistantMessage, sessionId });
+          resolveQuery({ structuredOutput: parsed.structuredOutput, sessionId });
         } catch (error) {
           rejectQuery(new Error(`Invalid agent stub JSON: ${error instanceof Error ? error.message : String(error)}`));
         }
@@ -196,16 +194,27 @@ export function detectClaudeExecutable(override?: string, environment: NodeJS.Pr
   return undefined;
 }
 
-function assistantText(message: SdkMessage): string {
-  const envelope = message.message;
-  if (typeof envelope !== "object" || envelope === null) return "";
-  const content = (envelope as Record<string, unknown>).content;
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((block) => (
-    typeof block === "object" && block !== null
-      && (block as Record<string, unknown>).type === "text"
-      && typeof (block as Record<string, unknown>).text === "string"
-      ? [(block as Record<string, unknown>).text as string]
-      : []
-  )).join("\n");
+/**
+ * Exhausted schema retries arrive as an SDKResultError, not a success result, so the
+ * generic is_error throw would swallow them. They are a rejection the contract loop can
+ * still correct — its second attempt appends the validation error to the prompt, which is
+ * feedback none of the SDK's internal retries ever saw — so they must not end the pass.
+ */
+function isStructuredOutputExhaustion(message: SdkMessage): boolean {
+  return message.subtype === "error_max_structured_output_retries"
+    || message.terminal_reason === "structured_output_retry_exhausted";
+}
+
+/**
+ * SDKResultError carries no `result` string; its diagnostics are in `errors`. Reading only
+ * `result` would report every real failure as the bare generic message below.
+ */
+function resultFailureMessage(message: SdkMessage): string {
+  const errors = Array.isArray(message.errors)
+    ? message.errors.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const detail = typeof message.result === "string" && message.result.length > 0
+    ? message.result
+    : errors.join("; ");
+  return detail.length > 0 ? detail : `Claude Agent SDK result failed (${String(message.subtype)}).`;
 }

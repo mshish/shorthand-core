@@ -36,7 +36,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n  shorthand-notes google-login [--port <n>] [--client-id <id>] [--client-secret <secret>]",
   );
   return 2;
 }
@@ -50,6 +50,7 @@ const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude",
+  "--client-id", "--client-secret", "--port",
 ]);
 
 class ArgumentError extends Error {}
@@ -87,7 +88,8 @@ export async function runCli(
     if (command === "init-note") return await initializeNote(args);
     if (command === "read-block") return await readBlock(args);
     if (command === "set-sections") return await setSections(args);
-    return usage("Expected capture, enhance, init-note, read-block, or set-sections.");
+    if (command === "google-login") return await runGoogleLogin(args, environment);
+    return usage("Expected capture, enhance, init-note, read-block, set-sections, or google-login.");
   } catch (error) {
     if (error instanceof ArgumentError) return usage(error.message);
     throw error;
@@ -478,6 +480,49 @@ async function setSections(args: readonly string[]): Promise<number> {
   }
   console.log(result.status === "written" ? `AI sections written: ${note}` : `AI sections unchanged: ${note}`);
   return 0;
+}
+
+async function runGoogleLogin(args: readonly string[], environment: NodeJS.ProcessEnv): Promise<number> {
+  const clientId = argumentValue(args, "--client-id") ?? environment.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = argumentValue(args, "--client-secret") ?? environment.GOOGLE_OAUTH_CLIENT_SECRET;
+  if (clientId === undefined || clientSecret === undefined) {
+    return usage("google-login requires --client-id/--client-secret or GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET.");
+  }
+  const port = Number(argumentValue(args, "--port") ?? "0") || 8721;
+  const { OAuth2Client } = await import("google-auth-library");
+  const client = new OAuth2Client({ clientId, clientSecret });
+  const redirectUri = `http://127.0.0.1:${port}/callback`;
+  const { generatePkceChallenge, buildAuthorizationUrl, listenForRedirect, exchangeCode } = await import("../src/google/oauth.js");
+  const { readCredentials, writeCredentials, mergeCredentials } = await import("../src/google/file-token-provider.js");
+  const { GOOGLE_DOCS_SCOPE } = await import("../src/google/docs-sink.js");
+
+  const { codeVerifier, codeChallenge } = await generatePkceChallenge(client);
+  const authorizationUrl = buildAuthorizationUrl({ clientId, redirectUri, codeChallenge, scope: GOOGLE_DOCS_SCOPE });
+  console.log(`Opening your browser to authorize Shorthand:\n${authorizationUrl}`);
+  await openInBrowser(authorizationUrl, environment);
+
+  const redirect = await listenForRedirect(port);
+  const documentId = redirect.pickedFileIds[0];
+  if (documentId === undefined) {
+    console.error("No document was picked. Re-run google-login and choose a Google Doc.");
+    return 1;
+  }
+  const { refreshToken } = await exchangeCode(client, redirect.code, codeVerifier, redirectUri);
+  const existingCredentials = await readCredentials();
+  await writeCredentials(mergeCredentials(existingCredentials, { refreshToken, documentId }));
+  console.log(`Google account connected. Target document: ${documentId}`);
+  // `enhance` does not yet accept a --sink flag or otherwise construct a
+  // GoogleDocsNoteSink; that integration is a later, not-yet-built increment.
+  // Don't imply it already works.
+  console.log("Credentials saved. Google Docs sink support is not yet wired into `shorthand-notes enhance`.");
+  return 0;
+}
+
+async function openInBrowser(url: string, environment: NodeJS.ProcessEnv): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
+  const commandArgs = process.platform === "win32" ? ["/c", "start", '""', url] : [url];
+  spawn(command, commandArgs, { stdio: "ignore", detached: true }).unref();
 }
 
 function pathsEqual(left: string, right: string): boolean {

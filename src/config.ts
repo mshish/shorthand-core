@@ -43,6 +43,22 @@ export function detectShorthandExecutable(
   return names[0]!;
 }
 
+/**
+ * Where Shorthand's own config/credential files live, following the same
+ * per-platform conventions detectShorthandExecutable already establishes for
+ * finding the binary — so a second, inconsistent convention never gets invented.
+ */
+export function shorthandConfigDirectory(environment: NodeJS.ProcessEnv = process.env): string {
+  const home = environment.USERPROFILE ?? environment.HOME ?? homedir();
+  if (process.platform === "win32") {
+    return join(environment.APPDATA ?? join(home, "AppData", "Roaming"), "Shorthand");
+  }
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Application Support", "Shorthand");
+  }
+  return join(environment.XDG_CONFIG_HOME ?? join(home, ".config"), "shorthand");
+}
+
 export const DEFAULT_CONFIG = Object.freeze({
   shorthandBinaryPath: "shorthand",
   followStreamArgs: ["--follow-stream", "json"] as readonly string[],

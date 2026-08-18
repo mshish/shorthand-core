@@ -28,6 +28,9 @@ export type {
   SinkWriteResult,
 } from "./note/sink.js";
 
+export { tokenError } from "./auth/token-provider.js";
+export type { TokenError, TokenErrorCode, TokenProvider, TokenResult } from "./auth/token-provider.js";
+
 export type { Section } from "./note/markers.js";
 
 export { StreamClient } from "./stream/client.js";

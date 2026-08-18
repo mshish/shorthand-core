@@ -234,11 +234,49 @@ describe("shorthand-notes CLI", () => {
     expect(await readFile(note, "utf8")).toBe(original);
     expect(await readFile(join(vault, "linked", "transcript.md"), "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
+
+  // google-login performs a real loopback + PKCE + Picker consent round-trip that needs a
+  // human in a real browser, so only its argument validation is exercised here — nothing
+  // past that point can run in an automated suite without a live network/browser.
+  test("google-login requires a client id and secret from flags or environment", async () => {
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    const result = await run(entry, ["google-login"], withoutGoogleOAuthEnv());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
+  });
+
+  test("google-login requires a client secret even when a client id is supplied", async () => {
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    const result = await run(entry, ["google-login", "--client-id", "id"], withoutGoogleOAuthEnv());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
+  });
+
+  test("google-login requires a client id even when a client secret is supplied", async () => {
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    const result = await run(entry, ["google-login", "--client-secret", "secret"], withoutGoogleOAuthEnv());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
+  });
+
+  // A full argument-accepted run (real --client-id/--client-secret) is deliberately not
+  // tested here: past validation, google-login opens a real browser via `openInBrowser`
+  // and blocks on `listenForRedirect` for a human's consent, which the automated suite
+  // must not trigger or wait on.
 });
 
-function run(entry: string, args: readonly string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function withoutGoogleOAuthEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const { GOOGLE_OAUTH_CLIENT_ID: _id, GOOGLE_OAUTH_CLIENT_SECRET: _secret, ...rest } = process.env;
+  return { ...rest, ...overrides };
+}
+
+function run(
+  entry: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(process.execPath, [entry, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [entry, ...args], { stdio: ["ignore", "pipe", "pipe"], env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });

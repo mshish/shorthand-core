@@ -24,9 +24,15 @@ frowned upon. There are three entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
+| `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`/`MAX_GUIDANCE_CHARACTERS`, `parseTemplateSections`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
 | `shorthand-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
 | `shorthand-core/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
+
+`parseTemplateSections` is on the root entry point rather than `shorthand-core/markdown`
+even though its output is fed to `ensureNoteScaffold`: the starting sections of a note are
+not a Markdown concern, and an API-backed sink needs them just as much. What it validates is
+the section contract — `MAX_SECTIONS`, `MAX_HEADING_CHARACTERS`, the marker-token ban — which
+is also not Markdown-specific.
 
 Entry points are **explicit named re-exports**, never `export *`. `export *` would drag every
 incidental module on the re-exported files' graph into consumers' bundles — the Obsidian

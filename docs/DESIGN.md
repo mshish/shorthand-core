@@ -120,6 +120,18 @@ nested, inverted) **fail closed** — no write at all, rather than a guess.
 removes them from its context entirely. The only mutation path is our code. Vault reads are
 confined to the vault by a `canUseTool` guard.
 
+**The safety preamble is not the caller's to replace.** The system prompt is composed at one
+site (`runner.ts`) as `ENHANCEMENT_SAFETY_PREAMBLE` + the editorial guidance, in that order.
+Only the second half is caller-supplied, through `EnhanceRunnerOptions.guidance`; an empty or
+whitespace-only value falls back to `DEFAULT_EDITORIAL_GUIDANCE`, because a prompt carrying
+safety rules and no editorial instruction produces baffling notes and raises no error to
+explain them. Nothing a caller supplies can drop the untrusted-data framing, the marker-token
+ban, or the "the given sections are authoritative" instruction — and `test/enhance-runner.test.ts`
+asserts the composed prompt over the custom-guidance path, not just the default one. Note
+*quality* is not guarded and is not meant to be: a bad prompt makes bad notes, which is the
+caller's business. `MAX_GUIDANCE_CHARACTERS` is hygiene against a pasted-in novel, enforced by
+the surface that accepts the text rather than by the runner.
+
 **Writes are read-splice-write.** Every write re-reads from disk, locates markers in *that*
 content, replaces only the block body, fsyncs a temp file, and renames over the target.
 Offsets are never carried across an `await`.

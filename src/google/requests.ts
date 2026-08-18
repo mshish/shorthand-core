@@ -34,6 +34,12 @@ export function buildWriteRequests(options: BuildWriteRequestsOptions): docs_v1.
     requests.push({ insertText: { location: { tabId, index: 1 }, text } });
   }
   for (const span of spans) {
+    // A zero-length span (e.g. an empty bullet item that slipped through)
+    // would become a degenerate startIndex === endIndex request; the real
+    // Docs API rejects that with a 400 that fails the entire atomic
+    // batchUpdate. renderer.ts is expected not to produce these any more,
+    // but this filter is a defensive backstop, not the only guard.
+    if (span.end === span.start) continue;
     requests.push(styleRequest(tabId, span));
   }
 

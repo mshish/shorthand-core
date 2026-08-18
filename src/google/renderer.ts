@@ -68,9 +68,20 @@ function renderBlockToken(
     renderListItems((token as Tokens.List).items, append, currentLength, spans);
     return;
   }
+  // marked emits a "space" token for the blank line between block-level
+  // tokens (e.g. the paragraph break in "One.\n\nTwo."). It carries no
+  // content of its own; running it through the generic fallback below used
+  // to append a spurious empty paragraph on every render, which broke
+  // unchanged-detection idempotence for any multi-paragraph section body.
+  if (token.type === "space") return;
   // Anything else (heading inside a section body, code, blockquote, table, image):
   // fall back to plain text so an unexpected LLM-produced construct never throws.
-  append(token.raw.replace(/[*_`>#|]/g, "").trim());
+  // Skip appending anything (not even a trailing newline) when the flattened
+  // text is empty, for the same reason as the "space" token above: an empty
+  // fallback must never manifest as a spurious blank paragraph.
+  const flattened = token.raw.replace(/[*_`>#|]/g, "").trim();
+  if (flattened.length === 0) return;
+  append(flattened);
   append("\n");
 }
 
@@ -92,8 +103,16 @@ function renderListItems(
 
     const bulletStart = currentLength();
     renderInline(inlineTokens, append, currentLength, spans);
-    spans.push({ start: bulletStart, end: currentLength(), style: { kind: "bullet" } });
-    append("\n");
+    // An empty item (e.g. a stray "- " line with no text) must not produce a
+    // zero-length bullet span: buildWriteRequests would turn that into a
+    // degenerate startIndex === endIndex createParagraphBullets request,
+    // which the real Docs API rejects with a 400 that fails the whole
+    // (atomic) batchUpdate. Nested lists under an otherwise-empty item still
+    // render, so a bullet with only a sub-list is not silently dropped.
+    if (currentLength() > bulletStart) {
+      spans.push({ start: bulletStart, end: currentLength(), style: { kind: "bullet" } });
+      append("\n");
+    }
 
     for (const nestedList of nestedLists) {
       renderListItems(nestedList.items, append, currentLength, spans);

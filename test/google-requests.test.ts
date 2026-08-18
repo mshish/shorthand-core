@@ -66,6 +66,19 @@ describe("buildWriteRequests", () => {
     });
   });
 
+  test("a zero-length span produces no request for that span", () => {
+    // Defensive backstop: a zero-length bullet span (start === end) would become
+    // a degenerate createParagraphBullets request the real Docs API rejects with
+    // a 400, failing the whole atomic batchUpdate.
+    const spans: readonly StyleSpan[] = [
+      { start: 3, end: 3, style: { kind: "bullet" } },
+      { start: 0, end: 3, style: { kind: "bold" } },
+    ];
+    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "abc", spans });
+    expect(requests.some((request) => "createParagraphBullets" in request)).toBe(false);
+    expect(requests.some((request) => "updateTextStyle" in request)).toBe(true);
+  });
+
   test("throws if any constructed request would lack a tabId", () => {
     expect(() => buildWriteRequests({ tabId: "", bodyEndIndex: 5, text: "x", spans: [] })).toThrow();
   });

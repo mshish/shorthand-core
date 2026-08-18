@@ -96,6 +96,27 @@ describe("renderSections", () => {
     expect(spans.filter((span) => span.style.kind === "bullet")).toHaveLength(2);
   });
 
+  test("a blank line between paragraphs does not create a spurious empty paragraph", () => {
+    // Regression: marked emits a "space" token for the blank line between block
+    // tokens. It used to fall through the generic fallback branch and append an
+    // empty paragraph, which broke unchanged-detection idempotence for any
+    // ordinary multi-paragraph section body.
+    const sections: readonly Section[] = [{ heading: "Notes", markdown: "One.\n\nTwo." }];
+    const { text } = renderSections(sections);
+    expect(text).not.toContain("\n\n");
+    expect(text).toBe("Notes\nOne.\nTwo.\n");
+  });
+
+  test("an empty bullet list item produces no bullet span at all, not a zero-length one", () => {
+    const sections: readonly Section[] = [
+      { heading: "Decisions", markdown: "- \n- x\n" },
+    ];
+    const { spans } = renderSections(sections);
+    const bullets = spans.filter((span) => span.style.kind === "bullet");
+    expect(bullets).toHaveLength(1);
+    expect(bullets[0]!.start).not.toBe(bullets[0]!.end);
+  });
+
   test("flattens a nested bullet list to same-level bullets, each with its own span", () => {
     const sections: readonly Section[] = [
       { heading: "Notes", markdown: "- Top item\n  - Nested item\n- Another top\n" },

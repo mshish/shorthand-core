@@ -8,7 +8,15 @@ export { GoogleDocsNoteSink, GOOGLE_DOCS_SCOPE } from "./google/docs-sink.js";
 export type { GoogleDocsNoteSinkOptions } from "./google/docs-sink.js";
 
 export { GoogleApiDocsClient } from "./google/docs-client.js";
-export type { DocsApiError, DocsApiResult, GoogleDocsApi } from "./google/docs-client.js";
+export type {
+  DocsApiError,
+  DocsApiResult,
+  GoogleDocsApi,
+  GetDocumentValue,
+  BatchUpdateValue,
+  DocsTab,
+  DocsParagraph,
+} from "./google/docs-client.js";
 
 export { FileTokenProvider, credentialsPath, readCredentials, writeCredentials } from "./google/file-token-provider.js";
 export type { FileTokenProviderOptions, GoogleCredentials } from "./google/file-token-provider.js";

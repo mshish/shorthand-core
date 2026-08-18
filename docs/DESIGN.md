@@ -72,8 +72,8 @@ shorthand.exe --follow-stream json     (child process, stdout NDJSON)
         |
         | trigger policy
         v
-  EnhanceRunner ──► Agent SDK query()  ──► fenced-JSON section array
-  (resumed session,   (resume, no fork)          |  (zod-validated, 1 retry)
+  EnhanceRunner ──► Agent SDK query()  ──► structured section array
+  (resumed session,   (resume, no fork)          |  (schema-enforced + zod)
    two tiers)                                   v
                                           NoteSink.write()
                                                  |
@@ -132,7 +132,7 @@ time; a mismatch discards the agent result and re-queues rather than overwriting
 model carry its own reasoning forward instead of re-deriving it from a bare snapshot on every
 tick. This does **not** make the SDK session the source of truth: the full current section
 array and only the transcript delta since the last pass are still resent on every pass
-regardless of what the session remembers, and `ENHANCEMENT_SYSTEM_PROMPT` explicitly tells the
+regardless of what the session remembers, and `ENHANCEMENT_SAFETY_PREAMBLE` explicitly tells the
 model to trust that resent JSON over its own memory when the two disagree — the note stays
 authoritative, the session is memory, not state.
 
@@ -172,8 +172,10 @@ recorded because the fix is easy to undo by accident.
   enhancement hard-fails most of the time in a real vault.
 - **A code fence inside a section broke enhancement permanently.** Extracting the fenced JSON
   by regex to the *first* closing fence truncates any section containing a code block — and
-  it is sticky, because the malformed sections get fed back on the next pass. Extraction now
-  scans candidates from the end and accepts the first that parses *and* validates.
+  it is sticky, because the malformed sections get fed back on the next pass. The extractor
+  that fixed it is gone: the Agent SDK now returns the section array as structured output, so
+  there is no fence to find and no Markdown for a regex to collide with. The finding is kept
+  because it is the reason a hand-rolled extractor must not come back.
 - **`canUseTool` was silently bypassed.** Listing bare tool names in `allowedTools`
   auto-approves a call before the callback runs (the SDK warns
   `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`). Path confinement was correct and inert. `allowedTools`

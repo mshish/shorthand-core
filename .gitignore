@@ -1,5 +1,9 @@
 node_modules/
 
+# Local secrets (e.g. GOOGLE_OAUTH_CLIENT_ID/SECRET for google-login) — never committed.
+.env
+.env.*
+
 # Build artifacts — rebuild with `bun run build`.
 dist/
 

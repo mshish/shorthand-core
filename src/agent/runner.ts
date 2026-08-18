@@ -83,7 +83,7 @@ export class EnhanceRunner {
       minIntervalMs: options.minIntervalMs ?? 60_000,
       maxDurationMs: options.maxDurationMs ?? (4 * 60 * 60 * 1000),
       timeoutMs: options.timeoutMs ?? 45_000,
-      maxTurns: options.maxTurns ?? 6,
+      maxTurns: options.maxTurns ?? 75,
       maxRequeuedCharacters: options.maxRequeuedCharacters ?? 20_000,
       maxRequeuesPerDelta: options.maxRequeuesPerDelta ?? 3,
       maxConsecutiveReadFailures: options.maxConsecutiveReadFailures ?? 3,

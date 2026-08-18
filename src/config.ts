@@ -70,7 +70,11 @@ export const DEFAULT_CONFIG = Object.freeze({
   enhancement: {
     maxDurationMs: 4 * 60 * 60 * 1000, // 4h — a loop breaker, not a product limit
     timeoutMs: 45_000,
-    maxTurns: 6,
+    // A loop breaker like maxDurationMs, not a budget: `timeoutMs` is the real per-pass
+    // bound. Hitting this ends the query on `error_max_turns`, which carries no
+    // structured output, so a capped pass loses its work entirely — the cap has to sit
+    // far above any legitimate vault exploration rather than near it.
+    maxTurns: 75,
   },
 });
 

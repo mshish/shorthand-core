@@ -48,14 +48,38 @@ class FakeDocsApi implements GoogleDocsApi {
       return { ok: false, error: { httpStatus: 409, message: "stale" } };
     }
     type Req = {
-      insertText?: { location: { index: number }; text: string };
-      updateParagraphStyle?: { range: { startIndex: number; endIndex: number }; paragraphStyle: { namedStyleType: string } };
-      createParagraphBullets?: { range: { startIndex: number; endIndex: number } };
-      deleteContentRange?: unknown;
+      insertText?: { location: { index: number; tabId?: string }; text: string };
+      updateParagraphStyle?: { range: { startIndex: number; endIndex: number; tabId?: string }; paragraphStyle: { namedStyleType: string } };
+      createParagraphBullets?: { range: { startIndex: number; endIndex: number; tabId?: string } };
+      deleteContentRange?: { range?: { tabId?: string } };
     };
     const typed = requests as readonly Req[];
     const insertText = typed.find((request) => request.insertText)?.insertText;
-    if (insertText === undefined && typed.some((request) => request.deleteContentRange !== undefined)) {
+    const hasDelete = typed.some((request) => request.deleteContentRange !== undefined);
+    // Every request in one batch carries the same tabId (buildWriteRequests
+    // stamps it via assertHasTabId in src/google/requests.ts) — read it off
+    // whichever request happens to be present. This is what gives
+    // foreignSnapshot() real teeth: routing by the tabId actually embedded in
+    // the requests, rather than always writing into #ownedText, means a
+    // regression that ever emitted a request against the wrong tab would
+    // land in #foreignText and be observable, instead of being structurally
+    // incapable of happening.
+    const targetTabId =
+      insertText?.location.tabId ??
+      typed.find((request) => request.deleteContentRange)?.deleteContentRange?.range?.tabId ??
+      typed.find((request) => request.updateParagraphStyle)?.updateParagraphStyle?.range.tabId ??
+      typed.find((request) => request.createParagraphBullets)?.createParagraphBullets?.range.tabId;
+    if (targetTabId !== undefined && targetTabId !== OWNED_TAB) {
+      // A write aimed at any tab other than the owned one: apply it to a
+      // genuinely separate slot of state (never touched by the owned-tab
+      // logic below) so an ownership-invariant violation would actually
+      // change what foreignSnapshot() reports.
+      if (insertText !== undefined) this.#foreignText = insertText.text;
+      else if (hasDelete) this.#foreignText = "";
+      this.#revisionId += 1;
+      return { ok: true, value: { revisionId: String(this.#revisionId) } };
+    }
+    if (insertText === undefined && hasDelete) {
       this.#ownedText = "";
       this.#ownedParagraphs = [];
     }

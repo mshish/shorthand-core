@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { AI_BLOCK_END, type Section } from "../src/note/markers.js";
 import {
+  buildSectionOutputSchema,
   extractLastFencedJson,
+  MAX_HEADING_CHARACTERS,
+  MAX_MARKDOWN_CHARACTERS,
+  MAX_SECTIONS,
   parseSectionOutput,
   queryForSections,
   type AgentClient,
@@ -121,4 +125,47 @@ function request(): AgentQueryRequest {
     settingSources: [],
     maxTurns: 2,
   };
+}
+
+describe("structured output schema", () => {
+  test("roots the section array in an object envelope", () => {
+    const schema = buildSectionOutputSchema();
+    expect(schema).toMatchObject({
+      type: "object",
+      required: ["sections"],
+      additionalProperties: false,
+    });
+    expect(Object.keys(node(schema, "properties"))).toEqual(["sections"]);
+  });
+
+  test("carries the zod limits, so a limit edit that fails to propagate is caught here", () => {
+    const sections = node(buildSectionOutputSchema(), "properties", "sections");
+    expect(sections.type).toBe("array");
+    expect(sections.minItems).toBe(1);
+    expect(sections.maxItems).toBe(MAX_SECTIONS);
+    const properties = node(sections, "items", "properties");
+    expect(node(properties, "heading").maxLength).toBe(MAX_HEADING_CHARACTERS);
+    expect(node(properties, "markdown").maxLength).toBe(MAX_MARKDOWN_CHARACTERS);
+    expect(node(sections, "items").additionalProperties).toBe(false);
+    expect(node(sections, "items").required).toEqual(["heading", "markdown"]);
+  });
+
+  test("describes every field, because the descriptions replace the deleted prose contract", () => {
+    const sections = node(buildSectionOutputSchema(), "properties", "sections");
+    const properties = node(sections, "items", "properties");
+    expect(String(sections.description)).toContain("full desired state");
+    expect(String(node(properties, "heading").description)).toContain("level-two heading");
+    expect(String(node(properties, "markdown").description)).toContain("Obsidian");
+  });
+
+  test("omits the dialect declaration, which is meaningless on a nested subschema", () => {
+    const sections = node(buildSectionOutputSchema(), "properties", "sections");
+    expect(sections).not.toHaveProperty("$schema");
+  });
+});
+
+function node(schema: Record<string, unknown>, ...path: readonly string[]): Record<string, unknown> {
+  let current = schema;
+  for (const key of path) current = current[key] as Record<string, unknown>;
+  return current;
 }

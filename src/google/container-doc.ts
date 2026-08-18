@@ -50,11 +50,17 @@ export async function ensureContainerDoc(
       throw new Error("Docs API created a document but returned no documentId");
     }
     documentId = createdDocumentId;
-    // documents.create has no `parents` field of its own — placing a file in a
-    // folder is always a Drive-API-level operation, regardless of which API
-    // created the file.
-    await driveFiles.update({ fileId: documentId, addParents: folderId, fields: "id" });
   }
+
+  // documents.create has no `parents` field of its own — placing a file in a
+  // folder is always a Drive-API-level operation, regardless of which API
+  // created the file. This must run whenever execution reaches here (i.e.
+  // whenever the "both already present" early return above didn't fire),
+  // not just when the doc was freshly created: a pre-existing documentId
+  // paired with a freshly-created folderId (e.g. a picker-flow user, who
+  // only ever had a documentId, now running `--create`) still needs the
+  // existing doc moved into the new folder.
+  await driveFiles.update({ fileId: documentId, addParents: folderId, fields: "id" });
 
   return { folderId, documentId };
 }

@@ -94,11 +94,6 @@ everything below the sink has only ever been exercised against fakes.
 
 ## Still genuinely open
 
-- **Does writing every ~25s for an hour bury a human's Version History in Google Docs?** ~144
-  automated revisions/hour. Undocumented, and it could change the write cadence or the whole write
-  strategy. A real trust-affecting failure mode, answerable only by trying it. The sink spec
-  recommends making the cadence adaptive — skip writes when the rendered output is unchanged —
-  which is worth building regardless.
 - **Where per-capture `tabId` state lives, and its lifecycle.** When is a tab created, when reused,
   what happens when the same note is captured twice, and what cleans up.
 - **Does `about.get` return the user's email under `drive.file` alone?** Cheap, and would resolve

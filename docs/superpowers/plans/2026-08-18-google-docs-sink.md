@@ -2385,12 +2385,7 @@ client ID/secret (as environment variables, not committed anywhere):
   reconcile it against Task 5's `GetDocumentValue`/whatever `addDocumentTab` reply-parsing this
   surfaced as necessary — update `src/google/docs-client.ts` and its tests if the real shape
   differs from what typechecking alone caught.
-- [ ] **Step 3:** Point a real `EnhanceRunner` + `GoogleDocsNoteSink` at that tab and let it write
-  every 25s for an hour (`DEFAULT_CONFIG.thresholds.enhancementIntervalMs`). Open Version History on
-  the document afterward and assess whether ~144 automated revisions bury a human's own edits.
-  Confirms spec open question 3 — this is a real trust-affecting product decision, not just a code
-  check, and its outcome may change the write cadence in `src/config.ts`.
-- [ ] **Step 4:** Call `about.get` under the `drive.file`-scoped token obtained in Step 1 and check
+- [ ] **Step 3:** Call `about.get` under the `drive.file`-scoped token obtained in Step 1 and check
   whether the user's email is present in the response. Confirms spec open question 4 (informational
   for future account-linking work, not blocking for 1a/1b).
 - [ ] **Step 5:** Record the outcome of all four checks in a short note under

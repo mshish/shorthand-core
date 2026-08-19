@@ -47,13 +47,10 @@ this repo drives a real end-to-end write to a real Google Doc.
    setup app does before ever invoking core's CLI.
 2. **No sink-selection mechanism in `enhance`/`capture` at all.** Needs a design decision, not just
    an implementation — see "The real open question" below before building anything.
-3. **Live verification has never happened.** The spec's four empirical open questions (does
-   loopback+`trigger_onepick` really work — *this one is now confirmed yes, verified interactively
-   this session*; does `addDocumentTab` behave as documented against a real doc; does writing every
-   ~25s for an hour bury a human's Version History; does `about.get` return the user's email under
-   `drive.file` alone) are still unverified except the first. `addDocumentTab` in particular is
-   exactly the next thing standing between here and a real end-to-end write — confirming it against
-   a real document and wiring up `enhance` are naturally the same piece of work.
+3. **Live verification has never happened.** Of the spec's empirical open questions, loopback +
+   `trigger_onepick` is confirmed working (verified interactively) and `addDocumentTab` is confirmed
+   working (from the maintainer's own use). Only `about.get` under `drive.file` alone remains
+   unverified, and it is informational rather than blocking.
 
 ## The real open question — resolve this first, before any implementation planning
 

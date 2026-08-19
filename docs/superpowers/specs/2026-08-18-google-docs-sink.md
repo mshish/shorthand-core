@@ -333,15 +333,9 @@ before writing the sink, not after:
    bounce is required. This is a direct conflict and is load-bearing for stage 1a — resolve it
    first. Building the `google-login` CLI bootstrap (above) against a real Google Cloud test
    project answers this directly; no separate throwaway script is needed.
-2. **Confirm `addDocumentTab` end-to-end** against a real document, since both existing
-   confirmations trace back to the same generated reference material and the hand-written guide
-   is silent on tab creation.
-3. **Write to a real Google Doc every 25 seconds for an hour, then open Version History.** Whether
-   ~144 automated revisions/hour bury the human's own edit history, or whether Drive's
-   revision-merging keeps it usable, is undocumented and could change the write cadence or the
-   overall write strategy — a real trust-affecting failure mode if it goes badly, and only
-   answerable by trying it.
-4. **Does `about.get` return the user's email under `drive.file` alone?** If yes, it resolves the
+2. ~~**Confirm `addDocumentTab` end-to-end** against a real document.~~ **Resolved:** confirmed
+   working, from the maintainer's own use and Google's documentation. Not open.
+3. **Does `about.get` return the user's email under `drive.file` alone?** If yes, it resolves the
    "Picker forbids combining scopes with identity" limitation cheaply, without a second consent
    screen, for any future account-linking need.
 

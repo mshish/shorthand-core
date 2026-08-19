@@ -895,10 +895,10 @@ Named so their absence reads as a decision.
   would enable it.
 - **Licensing and entitlement.**
 - **The keychain implementation itself** — deferred with a route recorded above, not designed.
-- **The remaining empirical open questions from the sink spec** — whether `addDocumentTab` behaves as
-  documented against a real document, whether writing every ~25 s buries a human's Version History,
-  whether `about.get` returns the user's email under `drive.file` alone. All still open; all belong to
-  the wiring spec.
+- **The remaining empirical open question from the sink spec** — whether `about.get` returns the
+  user's email under `drive.file` alone. It belongs to the wiring spec. (`addDocumentTab` is
+  confirmed working and no longer open; write cadence versus a document's revision history was
+  raised there and has been dropped as a non-concern.)
 
 ---
 

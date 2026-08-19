@@ -199,6 +199,19 @@ describe("shorthand-notes CLI", () => {
     expect(result.stderr).toContain("--vault requires a value");
   });
 
+  test("google-login is gone: it is an unknown command and the usage text does not offer it", async () => {
+    // There is no --help flag — runCli dispatches on the first positional and falls
+    // through to usage() for anything unrecognised — so an unknown command IS the way to
+    // read the usage text. Asserting on the text as well as the exit code is what catches
+    // a half-deletion that removes the dispatch arm but leaves the advertisement.
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    const result = await run(entry, ["google-login"], withoutGoogleOAuthEnv());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("Expected capture, enhance, init-note, read-block, or set-sections.");
+    expect(result.stderr).not.toContain("google-login");
+    expect(result.stderr).not.toContain("--client-id");
+  });
+
   test("capture inserts only the transcript key in existing frontmatter", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-frontmatter-link-test-"));
     scratchDirectories.push(vault);

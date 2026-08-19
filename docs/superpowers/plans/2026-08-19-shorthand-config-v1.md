@@ -705,6 +705,7 @@ git commit -m "feat: port listenForRedirect to a tiny_http loopback listener"
 ```toml
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -235,65 +235,39 @@ describe("shorthand-notes CLI", () => {
     expect(await readFile(join(vault, "linked", "transcript.md"), "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
 
-  // google-login performs a real loopback + PKCE + Picker consent round-trip that needs a
-  // human in a real browser, so only its argument validation is exercised here — nothing
-  // past that point can run in an automated suite without a live network/browser.
-  test("google-login requires a client id and secret from flags or environment", async () => {
-    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
-    const result = await run(entry, ["google-login"], withoutGoogleOAuthEnv());
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
-  });
-
-  test("google-login requires a client secret even when a client id is supplied", async () => {
-    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
-    const result = await run(entry, ["google-login", "--client-id", "id"], withoutGoogleOAuthEnv());
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
-  });
-
-  test("google-login requires a client id even when a client secret is supplied", async () => {
-    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
-    const result = await run(entry, ["google-login", "--client-secret", "secret"], withoutGoogleOAuthEnv());
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
-  });
-
-  test("google-login --create still requires a client id and secret", async () => {
-    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
-    const result = await run(entry, ["google-login", "--create"], withoutGoogleOAuthEnv());
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
-  });
-
-  test("run() strips GOOGLE_OAUTH_CLIENT_ID/SECRET from any env it's given, even without withoutGoogleOAuthEnv()", async () => {
-    // Structural regression test for the leak-via-run()'s-default-env-parameter finding:
-    // run()'s default `env` parameter is `process.env`, which (via Bun's own dotenv
-    // auto-load of a real local .env) can carry real Google OAuth credentials. Every
-    // other google-login test in this file happens to also call withoutGoogleOAuthEnv()
-    // explicitly, so the property held only by caller discipline, not structurally. This
-    // test deliberately does NOT call withoutGoogleOAuthEnv() and instead passes
-    // real-looking (but fake) values straight through the `env` argument, to prove run()
-    // itself strips them before spawn — so a future test that forgets the explicit call
-    // can't reproduce the browser-opening incident through this door.
-    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
-    const result = await run(entry, ["google-login"], {
+  test("run() strips GOOGLE_OAUTH_CLIENT_ID/SECRET from any env it's given", async () => {
+    // Retargeted, and deliberately weaker than the version it replaces. The original
+    // probed `google-login`, which failed fast without a credential, so a leak showed up
+    // as the command NOT failing — that is, as a browser opening. `google-login` was
+    // deleted when core stopped performing consent, and no surviving command has that
+    // shape, so this asserts the property directly instead: the two keys are absent from
+    // the env run() hands to spawn. It proves the strip happens; it no longer proves that
+    // nothing can open a consent window.
+    //
+    // Why the strip is load-bearing at all, kept from the original: run()'s default `env`
+    // parameter is process.env, which (via Bun's dotenv auto-load of a real local .env)
+    // can carry real Google OAuth credentials. A real incident — a test spawning a browser
+    // with them — is what prompted the unconditional strip at run()'s spawn site. Every
+    // other caller in this file also called withoutGoogleOAuthEnv(), so the property held
+    // only by caller discipline. This test deliberately does NOT call it.
+    const probe = join(process.cwd(), "test", "fixtures", "print-google-env.mjs");
+    const result = await run(probe, [], {
       ...process.env,
       GOOGLE_OAUTH_CLIENT_ID: "leaked-via-inherited-env",
       GOOGLE_OAUTH_CLIENT_SECRET: "leaked-via-inherited-env",
     });
-    // If the stripping didn't happen, google-login would treat these fake values as real
-    // credentials, pass its usage check, and proceed to open a browser / block on the
-    // OAuth redirect listener instead of failing fast here.
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      GOOGLE_OAUTH_CLIENT_ID: null,
+      GOOGLE_OAUTH_CLIENT_SECRET: null,
+    });
   });
 
   test("--no-env-file prevents .env file leaks to subprocesses", async () => {
-    // Regression test: ensures that even if a .env file exists in the subprocess's
-    // working directory with GOOGLE_OAUTH_CLIENT_ID/SECRET, the --no-env-file flag
-    // prevents bun from loading it, so the test's withoutGoogleOAuthEnv() intent is
-    // honored and google-login fails fast instead of hanging on listenForRedirect().
+    // Same retarget, same weakening, same reason as the test above. This half proves the
+    // other door: even with a .env sitting in the child's working directory, run()'s
+    // --no-env-file flag stops the runtime loading it, so withoutGoogleOAuthEnv()'s intent
+    // survives into the subprocess.
     const scratchDir = await mkdtemp(join(tmpdir(), ".cli-env-isolation-test-"));
     scratchDirectories.push(scratchDir);
     await writeFile(
@@ -301,19 +275,14 @@ describe("shorthand-notes CLI", () => {
       "GOOGLE_OAUTH_CLIENT_ID=fake-leaked-id\nGOOGLE_OAUTH_CLIENT_SECRET=fake-leaked-secret\n",
       "utf8",
     );
-    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
-    // Run from the scratch directory (which contains the fake .env) but with env vars removed.
-    // Without --no-env-file, this would load the fake credentials from .env and hang.
-    // With --no-env-file, google-login exits fast with code 2 (usage error).
-    const result = await run(entry, ["google-login"], withoutGoogleOAuthEnv(), scratchDir);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("google-login requires --client-id/--client-secret");
+    const probe = join(process.cwd(), "test", "fixtures", "print-google-env.mjs");
+    const result = await run(probe, [], withoutGoogleOAuthEnv(), scratchDir);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      GOOGLE_OAUTH_CLIENT_ID: null,
+      GOOGLE_OAUTH_CLIENT_SECRET: null,
+    });
   });
-
-  // A full argument-accepted run (real --client-id/--client-secret) is deliberately not
-  // tested here: past validation, google-login opens a real browser via `openInBrowser`
-  // and blocks on `listenForRedirect` for a human's consent, which the automated suite
-  // must not trigger or wait on.
 });
 
 // Strips the two Google OAuth env vars from an arbitrary env object. Exists as its own

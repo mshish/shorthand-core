@@ -95,6 +95,15 @@ export async function readCredentials(path = credentialsPath()): Promise<Credent
     ok: true,
     // Unknown top-level keys are dropped rather than rejected: a newer writer adding a
     // field it needs must not break an older core that has never heard of it.
+    //
+    // This tolerance is RUNTIME ONLY, and deliberately wider than the contract. The
+    // golden-bytes scenario in src/testing/google-credentials-conformance.ts fails any
+    // extra key, because a byte comparison needs a closed set of keys and because a file
+    // format two repositories can extend unilaterally drifts. So adding a field is a
+    // coordinated change — a new golden fixture here, then the writer's repo picks up the
+    // new contract. What this tolerance buys is that the two ends may ship in either
+    // order without a broken window in between; it is not permission to skip the
+    // agreement.
     value: {
       type: "authorized_user",
       client_id: record.client_id as string,

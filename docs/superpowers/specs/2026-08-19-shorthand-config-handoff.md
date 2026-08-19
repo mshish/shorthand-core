@@ -1,9 +1,9 @@
 # Handoff: starting `shorthand-config`
 
-**Status: handoff note for a fresh session. Not a spec, not a plan.** It records what already exists,
-what changed since the existing brief was written, and the one real open question a fresh session
-needs to resolve — via `superpowers:brainstorming` — before any code gets written. `shorthand-config`
-has not been scaffolded. Nothing in this repo creates it.
+**Status: handoff note for a fresh session. Not a spec, not a plan.** It records what already exists
+and what changed since the existing brief was written. Scope is settled — see below — so this is not
+a "resolve an open question first" handoff like the Google-sink one; it's "go build the brief."
+`shorthand-config` has not been scaffolded. Nothing in this repo creates it.
 
 ## What landed just before this handoff
 
@@ -37,41 +37,21 @@ specs behind the Google work, and has sat there since without a recorded review.
 session is about to act on a specific claim in the brief that looks load-bearing and surprising,
 confirm it with the human rather than assuming it was blessed by the passage of time.
 
-## The one real open question
+## Scope: settled, do not re-open
 
-**The brief's v1 scope was written for a different situation than the one that exists right now.**
+An earlier draft of this handoff raised whether v1 should be trimmed down given there's currently one
+owner and one user, rather than the brief's assumed non-technical paid-product audience. **The human
+has explicitly closed that question: proceed with v1 exactly as the existing brief scopes it** — the
+installable artifact, the auto-updater, and the Google consent flow, all three. The architecture in
+the brief is correct and is not up for re-litigation. A fresh session should not re-raise this; treat
+the brief's "v1 scope" section as final and start building toward it.
 
-The brief frames this as *"a separate, proprietary, cross-platform desktop app... [for] a
-non-technical individual who already pays for Claude or ChatGPT and has never touched a CLI"* — and
-scopes v1 as three substantial pieces: (1) a signed/shippable installable artifact, (2) Tauri's
-auto-updater wired end to end including a release pipeline, and (3) the Google consent flow.
-
-Asked directly, the human said: *"we own everything right now and I'm the only user."* There is no
-other user yet. Installer signing, notarization, an auto-updater, and a public releases repo are all
-real work — the brief itself calls out unresolved costs (macOS Developer ID + notarization,
-Azure signing ~$120/yr, several UNVERIFIED Tauri updater facts that "change the CI design if they are
-wrong") — and none of it is required to unblock the one thing actually blocking real use today:
-**getting a real Google credentials file onto this machine without hand-writing one.**
-
-**This was not decided. It needs the human's answer, via brainstorming, before scope is picked.**
-Plausible shapes, not a recommendation:
-
-- **v1 as the brief already scopes it** — build toward the eventual paid product from the start,
-  installer/signing/updater included. Argument for: avoids doing the same work twice; the brief's own
-  "bundle vs. install" and update-distribution sections assume this is being built toward
-  distribution anyway.
-- **A minimal slice: just the consent flow, no signing/installer/updater polish.** A `cargo run`
-  or `tauri dev` app good enough for the human alone to click through consent and get a real
-  `google-credentials.json` on their own machine. Argument for: unblocks real end-to-end verification
-  of the just-merged Google sink work today, at a fraction of the cost; signing/updater work is
-  provably deferrable (nothing about it is load-bearing for a solo user running a dev build).
-- Something in between — e.g. build the real consent flow now, in the real `shorthand-config` repo
-  with the real architecture, but explicitly skip code-signing/notarization/the updater/the public
-  releases repo until there's a second user to justify them.
-
-Whichever is chosen reshapes the brief's v1 scope section and its open-questions list (several of
-which — Linux packaging, the updater's `latest.json` format details, Azure signing eligibility — stop
-being urgent if signing/updater is deferred).
+**What's still genuinely open** is implementation-level, not scope-level — the brief's own "Open
+questions" section (its numbered list 1-7): whether `bun build --compile` works on macOS, where the
+OAuth client id/secret live in a Tauri build, Linux packaging, whether this app supervises a
+background process, bundle-vs-install for `shorthand-core`, and the UNVERIFIED signing/updater facts
+that "change the CI design if they are wrong." Those are legitimate `superpowers:brainstorming` /
+research territory for a fresh session — the scope question is not.
 
 ## Settled — do not re-derive
 

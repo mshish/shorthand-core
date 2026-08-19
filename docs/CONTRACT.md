@@ -383,9 +383,11 @@ The file is Google's Application Default Credentials `authorized_user` shape —
 `client_id`, `client_secret`, `refresh_token`, which `google-auth-library`'s own
 `UserRefreshClient.fromJSON` reads by those names, and which are the only fields a read
 validates — plus `document_id` and `folder_id`, which are ours and are both optional. A
-credential with no target is still a credential: core reads no `document_id` from this file
-(the sink takes one as a constructor option), so requiring it would only make a usable
-credential unreadable. An absent optional field is **omitted**, never `null`. Extra
+credential with no target is still a credential: `document_id` is deliberately unvalidated
+by the read here because reading credentials is about credential validity, not target
+selection. `resolveGoogleDocsSink` (`src/google/capture-sink.ts`) is the consumer that does
+require a target for the `--sink google` path, and reports a clear error when one is absent.
+An absent optional field is **omitted**, never `null`. Extra
 top-level keys are ignored by Google's loader
 and by core, so one superset file works where a sibling file would only re-create a torn
 state between two writes. It lives at `credentialsPath()`, is 2-space-indented JSON with a

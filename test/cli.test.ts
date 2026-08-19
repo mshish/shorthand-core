@@ -260,6 +260,17 @@ describe("shorthand-notes CLI", () => {
     expect(result.stderr).toContain("--sink must be markdown or google.");
   });
 
+  test("capture --enhance rejects an invalid --sink value", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-capture-sink-invalid-test-"));
+    scratchDirectories.push(vault);
+    await writeFile(join(vault, "meeting.md"), "# Meeting\n", "utf8");
+    const result = await run(join(process.cwd(), "bin", "shorthand-notes.ts"), [
+      "capture", "--vault", vault, "--note", "meeting.md", "--enhance", "--sink", "notion",
+    ]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("--sink must be markdown or google.");
+  });
+
   test("enhance --sink google fails clearly, without naming any consumer app, when no Google credentials are configured", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-sink-google-nocreds-test-"));
     scratchDirectories.push(vault);
@@ -270,7 +281,7 @@ describe("shorthand-notes CLI", () => {
     const result = await run(
       join(process.cwd(), "bin", "shorthand-notes.ts"),
       ["enhance", "--vault", vault, "--note", "meeting.md", "--transcript", "transcript.md", "--sink", "google"],
-      withoutGoogleOAuthEnv({ APPDATA: configDirectory }),
+      withoutGoogleOAuthEnv({ APPDATA: configDirectory, XDG_CONFIG_HOME: configDirectory, HOME: configDirectory, USERPROFILE: configDirectory }),
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("connect your Google account");
@@ -288,7 +299,7 @@ describe("shorthand-notes CLI", () => {
     const result = await run(
       entry,
       ["capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture, "--no-reconnect", "--enhance", "--sink", "google"],
-      withoutGoogleOAuthEnv({ APPDATA: configDirectory }),
+      withoutGoogleOAuthEnv({ APPDATA: configDirectory, XDG_CONFIG_HOME: configDirectory, HOME: configDirectory, USERPROFILE: configDirectory }),
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("No Google credentials");

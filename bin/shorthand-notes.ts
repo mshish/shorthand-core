@@ -33,7 +33,6 @@ import {
   MarkdownNoteSink,
   transcriptWikilink,
 } from "shorthand-core/markdown";
-import { resolveGoogleDocsSink } from "shorthand-core/google";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
@@ -152,7 +151,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   if (args.includes("--enhance")) {
     const sinkArg = argumentValue(args, "--sink") ?? "markdown";
     if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
-    const resolved = await createEnhanceRunner(note, vault, args, environment, false);
+    const resolved = await createEnhanceRunner(note, vault, sinkArg, args, environment, false);
     if (!resolved.ok) {
       console.error(resolved.message);
       return 1;
@@ -311,7 +310,7 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     return 1;
   }
   const dryRun = args.includes("--dry-run");
-  const resolved = await createEnhanceRunner(note, vault, args, environment, dryRun);
+  const resolved = await createEnhanceRunner(note, vault, sinkArg, args, environment, dryRun);
   if (!resolved.ok) {
     console.error(resolved.message);
     return 1;
@@ -321,7 +320,7 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
   const outcome = await runner.enhanceNow(tier);
   if (outcome.status === "completed") {
     if (dryRun) console.log(JSON.stringify(outcome.sections, null, 2));
-    else console.log(`AI sections ${outcome.written ? "written" : "unchanged"}: ${note}`);
+    else console.log(`AI sections ${outcome.written ? "written" : "unchanged"}: ${resolved.sinkDescribe}`);
     return 0;
   }
   reportPassOutcome(outcome);
@@ -329,27 +328,33 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
 }
 
 type CreateEnhanceRunnerResult =
-  | Readonly<{ ok: true; runner: EnhanceRunner }>
+  | Readonly<{ ok: true; runner: EnhanceRunner; sinkDescribe: string }>
   | Readonly<{ ok: false; message: string }>;
 
+// `sink` arrives already validated by the caller (runCapture / runEnhance both check
+// --sink and exit 2 via usage() before calling this) so an invalid value is structurally
+// unreachable here, rather than merely prevented by convention — see the Fix 4 note in
+// the whole-branch review this responds to.
 async function createEnhanceRunner(
   note: string,
   vault: string,
+  sink: "markdown" | "google",
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   dryRun: boolean,
 ): Promise<CreateEnhanceRunnerResult> {
-  const sinkArg = argumentValue(args, "--sink") ?? "markdown";
-  if (sinkArg !== "markdown" && sinkArg !== "google") {
-    return { ok: false, message: "--sink must be markdown or google." };
-  }
-  let sink: NoteSink;
-  if (sinkArg === "google") {
+  let resolvedSink: NoteSink;
+  if (sink === "google") {
+    // Loaded dynamically, not as a top-level import: src/google/docs-client.ts pulls in
+    // googleapis by value, and a static import here would load that for every CLI
+    // invocation — init-note, read-block, set-sections, and capture/enhance even with the
+    // default --sink markdown — bloating dist/shorthand-notes.mjs from ~700KB to ~32MB.
+    const { resolveGoogleDocsSink } = await import("shorthand-core/google");
     const resolved = await resolveGoogleDocsSink(note, environment);
     if (!resolved.ok) return { ok: false, message: resolved.message };
-    sink = resolved.sink;
+    resolvedSink = resolved.sink;
   } else {
-    sink = new MarkdownNoteSink({ notePath: note, vaultRoot: vault });
+    resolvedSink = new MarkdownNoteSink({ notePath: note, vaultRoot: vault });
   }
   const stubPath = argumentValue(args, "--agent-stub") ?? environment.HANDY_NOTES_AGENT_STUB;
   const agent: AgentClient = stubPath === undefined
@@ -359,8 +364,9 @@ async function createEnhanceRunner(
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
   return {
     ok: true,
+    sinkDescribe: resolvedSink.describe,
     runner: new EnhanceRunner({
-      sink,
+      sink: resolvedSink,
       agent,
       minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
       minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,

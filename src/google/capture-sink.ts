@@ -12,6 +12,19 @@ import { credentialsPath as defaultCredentialsPath, FileTokenProvider, readCrede
  * reuses it on every later call for the same note — until the credentials
  * file's `document_id` changes, at which point a fresh tab is minted in the
  * new target document. See docs/superpowers/specs/2026-08-19-enhance-google-sink-design.md.
+ *
+ * `--dry-run --sink google` still mints/writes a real tab: `EnhanceRunner` calls
+ * `sink.read()` even during a dry run, which requires a real, live tab to exist, so
+ * resolving a Google sink has the same mint-or-reuse side effects for a dry run as for a
+ * real run — even though no AI sections get written back. This is a deliberate trade-off,
+ * not a bug.
+ *
+ * A tab deleted by the user from inside the Google Doc poisons the persisted state: the
+ * `captures/<id>.json` file keeps pointing at a `tabId` that no longer exists, and every
+ * future run for that note fails with an `invalid-target` read error rather than
+ * self-healing. Deleting the corresponding `captures/<id>.json` file forces a fresh tab to
+ * be minted on the next run. (Automatic re-minting on `invalid-target` is a separate,
+ * bigger design decision left for later.)
  */
 
 export type ResolveGoogleSinkOptions = Readonly<{

@@ -19,10 +19,11 @@ import { tokenError, type TokenProvider, type TokenResult } from "../auth/token-
  * are ours and are in the same file rather than a sibling, because two files with one
  * owner and one write moment means a torn state between them.
  *
- * Only the four ADC fields are required. `document_id` is optional because nothing in
- * core reads it from here — GoogleDocsNoteSink takes documentId as a constructor option —
- * so requiring it would make the file unreadable when absent for no consumer's benefit,
- * and would force whoever performs consent to obtain a target in the same step.
+ * Only the four ADC fields are required. `document_id` is deliberately unvalidated here:
+ * this function is about credential validity, not target selection, so a credential with
+ * no target document is still a valid credential for token refresh. `resolveGoogleDocsSink`
+ * (`src/google/capture-sink.ts`) is the consumer that does require a target for the
+ * `--sink google` path, and reports a clear error when one is absent.
  */
 export type GoogleCredentials = Readonly<{
   type: "authorized_user";
@@ -85,10 +86,11 @@ export async function readCredentials(path = credentialsPath()): Promise<Credent
       return { ok: false, message: `Google credentials at ${path} are missing the required field "${field}"; connect your Google account, then retry.` };
     }
   }
-  // document_id is NOT validated. A missing target does not make a token unobtainable,
-  // and nothing in core reads document_id from this file, so rejecting the file here
-  // would only make a perfectly usable credential unreadable. It is carried through when
-  // present and omitted when not, exactly like folder_id.
+  // document_id is NOT validated here: this function is about credential validity, not
+  // target selection, and a missing target does not make a token unobtainable.
+  // resolveGoogleDocsSink (src/google/capture-sink.ts) is the consumer that does require
+  // a target for the --sink google path, and reports a clear error when one is absent.
+  // It is carried through when present and omitted when not, exactly like folder_id.
   const documentId = record.document_id;
   const folderId = record.folder_id;
   return {

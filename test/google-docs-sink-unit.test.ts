@@ -9,6 +9,7 @@ function fakeApi(overrides: Partial<GoogleDocsApi> = {}): GoogleDocsApi {
       value: { revisionId: "rev1", tabs: [{ tabId: "owned", bodyEndIndex: 1, paragraphs: [], childTabs: [] }] },
     }),
     batchUpdate: async (): Promise<DocsApiResult<BatchUpdateValue>> => ({ ok: true, value: { revisionId: "rev2" } }),
+    addDocumentTab: async () => ({ ok: true, value: { tabId: "unused-tab" } }),
     ...overrides,
   };
 }

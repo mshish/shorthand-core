@@ -117,6 +117,10 @@ class FakeDocsApi implements GoogleDocsApi {
     return { ok: true, value: { revisionId: String(this.#revisionId) } };
   }
 
+  async addDocumentTab(): Promise<DocsApiResult<{ tabId: string }>> {
+    return { ok: true, value: { tabId: "unused-tab" } };
+  }
+
   mutateExternally(): void { this.#revisionId += 1; }
   makeBusy(): void { this.#busy = true; }
   clearBusy(): void { this.#busy = false; }

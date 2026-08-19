@@ -26,7 +26,7 @@ frowned upon. There are four entry points.
 | --- | --- | --- |
 | `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`/`MAX_GUIDANCE_CHARACTERS`, `parseTemplateSections`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
 | `shorthand-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
-| `shorthand-core/google` | The Google Docs sink and the pieces it needs: `GoogleDocsNoteSink`, `GOOGLE_DOCS_SCOPE`, `GoogleApiDocsClient` and its API types, and the credentials reader — `FileTokenProvider`, `credentialsPath`, `readCredentials`, `GoogleCredentials`, `CredentialsReadResult`, `FileTokenProviderOptions` | Google Docs consumers only. **A Markdown or other API sink must not import this.** Core reads the credentials file and never writes it; see §5.4 |
+| `shorthand-core/google` | The Google Docs sink and the pieces it needs: `GoogleDocsNoteSink`, `GOOGLE_DOCS_SCOPE`, `GoogleApiDocsClient` and its API types, the credentials reader — `FileTokenProvider`, `credentialsPath`, `readCredentials`, `GoogleCredentials`, `CredentialsReadResult`, `FileTokenProviderOptions` — and `resolveGoogleDocsSink`/`ResolveGoogleSinkOptions`/`ResolveGoogleSinkResult`, which mints or reuses a per-capture tab and constructs the sink | Google Docs consumers only. **A Markdown or other API sink must not import this.** Core reads the credentials file and never writes it; see §5.4 |
 | `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For the credentials file: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsFixture`, `CredentialsConformanceSupport` | Any sink's test suite; any writer of the Google credentials file |
 
 `parseTemplateSections` is on the root entry point rather than `shorthand-core/markdown`
@@ -383,9 +383,11 @@ The file is Google's Application Default Credentials `authorized_user` shape —
 `client_id`, `client_secret`, `refresh_token`, which `google-auth-library`'s own
 `UserRefreshClient.fromJSON` reads by those names, and which are the only fields a read
 validates — plus `document_id` and `folder_id`, which are ours and are both optional. A
-credential with no target is still a credential: core reads no `document_id` from this file
-(the sink takes one as a constructor option), so requiring it would only make a usable
-credential unreadable. An absent optional field is **omitted**, never `null`. Extra
+credential with no target is still a credential: `document_id` is deliberately unvalidated
+by the read here because reading credentials is about credential validity, not target
+selection. `resolveGoogleDocsSink` (`src/google/capture-sink.ts`) is the consumer that does
+require a target for the `--sink google` path, and reports a clear error when one is absent.
+An absent optional field is **omitted**, never `null`. Extra
 top-level keys are ignored by Google's loader
 and by core, so one superset file works where a sibling file would only re-create a torn
 state between two writes. It lives at `credentialsPath()`, is 2-space-indented JSON with a

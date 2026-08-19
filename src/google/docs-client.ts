@@ -22,6 +22,7 @@ export interface GoogleDocsApi {
     requests: readonly docs_v1.Schema$Request[],
     targetRevisionId?: string,
   ): Promise<DocsApiResult<BatchUpdateValue>>;
+  addDocumentTab(documentId: string, title: string): Promise<DocsApiResult<{ tabId: string }>>;
 }
 
 type DocsResource = Pick<docs_v1.Docs, "documents">;
@@ -122,6 +123,25 @@ export class GoogleApiDocsClient implements GoogleDocsApi {
         };
       }
       return { ok: true, value: { revisionId } };
+    } catch (error) {
+      return { ok: false, error: toDocsApiError(error) };
+    }
+  }
+
+  async addDocumentTab(documentId: string, title: string): Promise<DocsApiResult<{ tabId: string }>> {
+    try {
+      const response = await this.#documents.batchUpdate({
+        documentId,
+        requestBody: { requests: [{ addDocumentTab: { tabProperties: { title } } }] },
+      });
+      const tabId = response.data.replies?.[0]?.addDocumentTab?.tabProperties?.tabId;
+      if (tabId === undefined || tabId === null || tabId.length === 0) {
+        return {
+          ok: false,
+          error: { httpStatus: 0, message: "Docs API response carried no tabId for the new tab", cause: response.data },
+        };
+      }
+      return { ok: true, value: { tabId } };
     } catch (error) {
       return { ok: false, error: toDocsApiError(error) };
     }

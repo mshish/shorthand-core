@@ -20,3 +20,6 @@ export type {
 
 export { FileTokenProvider, credentialsPath, readCredentials } from "./google/file-token-provider.js";
 export type { CredentialsReadResult, FileTokenProviderOptions, GoogleCredentials } from "./google/file-token-provider.js";
+
+export { resolveGoogleDocsSink } from "./google/capture-sink.js";
+export type { ResolveGoogleSinkOptions, ResolveGoogleSinkResult } from "./google/capture-sink.js";

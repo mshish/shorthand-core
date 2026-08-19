@@ -148,8 +148,31 @@ export class FileTokenProvider implements TokenProvider {
 type RefreshableClient = Pick<UserRefreshClient, "getAccessToken">;
 
 /**
+ * The fields that decide which client a credential describes: everything
+ * `UserRefreshClient.fromJSON` reads, and nothing else.
+ *
+ * Compared field by field rather than by serialising both credentials, because
+ * `GoogleCredentials` has optional fields under `exactOptionalPropertyTypes` — a
+ * JSON.stringify comparison then depends on key order and on which optional keys the
+ * writer happened to emit, so it reports "changed" for two identical credentials whose
+ * files differ only in layout, and throws away a valid cached access token each time.
+ *
+ * `document_id`/`folder_id` are deliberately absent: they name the target document, not
+ * the credential, and no token is obtained with them. Including them would rebuild the
+ * client — discarding its cached access token — every time the user picks a new document.
+ */
+function sameCredentialIdentity(a: GoogleCredentials, b: GoogleCredentials): boolean {
+  return (
+    a.type === b.type &&
+    a.client_id === b.client_id &&
+    a.client_secret === b.client_secret &&
+    a.refresh_token === b.refresh_token
+  );
+}
+
+/**
  * Hands the credential to google-auth-library's own ADC loader and holds ONE client
- * across calls.
+ * across calls with an unchanged credential.
  *
  * Verified against the installed source
  * (node_modules/google-auth-library/build/src/auth/refreshclient.js): the static
@@ -160,14 +183,25 @@ type RefreshableClient = Pick<UserRefreshClient, "getAccessToken">;
  * isTokenExpiring()`. A client rebuilt per call therefore has nothing cached to check
  * and pays a full token-endpoint round-trip every time — the exact regression this
  * closure shape was introduced to fix.
+ *
+ * The credential it was built from is held alongside it, and a differing one rebuilds.
+ * Core does not perform consent: a separate application does the OAuth and rewrites the
+ * credentials file, so recovering from a revoked token means a NEW refresh_token (and
+ * possibly a new client_id/client_secret) appearing on disk under a running core. A
+ * client pinned to the credential it first saw never sees that, and keeps reporting
+ * `revoked` against a valid file until core is restarted.
  */
 export function defaultRefresher(
   createClient: (credentials: GoogleCredentials) => RefreshableClient =
     (credentials) => UserRefreshClient.fromJSON(credentials),
 ): (credentials: GoogleCredentials) => Promise<TokenResult> {
   let client: RefreshableClient | undefined;
+  let builtFrom: GoogleCredentials | undefined;
   return async (credentials: GoogleCredentials): Promise<TokenResult> => {
-    client ??= createClient(credentials);
+    if (client === undefined || builtFrom === undefined || !sameCredentialIdentity(builtFrom, credentials)) {
+      client = createClient(credentials);
+      builtFrom = credentials;
+    }
     const { token } = await client.getAccessToken();
     if (token === null || token === undefined) {
       return { ok: false, error: tokenError("transport", "Token refresh returned no access token") };

@@ -155,6 +155,24 @@ describe("FileTokenProvider.getAccessToken", () => {
     expect(await provider.getAccessToken()).toEqual({ ok: true, token: "access-token-1" });
   });
 
+  test("picks up a credential rewritten on disk between calls", async () => {
+    // The actual product recovery path. Core does not perform consent; the config app does,
+    // and it rewrites this file with a fresh refresh_token. Without this, a long-lived core
+    // keeps refreshing the revoked one and only a restart recovers.
+    const path = await writeJson(await scratchPath(), VALID);
+    const provider = new FileTokenProvider({
+      credentialsPath: path,
+      // The real defaultRefresher, with only its client factory faked — this exercises the
+      // caching the fix has to preserve. No live network in any test.
+      refreshAccessToken: defaultRefresher((credentials) => ({
+        getAccessToken: async () => ({ token: `token-for-${credentials.refresh_token}` }),
+      })),
+    });
+    expect(await provider.getAccessToken()).toEqual({ ok: true, token: "token-for-rt-1" });
+    await writeJson(path, { ...VALID, refresh_token: "rt-reconnected" });
+    expect(await provider.getAccessToken()).toEqual({ ok: true, token: "token-for-rt-reconnected" });
+  });
+
   test("maps invalid_grant to revoked", async () => {
     const path = await writeJson(await scratchPath(), VALID);
     const provider = new FileTokenProvider({
@@ -215,6 +233,53 @@ describe("defaultRefresher", () => {
     });
     expect(await refresher(VALID)).toEqual({ ok: true, token: "token-from-first-refresh" });
     expect(await refresher(VALID)).toEqual({ ok: true, token: "token-from-first-refresh" });
+    expect(clientsCreated).toBe(1);
+  });
+
+  test("rebuilds the client when the refresh_token changes", async () => {
+    // Core never performs consent: a separate app rewrites the credentials file after the
+    // user reconnects. Holding the first client forever means a long-lived core keeps
+    // refreshing with the dead token and keeps reporting `revoked` against a valid file,
+    // recoverable only by restarting core.
+    let clientsCreated = 0;
+    const refresher = defaultRefresher((credentials) => {
+      clientsCreated += 1;
+      const token = `token-for-${credentials.refresh_token}`;
+      return { getAccessToken: async () => ({ token }) };
+    });
+    expect(await refresher(VALID)).toEqual({ ok: true, token: "token-for-rt-1" });
+    expect(await refresher({ ...VALID, refresh_token: "rt-2" })).toEqual({ ok: true, token: "token-for-rt-2" });
+    expect(clientsCreated).toBe(2);
+  });
+
+  test("rebuilds the client when the client_id changes", async () => {
+    // Reconnecting can hand back a different OAuth client, not just a different refresh
+    // token. A client pinned to the old client_id refreshes a token that client never
+    // issued, which Google answers with invalid_grant forever.
+    let clientsCreated = 0;
+    const refresher = defaultRefresher((credentials) => {
+      clientsCreated += 1;
+      const token = `token-for-${credentials.client_id}`;
+      return { getAccessToken: async () => ({ token }) };
+    });
+    expect(await refresher(VALID)).toEqual({ ok: true, token: `token-for-${VALID.client_id}` });
+    expect(await refresher({ ...VALID, client_id: "second-client" })).toEqual({
+      ok: true, token: "token-for-second-client",
+    });
+    expect(clientsCreated).toBe(2);
+  });
+
+  test("keeps the client when only document_id changes", async () => {
+    // document_id names the target, not the credential. Rebuilding on it would throw away
+    // a perfectly good cached access token every time the user switches documents.
+    let clientsCreated = 0;
+    const refresher = defaultRefresher(() => {
+      clientsCreated += 1;
+      return { getAccessToken: async () => ({ token: "token-from-first-refresh" }) };
+    });
+    await refresher(VALID);
+    await refresher({ ...VALID, document_id: "doc-2" });
+    await refresher({ ...VALID, folder_id: "folder-9" });
     expect(clientsCreated).toBe(1);
   });
 

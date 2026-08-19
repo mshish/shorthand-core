@@ -1,82 +1,143 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { OAuth2Client } from "google-auth-library";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { UserRefreshClient } from "google-auth-library";
 import { shorthandConfigDirectory } from "../config.js";
 import { tokenError, type TokenProvider, type TokenResult } from "../auth/token-provider.js";
 
+/**
+ * The credentials file as core READS it: Google's Application Default Credentials
+ * `authorized_user` shape, plus the two fields that name our target.
+ *
+ * Core does not write this file, and there is no function here that does. One writer
+ * per file — a file with two writers in two languages has an invariant that lives in
+ * neither of them, and the merge such a scheme needs is exactly the class of silent
+ * data loss removing the second writer removes. `src/testing/google-credentials-conformance.ts`
+ * is the executable form of the contract a writer must satisfy.
+ *
+ * The four ADC field names are Google's, not ours: `UserRefreshClient.fromJSON` reads
+ * them by those names and throws by name when one is absent. `document_id`/`folder_id`
+ * are ours and are in the same file rather than a sibling, because two files with one
+ * owner and one write moment means a torn state between them.
+ *
+ * Only the four ADC fields are required. `document_id` is optional because nothing in
+ * core reads it from here — GoogleDocsNoteSink takes documentId as a constructor option —
+ * so requiring it would make the file unreadable when absent for no consumer's benefit,
+ * and would force whoever performs consent to obtain a target in the same step.
+ */
 export type GoogleCredentials = Readonly<{
-  refreshToken: string;
-  documentId: string;
-  tabId?: string;
-  folderId?: string;
+  type: "authorized_user";
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
+  document_id?: string;
+  folder_id?: string;
 }>;
+
+export type CredentialsReadResult =
+  | Readonly<{ ok: true; value: GoogleCredentials }>
+  | Readonly<{ ok: false; message: string }>;
 
 export function credentialsPath(environment: NodeJS.ProcessEnv = process.env): string {
   return join(shorthandConfigDirectory(environment), "google-credentials.json");
 }
 
-export async function writeCredentials(credentials: GoogleCredentials, path = credentialsPath()): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(credentials, null, 2), "utf8");
-  if (process.platform !== "win32") await chmod(path, 0o600);
-}
+const REQUIRED_ADC_FIELDS = ["client_id", "client_secret", "refresh_token"] as const;
 
-export async function readCredentials(path = credentialsPath()): Promise<GoogleCredentials | undefined> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as GoogleCredentials;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 /**
- * Merges a fresh refreshToken/documentId (from a `google-login` run) with any
- * credentials already on disk, preserving an existing `tabId`. writeCredentials
- * overwrites the whole file, so a re-login that only ever passed the two fields
- * it obtained would otherwise silently drop a `tabId` some other path had
- * stored there.
+ * Reads and validates the credentials file. NEVER throws.
+ *
+ * The writer is a different program in a different language, so a malformed or partial
+ * file is ordinary input rather than a bug in core. It has to arrive at the caller as a
+ * reportable "not authorized" — an exception here surfaces mid-capture as a crash
+ * instead of as a message telling the user what to do.
  */
-export function mergeCredentials(
-  existing: GoogleCredentials | undefined,
-  update: Readonly<{ refreshToken: string; documentId: string; folderId?: string }>,
-): GoogleCredentials {
-  const folderId = update.folderId ?? existing?.folderId;
+export async function readCredentials(path = credentialsPath()): Promise<CredentialsReadResult> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: false, message: `No Google credentials at ${path}; connect your Google account, then retry.` };
+    }
+    return { ok: false, message: `Google credentials at ${path} could not be read: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return { ok: false, message: `Google credentials at ${path} are not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, message: `Google credentials at ${path} are not a JSON object.` };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  if (record.type !== "authorized_user") {
+    return { ok: false, message: `Google credentials at ${path} have type ${JSON.stringify(record.type)}; expected "authorized_user".` };
+  }
+  for (const field of REQUIRED_ADC_FIELDS) {
+    if (!nonEmptyString(record[field])) {
+      return { ok: false, message: `Google credentials at ${path} are missing the required field "${field}"; connect your Google account, then retry.` };
+    }
+  }
+  // document_id is NOT validated. A missing target does not make a token unobtainable,
+  // and nothing in core reads document_id from this file, so rejecting the file here
+  // would only make a perfectly usable credential unreadable. It is carried through when
+  // present and omitted when not, exactly like folder_id.
+  const documentId = record.document_id;
+  const folderId = record.folder_id;
   return {
-    refreshToken: update.refreshToken,
-    documentId: update.documentId,
-    ...(existing?.tabId === undefined ? {} : { tabId: existing.tabId }),
-    ...(folderId === undefined ? {} : { folderId }),
+    ok: true,
+    // Unknown top-level keys are dropped rather than rejected: a newer writer adding a
+    // field it needs must not break an older core that has never heard of it.
+    //
+    // This tolerance is RUNTIME ONLY, and deliberately wider than the contract. The
+    // golden-bytes scenario in src/testing/google-credentials-conformance.ts fails any
+    // extra key, because a byte comparison needs a closed set of keys and because a file
+    // format two repositories can extend unilaterally drifts. So adding a field is a
+    // coordinated change — a new golden fixture here, then the writer's repo picks up the
+    // new contract. What this tolerance buys is that the two ends may ship in either
+    // order without a broken window in between; it is not permission to skip the
+    // agreement.
+    value: {
+      type: "authorized_user",
+      client_id: record.client_id as string,
+      client_secret: record.client_secret as string,
+      refresh_token: record.refresh_token as string,
+      ...(nonEmptyString(documentId) ? { document_id: documentId } : {}),
+      ...(nonEmptyString(folderId) ? { folder_id: folderId } : {}),
+    },
   };
 }
 
 export type FileTokenProviderOptions = Readonly<{
-  clientId: string;
-  clientSecret: string;
   credentialsPath?: string;
-  /** Test seam only; production always exchanges the refresh token via OAuth2Client. */
-  refreshAccessToken?: (refreshToken: string) => Promise<TokenResult>;
+  /** Test seam only; production always refreshes via google-auth-library's UserRefreshClient. */
+  refreshAccessToken?: (credentials: GoogleCredentials) => Promise<TokenResult>;
 }>;
 
 export class FileTokenProvider implements TokenProvider {
   readonly #path: string;
-  readonly #refresh: (refreshToken: string) => Promise<TokenResult>;
+  readonly #refresh: (credentials: GoogleCredentials) => Promise<TokenResult>;
 
-  constructor(options: FileTokenProviderOptions) {
+  constructor(options: FileTokenProviderOptions = {}) {
     this.#path = options.credentialsPath ?? credentialsPath();
-    this.#refresh = options.refreshAccessToken ?? defaultRefresher(options.clientId, options.clientSecret);
+    this.#refresh = options.refreshAccessToken ?? defaultRefresher();
   }
 
   async getAccessToken(): Promise<TokenResult> {
     const credentials = await readCredentials(this.#path);
-    if (credentials === undefined) {
-      return { ok: false, error: tokenError("not-authorized", `No Google credentials at ${this.#path}; run \`shorthand-notes google-login\` first.`) };
-    }
+    if (!credentials.ok) return { ok: false, error: tokenError("not-authorized", credentials.message) };
     // The mapping below applies to both the default OAuth2Client-backed refresher and any
     // injected test-seam refresher, so it lives here rather than inside defaultRefresher —
     // a seam that throws should map the same way a real refresh failure would.
     try {
-      return await this.#refresh(credentials.refreshToken);
+      return await this.#refresh(credentials.value);
     } catch (error) {
       // Real invalid_grant failures from Google's token endpoint surface via GaxiosError's
       // .message (gaxios builds { message: res.data.error } for a string error body, and
@@ -86,36 +147,69 @@ export class FileTokenProvider implements TokenProvider {
       const code = (error as { code?: string }).code;
       const message = error instanceof Error ? error.message : String(error);
       if (code === "invalid_grant" || message === "invalid_grant") {
-        return { ok: false, error: tokenError("revoked", "Google revoked this credential; run google-login again") };
+        return { ok: false, error: tokenError("revoked", "Google revoked this credential; reconnect your Google account, then retry.") };
       }
       return { ok: false, error: tokenError("transport", message) };
     }
   }
 }
 
-type RefreshableClient = Pick<OAuth2Client, "setCredentials" | "getAccessToken">;
+type RefreshableClient = Pick<UserRefreshClient, "getAccessToken">;
 
 /**
- * Constructs the OAuth2Client once and reuses it across calls, rather than once per call.
+ * The fields that decide which client a credential describes: everything
+ * `UserRefreshClient.fromJSON` reads, and nothing else.
  *
- * Verified against the installed google-auth-library source
- * (node_modules/google-auth-library/build/src/auth/oauth2client.js): getAccessTokenAsync()
- * only refreshes when `!this.credentials.access_token || this.isTokenExpiring()`, and
- * isTokenExpiring() returns false when credentials.expiry_date is unset. So a client that
- * lives across calls and already holds a cached access_token (no expiry_date) short-circuits
- * the network round-trip on every call after the first; a client rebuilt per call never has
- * anything cached to check, so it always refreshes over the network.
+ * Compared field by field rather than by serialising both credentials, because
+ * `GoogleCredentials` has optional fields under `exactOptionalPropertyTypes` — a
+ * JSON.stringify comparison then depends on key order and on which optional keys the
+ * writer happened to emit, so it reports "changed" for two identical credentials whose
+ * files differ only in layout, and throws away a valid cached access token each time.
+ *
+ * `document_id`/`folder_id` are deliberately absent: they name the target document, not
+ * the credential, and no token is obtained with them. Including them would rebuild the
+ * client — discarding its cached access token — every time the user picks a new document.
+ */
+function sameCredentialIdentity(a: GoogleCredentials, b: GoogleCredentials): boolean {
+  return (
+    a.type === b.type &&
+    a.client_id === b.client_id &&
+    a.client_secret === b.client_secret &&
+    a.refresh_token === b.refresh_token
+  );
+}
+
+/**
+ * Hands the credential to google-auth-library's own ADC loader and holds ONE client
+ * across calls with an unchanged credential.
+ *
+ * Verified against the installed source
+ * (node_modules/google-auth-library/build/src/auth/refreshclient.js): the static
+ * fromJSON builds a UserRefreshClient and sets credentials.refresh_token itself, so no
+ * separate setCredentials call is needed; and UserRefreshClient extends OAuth2Client
+ * overriding only refreshTokenNoCache and fetchIdToken, so getAccessToken() is inherited
+ * unmodified and still refreshes only when `!credentials.access_token ||
+ * isTokenExpiring()`. A client rebuilt per call therefore has nothing cached to check
+ * and pays a full token-endpoint round-trip every time — the exact regression this
+ * closure shape was introduced to fix.
+ *
+ * The credential it was built from is held alongside it, and a differing one rebuilds.
+ * Core does not perform consent: a separate application does the OAuth and rewrites the
+ * credentials file, so recovering from a revoked token means a NEW refresh_token (and
+ * possibly a new client_id/client_secret) appearing on disk under a running core. A
+ * client pinned to the credential it first saw never sees that, and keeps reporting
+ * `revoked` against a valid file until core is restarted.
  */
 export function defaultRefresher(
-  clientId: string,
-  clientSecret: string,
-  createClient: () => RefreshableClient = () => new OAuth2Client({ clientId, clientSecret }),
-): (refreshToken: string) => Promise<TokenResult> {
+  createClient: (credentials: GoogleCredentials) => RefreshableClient =
+    (credentials) => UserRefreshClient.fromJSON(credentials),
+): (credentials: GoogleCredentials) => Promise<TokenResult> {
   let client: RefreshableClient | undefined;
-  return async (refreshToken: string): Promise<TokenResult> => {
-    if (client === undefined) {
-      client = createClient();
-      client.setCredentials({ refresh_token: refreshToken });
+  let builtFrom: GoogleCredentials | undefined;
+  return async (credentials: GoogleCredentials): Promise<TokenResult> => {
+    if (client === undefined || builtFrom === undefined || !sameCredentialIdentity(builtFrom, credentials)) {
+      client = createClient(credentials);
+      builtFrom = credentials;
     }
     const { token } = await client.getAccessToken();
     if (token === null || token === undefined) {

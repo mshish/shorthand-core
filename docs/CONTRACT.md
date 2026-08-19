@@ -20,13 +20,14 @@ Core's side of the deal is narrow and worth stating up front:
 
 The package's `exports` map is the boundary, and it is enforced at resolution time — `tsc`,
 `esbuild` and Node all honour it, so a deep import fails to resolve rather than merely being
-frowned upon. There are three entry points.
+frowned upon. There are four entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
 | `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`/`MAX_GUIDANCE_CHARACTERS`, `parseTemplateSections`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
 | `shorthand-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
-| `shorthand-core/testing` | The executable contract: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness` | Any sink's test suite |
+| `shorthand-core/google` | The Google Docs sink and the pieces it needs: `GoogleDocsNoteSink`, `GOOGLE_DOCS_SCOPE`, `GoogleApiDocsClient` and its API types, and the credentials reader — `FileTokenProvider`, `credentialsPath`, `readCredentials`, `GoogleCredentials`, `CredentialsReadResult`, `FileTokenProviderOptions` | Google Docs consumers only. **A Markdown or other API sink must not import this.** Core reads the credentials file and never writes it; see §5.4 |
+| `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For the credentials file: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsFixture`, `CredentialsConformanceSupport` | Any sink's test suite; any writer of the Google credentials file |
 
 `parseTemplateSections` is on the root entry point rather than `shorthand-core/markdown`
 even though its output is fed to `ensureNoteScaffold`: the starting sections of a note are
@@ -58,9 +59,12 @@ missing from `NoteSink`** and should be added to the port — not that the inter
 exported.
 
 A second hole the `exports` map cannot see: a **relative** import that escapes a consumer's
-own root (`../../src/note/writer.js`) bypasses bare-specifier resolution entirely.
-`test/consumer-imports.test.ts` closes it by scanning consumer roots for relative specifiers
-that resolve outside the consumer.
+own root (`../../src/note/writer.js`) bypasses bare-specifier resolution entirely. **Nothing
+closes it today.** `test/consumer-imports.test.ts` used to, by scanning consumer roots for
+relative specifiers that resolved outside the consumer; it went when the Obsidian plugin moved
+to its own repository, because a consumer in another repo has no root inside this one left to
+escape (`docs/DESIGN.md`). Vendoring a consumer back into this tree would reopen the hole and
+would need that test back.
 
 ---
 
@@ -368,6 +372,30 @@ independently and disposes it afterwards, so state must not leak between them.
 
 Capabilities are **declared** in `support` rather than probed, so a transport that cannot
 produce a shape appears as a `todo` in the report instead of a silently absent test.
+
+### 5.4 The Google credentials file
+
+`shorthand-core/google` **reads** `google-credentials.json` and never writes it. One writer
+per file: a file with two writers has an invariant that lives in neither of them. Core's job
+is to define the contract and enforce it executably.
+
+The file is Google's Application Default Credentials `authorized_user` shape — `type`,
+`client_id`, `client_secret`, `refresh_token`, which `google-auth-library`'s own
+`UserRefreshClient.fromJSON` reads by those names, and which are the only fields a read
+validates — plus `document_id` and `folder_id`, which are ours and are both optional. A
+credential with no target is still a credential: core reads no `document_id` from this file
+(the sink takes one as a constructor option), so requiring it would only make a usable
+credential unreadable. An absent optional field is **omitted**, never `null`. Extra
+top-level keys are ignored by Google's loader
+and by core, so one superset file works where a sibling file would only re-create a torn
+state between two writes. It lives at `credentialsPath()`, is 2-space-indented JSON with a
+trailing newline and the key order above, is mode `0600` on non-Windows, and must be written
+atomically — temp file in the same directory, then rename.
+
+`describeGoogleCredentialsConformance` registers those requirements against your writer the
+same way `describeNoteSinkConformance` does for a sink, with the language boundary at
+`write()`; `GOOGLE_CREDENTIALS_FIXTURES` ships the exact expected bytes so a writer in another
+language can assert against them without running JavaScript at all.
 
 ---
 

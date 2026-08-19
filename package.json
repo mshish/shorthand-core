@@ -1,6 +1,6 @@
 {
   "name": "shorthand-core",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "license": "MIT",
   "author": "Michael Sciscenti",
@@ -9,7 +9,7 @@
     ".": "./src/index.ts",
     "./markdown": "./src/markdown.ts",
     "./google": "./src/google.ts",
-    "./testing": "./src/testing/sink-conformance.ts"
+    "./testing": "./src/testing/index.ts"
   },
   "bin": {
     "shorthand-notes": "./dist/shorthand-notes.mjs"

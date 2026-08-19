@@ -1,6 +1,6 @@
 node_modules/
 
-# Local secrets (e.g. GOOGLE_OAUTH_CLIENT_ID/SECRET for google-login) — never committed.
+# Local secrets (e.g. GOOGLE_OAUTH_CLIENT_ID/SECRET) — never committed.
 .env
 .env.*
 

@@ -25,4 +25,22 @@ describe("Google OAuth scope guard", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  test("the drive.file scope is still actually present, anchored on the sink that uses it", async () => {
+    // The negative test above is satisfied by an empty match set, so on its own it
+    // cannot tell "correctly scoped" from "the scope code left the building". Core no
+    // longer REQUESTS this scope — whatever performs consent builds the authorization
+    // URL — so the only thing anchoring this guard to reality is the constant the sink
+    // authenticates with. Anchor on that file by name: a match found anywhere else is
+    // not evidence the sink still declares its scope.
+    const anchor = join("src", "google", "docs-sink.ts");
+    const anchored = (await readFile(anchor, "utf8")).match(/googleapis\.com\/auth\/[\w.]+/g) ?? [];
+    expect(anchored).toEqual(["googleapis.com/auth/drive.file"]);
+
+    const files = [...await allSourceFiles("src"), ...await allSourceFiles("bin")];
+    const all = (await Promise.all(files.map(async (file) => (
+      (await readFile(file, "utf8")).match(/googleapis\.com\/auth\/[\w.]+/g) ?? []
+    )))).flat();
+    expect(all.length).toBeGreaterThan(0);
+  });
 });

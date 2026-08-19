@@ -36,11 +36,5 @@ describe("Google OAuth scope guard", () => {
     const anchor = join("src", "google", "docs-sink.ts");
     const anchored = (await readFile(anchor, "utf8")).match(/googleapis\.com\/auth\/[\w.]+/g) ?? [];
     expect(anchored).toEqual(["googleapis.com/auth/drive.file"]);
-
-    const files = [...await allSourceFiles("src"), ...await allSourceFiles("bin")];
-    const all = (await Promise.all(files.map(async (file) => (
-      (await readFile(file, "utf8")).match(/googleapis\.com\/auth\/[\w.]+/g) ?? []
-    )))).flat();
-    expect(all.length).toBeGreaterThan(0);
   });
 });

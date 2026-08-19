@@ -248,6 +248,54 @@ describe("shorthand-notes CLI", () => {
     expect(await readFile(join(vault, "linked", "transcript.md"), "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
 
+  test("enhance rejects an invalid --sink value", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-sink-invalid-test-"));
+    scratchDirectories.push(vault);
+    await writeFile(join(vault, "meeting.md"), "# Meeting\n", "utf8");
+    await writeFile(join(vault, "transcript.md"), "me: hi", "utf8");
+    const result = await run(join(process.cwd(), "bin", "shorthand-notes.ts"), [
+      "enhance", "--vault", vault, "--note", "meeting.md", "--transcript", "transcript.md", "--sink", "notion",
+    ]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("--sink must be markdown or google.");
+  });
+
+  test("enhance --sink google fails clearly, without naming any consumer app, when no Google credentials are configured", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-sink-google-nocreds-test-"));
+    scratchDirectories.push(vault);
+    const configDirectory = await mkdtemp(join(tmpdir(), ".cli-sink-google-config-"));
+    scratchDirectories.push(configDirectory);
+    await writeFile(join(vault, "meeting.md"), "# Meeting\n", "utf8");
+    await writeFile(join(vault, "transcript.md"), "me: hi", "utf8");
+    const result = await run(
+      join(process.cwd(), "bin", "shorthand-notes.ts"),
+      ["enhance", "--vault", vault, "--note", "meeting.md", "--transcript", "transcript.md", "--sink", "google"],
+      withoutGoogleOAuthEnv({ APPDATA: configDirectory }),
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("connect your Google account");
+    expect(result.stderr).not.toContain("shorthand-config");
+  });
+
+  test("capture --sink google fails before the recording stream starts when no Google credentials are configured", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-capture-sink-nocreds-test-"));
+    scratchDirectories.push(vault);
+    const configDirectory = await mkdtemp(join(tmpdir(), ".cli-capture-sink-config-"));
+    scratchDirectories.push(configDirectory);
+    await writeFile(join(vault, "meeting.md"), "# Meeting\n\nUser-owned notes.\n", "utf8");
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
+    const result = await run(
+      entry,
+      ["capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture, "--no-reconnect", "--enhance", "--sink", "google"],
+      withoutGoogleOAuthEnv({ APPDATA: configDirectory }),
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("No Google credentials");
+    expect(result.stdout).not.toContain("Sidecar written");
+    await expect(readFile(join(vault, "transcript.md"), "utf8")).rejects.toThrow();
+  }, 10_000);
+
   test("run() strips GOOGLE_OAUTH_CLIENT_ID/SECRET from any env it's given", async () => {
     // Retargeted, and deliberately weaker than the version it replaces. The original
     // probed `google-login`, which failed fast without a credential, so a leak showed up

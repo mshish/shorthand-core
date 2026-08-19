@@ -23,6 +23,7 @@ import {
   type AgentClient,
   type AgentTier,
   type ExitDiagnosis,
+  type NoteSink,
   type PassOutcome,
   type Section,
 } from "shorthand-core";
@@ -32,11 +33,12 @@ import {
   MarkdownNoteSink,
   transcriptWikilink,
 } from "shorthand-core/markdown";
+import { resolveGoogleDocsSink } from "shorthand-core/google";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
   );
   return 2;
 }
@@ -49,7 +51,7 @@ function timestampName(date: Date): string {
 const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
-  "--tier", "--dry-run", "--agent-stub", "--claude",
+  "--tier", "--dry-run", "--agent-stub", "--claude", "--sink",
 ]);
 
 class ArgumentError extends Error {}
@@ -146,6 +148,17 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     }
     noteLinked = true;
   }
+  let enhancer: EnhanceRunner | undefined;
+  if (args.includes("--enhance")) {
+    const sinkArg = argumentValue(args, "--sink") ?? "markdown";
+    if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
+    const resolved = await createEnhanceRunner(note, vault, args, environment, false);
+    if (!resolved.ok) {
+      console.error(resolved.message);
+      return 1;
+    }
+    enhancer = resolved.runner;
+  }
   const fake = args.some((argument) => argument === "--fake-stream" || argument.startsWith("--fake-stream="));
   const suppliedFixture = fake ? argumentValue(args, "--fake-stream", true) : undefined;
   const bundledFixture = resolve(dirname(fileURLToPath(import.meta.url)), "../test/fixtures/fake-stream.mjs");
@@ -161,9 +174,6 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   });
   const transcript = new TranscriptStore();
   const sidecar = new SidecarWriter(sidecarPath, { flushIntervalMs: DEFAULT_CONFIG.sidecarFlushIntervalMs });
-  const enhancer = args.includes("--enhance")
-    ? createEnhanceRunner(note, vault, args, environment, false)
-    : undefined;
   let exitCode = 0;
   let interruptCount = 0;
   let shutdownRequested = false;
@@ -288,6 +298,8 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
   const tierArg = argumentValue(args, "--tier") ?? "link";
   if (tierArg !== "tick" && tierArg !== "link") return usage("--tier must be tick or link.");
   const tier: AgentTier = tierArg;
+  const sinkArg = argumentValue(args, "--sink") ?? "markdown";
+  if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
   const vault = resolve(argumentValue(args, "--vault") ?? process.cwd());
   const note = resolveFrom(vault, noteArg);
   const transcriptPath = resolveFrom(vault, transcriptArg);
@@ -299,7 +311,12 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     return 1;
   }
   const dryRun = args.includes("--dry-run");
-  const runner = createEnhanceRunner(note, vault, args, environment, dryRun);
+  const resolved = await createEnhanceRunner(note, vault, args, environment, dryRun);
+  if (!resolved.ok) {
+    console.error(resolved.message);
+    return 1;
+  }
+  const runner = resolved.runner;
   runner.appendTranscript(transcriptText);
   const outcome = await runner.enhanceNow(tier);
   if (outcome.status === "completed") {
@@ -311,33 +328,52 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
   return outcome.status === "requeued" ? 3 : 1;
 }
 
-function createEnhanceRunner(
+type CreateEnhanceRunnerResult =
+  | Readonly<{ ok: true; runner: EnhanceRunner }>
+  | Readonly<{ ok: false; message: string }>;
+
+async function createEnhanceRunner(
   note: string,
   vault: string,
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   dryRun: boolean,
-): EnhanceRunner {
+): Promise<CreateEnhanceRunnerResult> {
+  const sinkArg = argumentValue(args, "--sink") ?? "markdown";
+  if (sinkArg !== "markdown" && sinkArg !== "google") {
+    return { ok: false, message: "--sink must be markdown or google." };
+  }
+  let sink: NoteSink;
+  if (sinkArg === "google") {
+    const resolved = await resolveGoogleDocsSink(note, environment);
+    if (!resolved.ok) return { ok: false, message: resolved.message };
+    sink = resolved.sink;
+  } else {
+    sink = new MarkdownNoteSink({ notePath: note, vaultRoot: vault });
+  }
   const stubPath = argumentValue(args, "--agent-stub") ?? environment.HANDY_NOTES_AGENT_STUB;
   const agent: AgentClient = stubPath === undefined
     ? new ClaudeAgentClient()
     : new ExecutableAgentStub(resolveFrom(process.cwd(), stubPath));
   const claudeOverride = argumentValue(args, "--claude");
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
-  return new EnhanceRunner({
-    sink: new MarkdownNoteSink({ notePath: note, vaultRoot: vault }),
-    agent,
-    minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
-    minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
-    maxDurationMs: environmentNumber(environment.HANDY_NOTES_MAX_DURATION_MS, DEFAULT_CONFIG.enhancement.maxDurationMs),
-    timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, DEFAULT_CONFIG.enhancement.timeoutMs),
-    maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
-    dryRun,
-    ...(claudeExecutable === undefined
-      ? {}
-      : { pathToClaudeCodeExecutable: claudeExecutable }),
-    onStatus: ({ message }) => console.error(message),
-  });
+  return {
+    ok: true,
+    runner: new EnhanceRunner({
+      sink,
+      agent,
+      minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
+      minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
+      maxDurationMs: environmentNumber(environment.HANDY_NOTES_MAX_DURATION_MS, DEFAULT_CONFIG.enhancement.maxDurationMs),
+      timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, DEFAULT_CONFIG.enhancement.timeoutMs),
+      maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
+      dryRun,
+      ...(claudeExecutable === undefined
+        ? {}
+        : { pathToClaudeCodeExecutable: claudeExecutable }),
+      onStatus: ({ message }) => console.error(message),
+    }),
+  };
 }
 
 function reportPassOutcome(outcome: PassOutcome): void {

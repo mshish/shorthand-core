@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { OAuth2Client } from "google-auth-library";
+import { UserRefreshClient } from "google-auth-library";
 import { shorthandConfigDirectory } from "../config.js";
 import { tokenError, type TokenProvider, type TokenResult } from "../auth/token-provider.js";
 
@@ -107,20 +107,18 @@ export async function readCredentials(path = credentialsPath()): Promise<Credent
 }
 
 export type FileTokenProviderOptions = Readonly<{
-  clientId: string;
-  clientSecret: string;
   credentialsPath?: string;
-  /** Test seam only; production always exchanges the refresh token via OAuth2Client. */
-  refreshAccessToken?: (refreshToken: string) => Promise<TokenResult>;
+  /** Test seam only; production always refreshes via google-auth-library's UserRefreshClient. */
+  refreshAccessToken?: (credentials: GoogleCredentials) => Promise<TokenResult>;
 }>;
 
 export class FileTokenProvider implements TokenProvider {
   readonly #path: string;
-  readonly #refresh: (refreshToken: string) => Promise<TokenResult>;
+  readonly #refresh: (credentials: GoogleCredentials) => Promise<TokenResult>;
 
-  constructor(options: FileTokenProviderOptions) {
+  constructor(options: FileTokenProviderOptions = {}) {
     this.#path = options.credentialsPath ?? credentialsPath();
-    this.#refresh = options.refreshAccessToken ?? defaultRefresher(options.clientId, options.clientSecret);
+    this.#refresh = options.refreshAccessToken ?? defaultRefresher();
   }
 
   async getAccessToken(): Promise<TokenResult> {
@@ -130,7 +128,7 @@ export class FileTokenProvider implements TokenProvider {
     // injected test-seam refresher, so it lives here rather than inside defaultRefresher —
     // a seam that throws should map the same way a real refresh failure would.
     try {
-      return await this.#refresh(credentials.value.refresh_token);
+      return await this.#refresh(credentials.value);
     } catch (error) {
       // Real invalid_grant failures from Google's token endpoint surface via GaxiosError's
       // .message (gaxios builds { message: res.data.error } for a string error body, and
@@ -147,30 +145,29 @@ export class FileTokenProvider implements TokenProvider {
   }
 }
 
-type RefreshableClient = Pick<OAuth2Client, "setCredentials" | "getAccessToken">;
+type RefreshableClient = Pick<UserRefreshClient, "getAccessToken">;
 
 /**
- * Constructs the OAuth2Client once and reuses it across calls, rather than once per call.
+ * Hands the credential to google-auth-library's own ADC loader and holds ONE client
+ * across calls.
  *
- * Verified against the installed google-auth-library source
- * (node_modules/google-auth-library/build/src/auth/oauth2client.js): getAccessTokenAsync()
- * only refreshes when `!this.credentials.access_token || this.isTokenExpiring()`, and
- * isTokenExpiring() returns false when credentials.expiry_date is unset. So a client that
- * lives across calls and already holds a cached access_token (no expiry_date) short-circuits
- * the network round-trip on every call after the first; a client rebuilt per call never has
- * anything cached to check, so it always refreshes over the network.
+ * Verified against the installed source
+ * (node_modules/google-auth-library/build/src/auth/refreshclient.js): the static
+ * fromJSON builds a UserRefreshClient and sets credentials.refresh_token itself, so no
+ * separate setCredentials call is needed; and UserRefreshClient extends OAuth2Client
+ * overriding only refreshTokenNoCache and fetchIdToken, so getAccessToken() is inherited
+ * unmodified and still refreshes only when `!credentials.access_token ||
+ * isTokenExpiring()`. A client rebuilt per call therefore has nothing cached to check
+ * and pays a full token-endpoint round-trip every time — the exact regression this
+ * closure shape was introduced to fix.
  */
 export function defaultRefresher(
-  clientId: string,
-  clientSecret: string,
-  createClient: () => RefreshableClient = () => new OAuth2Client({ clientId, clientSecret }),
-): (refreshToken: string) => Promise<TokenResult> {
+  createClient: (credentials: GoogleCredentials) => RefreshableClient =
+    (credentials) => UserRefreshClient.fromJSON(credentials),
+): (credentials: GoogleCredentials) => Promise<TokenResult> {
   let client: RefreshableClient | undefined;
-  return async (refreshToken: string): Promise<TokenResult> => {
-    if (client === undefined) {
-      client = createClient();
-      client.setCredentials({ refresh_token: refreshToken });
-    }
+  return async (credentials: GoogleCredentials): Promise<TokenResult> => {
+    client ??= createClient(credentials);
     const { token } = await client.getAccessToken();
     if (token === null || token === undefined) {
       return { ok: false, error: tokenError("transport", "Token refresh returned no access token") };

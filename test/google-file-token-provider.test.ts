@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { FileTokenProvider, readCredentials } from "../src/google/file-token-provider.js";
+import { FileTokenProvider, defaultRefresher, readCredentials } from "../src/google/file-token-provider.js";
 import type { GoogleCredentials } from "../src/google/file-token-provider.js";
 
 const VALID: GoogleCredentials = {
@@ -124,7 +124,7 @@ describe("readCredentials", () => {
 describe("FileTokenProvider.getAccessToken", () => {
   test("returns not-authorized, not a throw, when no credentials file exists yet", async () => {
     const provider = new FileTokenProvider({
-      clientId: "c", clientSecret: "s", credentialsPath: await scratchPath(),
+      credentialsPath: await scratchPath(),
     });
     expect(await provider.getAccessToken()).toEqual({
       ok: false, error: { code: "not-authorized", message: expect.any(String) },
@@ -133,7 +133,6 @@ describe("FileTokenProvider.getAccessToken", () => {
 
   test("returns not-authorized, not a throw, for a malformed file", async () => {
     const provider = new FileTokenProvider({
-      clientId: "c", clientSecret: "s",
       credentialsPath: await writeRaw(await scratchPath(), "{ broken"),
     });
     expect(await provider.getAccessToken()).toEqual({
@@ -144,10 +143,12 @@ describe("FileTokenProvider.getAccessToken", () => {
   test("exchanges the stored refresh token for an access token", async () => {
     const path = await writeJson(await scratchPath(), VALID);
     const provider = new FileTokenProvider({
-      clientId: "c", clientSecret: "s", credentialsPath: path,
+      credentialsPath: path,
       // Test seam: injected refresher, not a live client. No live network in any test.
-      refreshAccessToken: async (refreshToken: string) => {
-        expect(refreshToken).toBe("rt-1");
+      refreshAccessToken: async (credentials: GoogleCredentials) => {
+        expect(credentials.refresh_token).toBe("rt-1");
+        expect(credentials.client_id).toBe("1234567890-test.apps.googleusercontent.com");
+        expect(credentials.client_secret).toBe("test-client-secret");
         return { ok: true, token: "access-token-1" };
       },
     });
@@ -157,7 +158,7 @@ describe("FileTokenProvider.getAccessToken", () => {
   test("maps invalid_grant to revoked", async () => {
     const path = await writeJson(await scratchPath(), VALID);
     const provider = new FileTokenProvider({
-      clientId: "c", clientSecret: "s", credentialsPath: path,
+      credentialsPath: path,
       refreshAccessToken: async () => { throw Object.assign(new Error("invalid_grant"), { code: "invalid_grant" }); },
     });
     expect(await provider.getAccessToken()).toEqual({
@@ -168,7 +169,7 @@ describe("FileTokenProvider.getAccessToken", () => {
   test("maps a network failure to transport", async () => {
     const path = await writeJson(await scratchPath(), VALID);
     const provider = new FileTokenProvider({
-      clientId: "c", clientSecret: "s", credentialsPath: path,
+      credentialsPath: path,
       refreshAccessToken: async () => { throw new Error("ENOTFOUND"); },
     });
     expect(await provider.getAccessToken()).toEqual({
@@ -182,14 +183,13 @@ describe("FileTokenProvider.getAccessToken", () => {
     // missing-file path is how the `revoked` message survives the change by accident —
     // the same "compiles fine while being wrong" failure this test exists to catch.
     const missing = new FileTokenProvider({
-      clientId: "c", clientSecret: "s", credentialsPath: await scratchPath(),
+      credentialsPath: await scratchPath(),
     });
     const missingResult = await missing.getAccessToken();
     expect(missingResult.ok).toBe(false);
     if (!missingResult.ok) expect(missingResult.error.message).not.toContain("google-login");
 
     const revoked = new FileTokenProvider({
-      clientId: "c", clientSecret: "s",
       credentialsPath: await writeJson(await scratchPath(), VALID),
       refreshAccessToken: async () => { throw Object.assign(new Error("invalid_grant"), { code: "invalid_grant" }); },
     });
@@ -200,5 +200,48 @@ describe("FileTokenProvider.getAccessToken", () => {
       expect(revokedResult.error.message).not.toContain("google-login");
       expect(revokedResult.error.message).toContain("reconnect");
     }
+  });
+});
+
+describe("defaultRefresher", () => {
+  test("constructs the underlying client once, not once per call", async () => {
+    // Regression guard for a fix that has already been made once. A client rebuilt per
+    // call never has a cached access_token for the library's own isTokenExpiring() check
+    // to short-circuit on, so every call pays a token-endpoint round-trip.
+    let clientsCreated = 0;
+    const refresher = defaultRefresher(() => {
+      clientsCreated += 1;
+      return { getAccessToken: async () => ({ token: "token-from-first-refresh" }) };
+    });
+    expect(await refresher(VALID)).toEqual({ ok: true, token: "token-from-first-refresh" });
+    expect(await refresher(VALID)).toEqual({ ok: true, token: "token-from-first-refresh" });
+    expect(clientsCreated).toBe(1);
+  });
+
+  test("builds the client from the credential's own client_id/client_secret", async () => {
+    // The whole point of moving these into the file: a refresh token is only meaningful
+    // paired with the client that issued it, so the client must come from the same file.
+    let seen: GoogleCredentials | undefined;
+    const refresher = defaultRefresher((credentials) => {
+      seen = credentials;
+      return { getAccessToken: async () => ({ token: "t" }) };
+    });
+    await refresher(VALID);
+    expect(seen).toEqual(VALID);
+  });
+
+  test("maps a client that returns no token to transport", async () => {
+    const refresher = defaultRefresher(() => ({ getAccessToken: async () => ({ token: null }) }));
+    expect(await refresher(VALID)).toEqual({
+      ok: false, error: { code: "transport", message: expect.any(String) },
+    });
+  });
+
+  test("the real default really is google-auth-library's own loader", async () => {
+    // Pins the standard path: if someone replaces fromJSON with hand-rolled field
+    // plumbing again, an ADC file that Google accepts and we reject stops being caught.
+    const { UserRefreshClient } = await import("google-auth-library");
+    const client = UserRefreshClient.fromJSON(VALID);
+    expect(client).toBeInstanceOf(UserRefreshClient);
   });
 });

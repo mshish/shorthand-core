@@ -211,6 +211,47 @@ describe("GoogleApiDocsClient", () => {
     if (!result.ok) expect(result.error.cause).toBe(originalError);
   });
 
+  test("addDocumentTab returns the new tab's id from the batchUpdate reply", async () => {
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => { throw new Error("not used in this test"); },
+        batchUpdate: async (request: unknown) => {
+          const body = (request as { requestBody: { requests: Array<{ addDocumentTab?: { tabProperties?: { title?: string } } }> } }).requestBody;
+          expect(body.requests).toEqual([{ addDocumentTab: { tabProperties: { title: "Meeting" } } }]);
+          return { data: { replies: [{ addDocumentTab: { tabProperties: { tabId: "new-tab-1" } } }] } };
+        },
+      },
+    } as never);
+    const result = await client.addDocumentTab("doc1", "Meeting");
+    expect(result).toEqual({ ok: true, value: { tabId: "new-tab-1" } });
+  });
+
+  test("addDocumentTab maps a batchUpdate failure the same way batchUpdate itself does", async () => {
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => { throw new Error("not used in this test"); },
+        batchUpdate: async () => { throw gaxiosError(403); },
+      },
+    } as never);
+    const result = await client.addDocumentTab("doc1", "Meeting");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.httpStatus).toBe(403);
+  });
+
+  test("addDocumentTab reports an error when the response carries no tabId", async () => {
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => { throw new Error("not used in this test"); },
+        batchUpdate: async () => ({ data: { replies: [{ addDocumentTab: {} }] } }),
+      },
+    } as never);
+    const result = await client.addDocumentTab("doc1", "Meeting");
+    expect(result).toEqual({
+      ok: false,
+      error: { httpStatus: 0, message: "Docs API response carried no tabId for the new tab", cause: expect.anything() },
+    });
+  });
+
   describe("TokenProvider error mapping through getRequestHeaders", () => {
     // These tests deliberately do NOT inject a docsResource, so the real
     // OAuth2Client/getRequestHeaders override runs. A TokenProvider failure

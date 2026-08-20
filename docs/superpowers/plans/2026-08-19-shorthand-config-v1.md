@@ -86,15 +86,24 @@ gh repo create mshish/shorthand-config --private --source=. --remote=origin
 git push -u origin main
 ```
 
-- [ ] **Step 7: Manual prerequisite — record for the human, do not attempt to automate**
+- [ ] **Step 7: Cross-repo CI auth — SSH deploy key, not a PAT**
 
-This step cannot be done by an agent: create a GitHub Personal Access Token with `repo` scope (needed because `shorthand-core` is a private repo under the same personal account, not an org, so the default `GITHUB_TOKEN` can't read across repos), then run:
+`shorthand-core` is a private repo under the same personal account, not an org, so the default `GITHUB_TOKEN` in `shorthand-config`'s workflows can't read it. Rather than a broadly-scoped personal access token, use a read-only SSH deploy key scoped to exactly `shorthand-core` — narrower, and fully automatable (deploy keys can be created via `gh repo deploy-key add`; PATs cannot be created via any API or CLI, only GitHub's web UI):
 
 ```bash
-gh secret set CORE_REPO_PAT --repo mshish/shorthand-config
+ssh-keygen -t ed25519 -C "shorthand-config-ci-read-only" -f ./shorthand_core_deploy_key -N ""
+gh repo deploy-key add ./shorthand_core_deploy_key.pub --repo mshish/shorthand-core --title "shorthand-config CI (read-only)"
 ```
 
-(paste the token when prompted). This secret is consumed starting in Task 3. Flag this to the human explicitly if it isn't already done before Task 3 starts.
+Verify it landed read-only: `gh api repos/mshish/shorthand-core/keys --jq '.[] | "\(.id)\t\(.title)\t\(.read_only)"'` should show `true`.
+
+Writing the private half into `shorthand-config`'s secret store is the one step here that's a genuinely security-sensitive action — get explicit human approval before running it, even though the key material can be generated and the deploy key can be added without asking:
+
+```bash
+gh secret set SHORTHAND_CORE_DEPLOY_KEY --repo mshish/shorthand-config < ./shorthand_core_deploy_key
+```
+
+Then delete the local private key file — it only needs to exist in the secret store from this point on. This secret is consumed starting in Task 3, via `actions/checkout`'s `ssh-key` input (not a `git clone` with an embedded token).
 
 ---
 
@@ -179,20 +188,18 @@ Expected: all three matrix jobs pass. (`cargo test` currently has nothing to tes
 
 - [ ] **Step 1: Write the compile script**
 
+`shorthand-core` is checked out by a CI step ahead of this script (an `actions/checkout` step targeting `mshish/shorthand-core` via the `SHORTHAND_CORE_DEPLOY_KEY` SSH deploy key — see Step 5), not by this script itself. The script only compiles what's already on disk.
+
 ```bash
 #!/usr/bin/env bash
-# scripts/compile-core.sh — compiles the pinned shorthand-core into a Tauri sidecar
-# binary for the CURRENT host platform. Run once per CI matrix leg (native build only —
-# see the design spec's macOS section for why this is never cross-compiled).
+# scripts/compile-core.sh — compiles an already-checked-out shorthand-core (see the CI
+# step that runs actions/checkout against mshish/shorthand-core via an SSH deploy key)
+# into a Tauri sidecar binary for the CURRENT host platform. Run once per CI matrix leg
+# (native build only — see the design spec's macOS section for why this is never
+# cross-compiled).
 set -euo pipefail
 
-CORE_TAG="0.8.0"
-CORE_DIR="$(mktemp -d)"
-trap 'rm -rf "$CORE_DIR"' EXIT
-
-git clone --depth 1 --branch "$CORE_TAG" \
-  "https://x-access-token:${CORE_REPO_PAT}@github.com/mshish/shorthand-core.git" \
-  "$CORE_DIR"
+CORE_DIR="${SHORTHAND_CORE_CHECKOUT:-shorthand-core-checkout}"
 
 pushd "$CORE_DIR" >/dev/null
 bun install
@@ -273,9 +280,14 @@ Edit `.github/workflows/build.yml`, add after the `setup-bun` step on every matr
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.13"   # >= the version containing bun#29272's fix — verify and bump if a newer advisory lands
+      - name: Checkout shorthand-core
+        uses: actions/checkout@v7
+        with:
+          repository: mshish/shorthand-core
+          ref: "0.8.0"
+          ssh-key: ${{ secrets.SHORTHAND_CORE_DEPLOY_KEY }}
+          path: shorthand-core-checkout
       - name: Compile shorthand-core sidecar
-        env:
-          CORE_REPO_PAT: ${{ secrets.CORE_REPO_PAT }}
         run: bash scripts/compile-core.sh
       - name: Smoke-test the compiled sidecar runs
         shell: bash
@@ -1894,7 +1906,7 @@ fn main() {
 
 - [ ] **Step 2: Write the CI-only conformance runner**
 
-`conformance/package.json`:
+`conformance/package.json`. The dependency points at a local checkout rather than a git URL — see Step 3's note on why (this job's matrix leg already has `shorthand-core` checked out via Task 3's `actions/checkout` step, so there's no reason to fetch it a second time over the network):
 
 ```json
 {
@@ -1902,10 +1914,12 @@ fn main() {
   "private": true,
   "type": "module",
   "dependencies": {
-    "shorthand-core": "github:mshish/shorthand-core#0.8.0"
+    "shorthand-core": "file:../shorthand-core-checkout"
   }
 }
 ```
+
+For local development (running this suite outside CI, where `shorthand-core-checkout` won't exist), point `shorthand-core` at a local clone's path instead, or temporarily swap in a `github:mshish/shorthand-core#0.8.0` spec — either works with `bun install` and neither needs to be the CI configuration.
 
 `conformance/run.ts`:
 
@@ -1962,16 +1976,14 @@ describeGoogleCredentialsConformance(
 
 Add to `.github/workflows/build.yml`, after the existing steps on each matrix leg:
 
+This job's matrix leg already ran Task 3's `Checkout shorthand-core` step earlier in the same job (checking `mshish/shorthand-core` out to `shorthand-core-checkout` via the SSH deploy key) — reuse that checkout as a local `file:` dependency instead of adding a second auth mechanism for `bun install` to fetch it again over the network.
+
 ```yaml
       - name: Build release binary for conformance testing
         run: bun run tauri build --no-bundle
       - name: Install conformance harness deps
         working-directory: conformance
-        env:
-          CORE_REPO_PAT: ${{ secrets.CORE_REPO_PAT }}
-        run: |
-          git config --global url."https://x-access-token:${CORE_REPO_PAT}@github.com/".insteadOf "https://github.com/"
-          bun install
+        run: bun install
       - name: Run credentials conformance suite
         working-directory: conformance
         shell: bash
@@ -2111,9 +2123,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: bun install
+      - name: Checkout shorthand-core
+        uses: actions/checkout@v7
+        with:
+          repository: mshish/shorthand-core
+          ref: "0.8.0"
+          ssh-key: ${{ secrets.SHORTHAND_CORE_DEPLOY_KEY }}
+          path: shorthand-core-checkout
       - name: Compile shorthand-core sidecar
-        env:
-          CORE_REPO_PAT: ${{ secrets.CORE_REPO_PAT }}
         run: bash scripts/compile-core.sh
       - name: import Apple Developer Certificate
         if: contains(matrix.platform, 'macos')

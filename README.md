@@ -62,8 +62,9 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
 - The `claude` CLI must be installed and logged in. On Windows the standard
   `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location can be passed with
   `--claude`.
-- Node.js 20 or Bun for headless CLI use. Bun is required for the development build and test
-  commands.
+- Node.js 22 for headless CLI use. The floor follows a dependency's requirement rather than a
+  preference: the AI SDK packages (`ai`, `@ai-sdk/*`) declare `engines.node >=22`. Bun is
+  required for the development build and test commands.
 
 ## Headless CLI
 

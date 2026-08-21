@@ -18,8 +18,18 @@ type ModelMessageLike = Readonly<{ role: string; content: unknown; providerOptio
  * would fail. Only the three call-site seams are replaced.
  */
 const actualAi = await import("ai");
+// Captured BEFORE mock.module, and this is not defensive style — bun's mock.module mutates
+// the live module namespace in place, so after registration `actualAi.jsonSchema` resolves
+// to the mock below. Reading it through the namespace inside the wrapper recurses until the
+// process runs out of memory (observed: 2GB RSS, then a Bun panic).
+const realGenerateText = actualAi.generateText;
+const realJsonSchema = actualAi.jsonSchema;
+const realOutputObject = actualAi.Output.object;
+const { NoObjectGeneratedError, NoOutputGeneratedError } = actualAi;
 
 const calls: CallOptions[] = [];
+const schemasSeen: unknown[] = [];
+const outputSpecsSeen: { schema: unknown }[] = [];
 let respond: (options: CallOptions) => unknown = () => generatedResult({ sections: [] });
 
 mock.module("ai", () => ({
@@ -28,10 +38,20 @@ mock.module("ai", () => ({
     calls.push(options);
     return await respond(options);
   },
-  // Replaced so the test can see the exact JSON Schema handed to Output.object. With
-  // `generateText` mocked the real implementations do no observable work anyway.
-  jsonSchema: (schema: unknown) => ({ __jsonSchema: schema }),
-  Output: { object: (specification: { schema: unknown }) => ({ __outputObject: specification }) },
+  // WRAPPED, not replaced. Recording the arguments keeps them observable, and returning the
+  // real values keeps every entry in `calls` a set of options the real `generateText` can
+  // actually consume — which is what lets one test replay the client's own call against the
+  // SDK's validation path instead of only against this mock.
+  jsonSchema: (schema: unknown) => {
+    schemasSeen.push(schema);
+    return realJsonSchema(schema as Parameters<typeof realJsonSchema>[0]);
+  },
+  Output: {
+    object: (specification: { schema: unknown }) => {
+      outputSpecsSeen.push(specification);
+      return realOutputObject(specification as Parameters<typeof realOutputObject>[0]);
+    },
+  },
 }));
 
 type ProviderCall = { factory: string; options: CallOptions; modelIds: string[] };
@@ -65,6 +85,8 @@ const realWarn = console.warn;
 
 beforeEach(() => {
   calls.length = 0;
+  schemasSeen.length = 0;
+  outputSpecsSeen.length = 0;
   providerCalls.length = 0;
   warnLog.length = 0;
   respond = () => generatedResult({ sections: [{ heading: "Summary", markdown: "Done" }] });
@@ -117,7 +139,7 @@ function throwingResult(error: unknown, warnings: readonly unknown[] = []) {
 }
 
 function noObjectGenerated(message: string) {
-  return new actualAi.NoObjectGeneratedError({
+  return new NoObjectGeneratedError({
     message,
     text: "not json",
     response: { id: "r1", timestamp: new Date(0), modelId: "m" },
@@ -134,6 +156,14 @@ function noObjectGenerated(message: string) {
 
 function messagesOf(index = 0): readonly ModelMessageLike[] {
   return calls[index]!.messages as readonly ModelMessageLike[];
+}
+
+/**
+ * The system prompt travels as `generateText`'s `instructions` option, never as an element
+ * of `messages` — `standardizePrompt` rejects a system role there outright.
+ */
+function instructionsOf(index = 0): ModelMessageLike {
+  return calls[index]!.instructions as ModelMessageLike;
 }
 
 function deferred<T>() {
@@ -161,17 +191,19 @@ describe("LlmAgentClient system prompt forwarding", () => {
     async ({ systemPrompt }) => {
       const client = new LlmAgentClient({ credentials: credentials() });
       await client.query(agentRequest({ systemPrompt }));
-      const messages = messagesOf();
-      expect(messages[0]!.role).toBe("system");
-      expect(messages[0]!.content).toBe(systemPrompt);
-      expect(messages[0]!.content).toContain(ENHANCEMENT_SAFETY_PREAMBLE);
+      expect(instructionsOf().role).toBe("system");
+      expect(instructionsOf().content).toBe(systemPrompt);
+      expect(instructionsOf().content).toContain(ENHANCEMENT_SAFETY_PREAMBLE);
+      // And never as a message: standardizePrompt throws InvalidPromptError on a system role
+      // inside `messages`, before the provider is reached.
+      expect(messagesOf().some((message) => message.role === "system")).toBe(false);
     },
   );
 
   test("marks the system message for Anthropic ephemeral caching", async () => {
     const client = new LlmAgentClient({ credentials: credentials({ provider: "anthropic", model: "claude-sonnet-4-5" }) });
     await client.query(agentRequest());
-    expect(messagesOf()[0]!.providerOptions).toEqual(CACHE_HINT);
+    expect(instructionsOf().providerOptions).toEqual(CACHE_HINT);
   });
 });
 
@@ -180,16 +212,16 @@ describe("LlmAgentClient request shape", () => {
     const outputSchema = buildSectionOutputSchema();
     const client = new LlmAgentClient({ credentials: credentials() });
     await client.query(agentRequest({ outputSchema }));
-    expect(calls[0]!.output).toEqual({ __outputObject: { schema: { __jsonSchema: outputSchema } } });
+    expect(schemasSeen).toEqual([outputSchema]);
+    // The schema object Output.object received carries our exact JSON Schema, by identity.
+    expect((outputSpecsSeen[0]!.schema as { jsonSchema: unknown }).jsonSchema).toBe(outputSchema);
   });
 
   test("sends the prompt as the trailing user message", async () => {
     const client = new LlmAgentClient({ credentials: credentials() });
     await client.query(agentRequest({ prompt: "Sections, please." }));
-    expect(messagesOf()).toEqual([
-      { role: "system", content: SYSTEM_PROMPT, providerOptions: CACHE_HINT },
-      { role: "user", content: "Sections, please." },
-    ]);
+    expect(messagesOf()).toEqual([{ role: "user", content: "Sections, please." }]);
+    expect(instructionsOf()).toEqual({ role: "system", content: SYSTEM_PROMPT, providerOptions: CACHE_HINT });
   });
 
   test("forwards no token ceiling and no turn budget", async () => {
@@ -301,6 +333,16 @@ describe("LlmAgentClient provider construction", () => {
     expect(message).toMatch(/switch to a provider/i);
   });
 
+  test("a whitespace-only key is not a key, so openai is rejected the same as a missing one", () => {
+    // The credentials reader's nonEmptyString does not trim, so "   " arrives as a present
+    // value. Treating it as a key would send an unauthenticated request AND drive
+    // replaceAll("   ", ...) across every message the client produces.
+    expect(() => new LlmAgentClient({
+      credentials: { provider: "openai", model: "gpt-4o", api_key: "   " },
+      credentialsPath: "P.json",
+    })).toThrow(/No API key for "openai" in P\.json/);
+  });
+
   test("rejects a keyless anthropic profile the same way", () => {
     expect(() => new LlmAgentClient({
       credentials: { provider: "anthropic", model: "claude-sonnet-4-5" },
@@ -372,7 +414,7 @@ describe("LlmAgentClient error conversion", () => {
     // The `output` getter throws this when its backing value is null, which happens whenever
     // finishReason !== "stop". Letting it escape would cost the corrective second attempt for
     // exactly the truncation case D7 chose not to guard with maxOutputTokens.
-    respond = () => throwingResult(new actualAi.NoOutputGeneratedError());
+    respond = () => throwingResult(new NoOutputGeneratedError());
     const client = new LlmAgentClient({ credentials: credentials() });
     const response = await client.query(agentRequest());
     expect(response.structuredOutput).toBeUndefined();
@@ -426,6 +468,19 @@ describe("LlmAgentClient error conversion", () => {
     const diagnostics = response.diagnostics?.join(" ") ?? "";
     expect(diagnostics).not.toContain(API_KEY);
     expect(diagnostics).toContain("[REDACTED]");
+  });
+
+  test("a whitespace-only key does not garble diagnostics with [REDACTED]", async () => {
+    // openai-compatible is the provider that tolerates a keyless profile, so it is the one
+    // that can actually reach #redact holding "   ". Without a trim-aware guard, every run
+    // of three spaces in this message would be rewritten.
+    respond = () => { throw noObjectGenerated("model   returned   nothing   usable"); };
+    const client = new LlmAgentClient({
+      credentials: { provider: "openai-compatible", model: "m", base_url: "http://127.0.0.1:11434/v1", api_key: "   " },
+    });
+    const response = await client.query(agentRequest());
+    expect(response.diagnostics?.join(" ")).toContain("model   returned   nothing   usable");
+    expect(response.diagnostics?.join(" ")).not.toContain("[REDACTED]");
   });
 
   test("an abort during the call surfaces as a thrown error, not as absent output", async () => {
@@ -491,10 +546,10 @@ describe("LlmAgentClient history", () => {
     await client.query(agentRequest({ prompt: "first" }));
     await client.query(agentRequest({ prompt: "second" }));
     const messages = messagesOf(1);
-    expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
-    expect(messages[1]!.content).toBe("first");
-    expect(messages[2]!.content).toBe(JSON.stringify(produced));
-    expect(messages[3]!.content).toBe("second");
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(messages[0]!.content).toBe("first");
+    expect(messages[1]!.content).toBe(JSON.stringify(produced));
+    expect(messages[2]!.content).toBe("second");
   });
 
   test("a pass whose output parsed to undefined appends nothing rather than a non-string turn", async () => {
@@ -503,7 +558,7 @@ describe("LlmAgentClient history", () => {
     await client.query(agentRequest({ prompt: "first" }));
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "second" }));
-    expect(messagesOf(1).map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messagesOf(1).map((message) => message.role)).toEqual(["user"]);
   });
 
   test("a pass that produced no structured output leaves no half pair behind", async () => {
@@ -512,7 +567,7 @@ describe("LlmAgentClient history", () => {
     await client.query(agentRequest({ prompt: "first" }));
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "second" }));
-    expect(messagesOf(1).map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messagesOf(1).map((message) => message.role)).toEqual(["user"]);
   });
 });
 
@@ -540,7 +595,6 @@ describe("LlmAgentClient history commit rule", () => {
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "C" }));
     expect(messagesOf(2).map((message) => message.content)).toEqual([
-      SYSTEM_PROMPT,
       "B",
       JSON.stringify({ sections: [{ heading: "B", markdown: "b" }] }),
       "C",
@@ -566,7 +620,6 @@ describe("LlmAgentClient history commit rule", () => {
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "C" }));
     expect(messagesOf(2).map((message) => message.content)).toEqual([
-      SYSTEM_PROMPT,
       "B",
       JSON.stringify({ sections: [{ heading: "B", markdown: "b" }] }),
       "C",
@@ -586,7 +639,7 @@ describe("LlmAgentClient history commit rule", () => {
 
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "C" }));
-    expect(messagesOf(1).map((message) => message.role)).toEqual(["system", "user"]);
+    expect(messagesOf(1).map((message) => message.role)).toEqual(["user"]);
   });
 });
 
@@ -603,9 +656,9 @@ describe("LlmAgentClient history budget", () => {
     await client.query(agentRequest({ prompt: "q".repeat(800) }));
     await client.query(agentRequest({ prompt: "final" }));
     const messages = messagesOf(2);
-    expect(messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
-    expect(messages[1]!.content).toBe("q".repeat(800));
-    expect(messages[2]!.content).toBe(JSON.stringify(answer));
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(messages[0]!.content).toBe("q".repeat(800));
+    expect(messages[1]!.content).toBe(JSON.stringify(answer));
   });
 
   test("keeps a pair that fits, so the budget does not evict eagerly", async () => {
@@ -613,7 +666,7 @@ describe("LlmAgentClient history budget", () => {
     const client = new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: 1000 });
     await client.query(agentRequest({ prompt: "p".repeat(800) }));
     await client.query(agentRequest({ prompt: "q".repeat(800) }));
-    expect(messagesOf(1).map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(messagesOf(1).map((message) => message.role)).toEqual(["user", "assistant", "user"]);
   });
 
   test("the system message and the current prompt are outside the budget and never evictable", async () => {
@@ -622,9 +675,10 @@ describe("LlmAgentClient history budget", () => {
     await client.query(agentRequest({ prompt: "first" }));
     await client.query(agentRequest({ prompt: "second" }));
     const messages = messagesOf(1);
-    expect(messages).toHaveLength(2);
-    expect(messages[0]!.content).toBe(SYSTEM_PROMPT);
-    expect(messages[1]!.content).toBe("second");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toBe("second");
+    // The system prompt is untouched: it is not in the array the budget walks at all.
+    expect(instructionsOf(1).content).toBe(SYSTEM_PROMPT);
   });
 
   test("a budget smaller than the system prompt still leaves a working call", async () => {
@@ -632,7 +686,7 @@ describe("LlmAgentClient history budget", () => {
     await client.query(agentRequest({ prompt: "first" }));
     const response = await client.query(agentRequest({ prompt: "second" }));
     expect(response.structuredOutput).toBeDefined();
-    expect(messagesOf(1)[0]!.content).toBe(SYSTEM_PROMPT);
+    expect(instructionsOf(1).content).toBe(SYSTEM_PROMPT);
   });
 
   const BAD_BUDGETS: Readonly<{ label: string; value: number }>[] = [
@@ -645,5 +699,45 @@ describe("LlmAgentClient history budget", () => {
   test.each(BAD_BUDGETS)("rejects a $label history budget at construction, not at first use", ({ value }) => {
     expect(() => new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: value }))
       .toThrow(/maxHistoryCharacters/);
+  });
+});
+
+describe("LlmAgentClient against the real generateText", () => {
+  test("the SDK accepts the call the client builds, and the provider sees the system prompt first", async () => {
+    // Everything else in this suite replaces `generateText`, so nothing else reaches the
+    // SDK's own prompt validation — and that is precisely where a system-role entry inside
+    // `messages` is rejected outright, before any provider is touched. This replays the
+    // client's OWN recorded options against the real implementation with only the model
+    // swapped, so "we passed a system prompt" becomes "the SDK accepted it and the provider
+    // saw it".
+    const client = new LlmAgentClient({ credentials: credentials() });
+    await client.query(agentRequest({ prompt: "hi" }));
+
+    const answer = { sections: [{ heading: "H", markdown: "m" }] };
+    let promptSeen: readonly ModelMessageLike[] | undefined;
+    const stubModel = {
+      specificationVersion: "v3",
+      provider: "stub",
+      modelId: "stub-model",
+      supportedUrls: {},
+      doGenerate: async (options: Readonly<{ prompt: readonly ModelMessageLike[] }>) => {
+        promptSeen = options.prompt;
+        return {
+          content: [{ type: "text", text: JSON.stringify(answer) }],
+          // v3 reports these as objects rather than bare values. A bare "stop" leaves
+          // finishReason undefined, and `output` then throws NoOutputGeneratedError.
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+          warnings: [],
+        };
+      },
+    };
+
+    const options = { ...calls[0], model: stubModel } as unknown as Parameters<typeof realGenerateText>[0];
+    const result = await realGenerateText(options);
+
+    expect(promptSeen?.[0]).toEqual({ role: "system", content: SYSTEM_PROMPT, providerOptions: CACHE_HINT });
+    expect(promptSeen?.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(result.output).toEqual(answer);
   });
 });

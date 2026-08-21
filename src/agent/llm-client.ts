@@ -2,7 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { NoObjectGeneratedError, NoOutputGeneratedError, Output, generateText, jsonSchema } from "ai";
-import type { CallWarning, LanguageModel, ModelMessage } from "ai";
+import type { CallWarning, LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
 import { llmCredentialsPath, type LlmCredentials, type LlmProviderId } from "./llm-credentials.js";
 
@@ -108,7 +108,7 @@ export class LlmAgentClient implements AgentClient {
     const generation = (this.#generation += 1);
     const historySnapshot = this.#history;
     const userMessage: ModelMessage = { role: "user", content: request.prompt };
-    const messages: ModelMessage[] = [systemMessage(request.systemPrompt), ...historySnapshot, userMessage];
+    const messages: ModelMessage[] = [...historySnapshot, userMessage];
 
     let structuredOutput: unknown;
     let warnings: readonly CallWarning[] = [];
@@ -119,6 +119,13 @@ export class LlmAgentClient implements AgentClient {
         // (Schema | LazySchema | ZodSchema | StandardSchema) and `outputSchema` arrives as a
         // plain Record<string, unknown> off the transport-neutral port, which is in none of them.
         output: Output.object({ schema: jsonSchema(request.outputSchema) }),
+        // `instructions`, NOT a system-role entry in `messages`. `standardizePrompt` rejects
+        // a system message inside `messages` outright — `allowSystemInMessages` defaults to
+        // false, so the call throws InvalidPromptError before the provider is ever reached,
+        // and that error is neither of the two we convert, so every pass would die fatal.
+        // Taking a SystemModelMessage object rather than a bare string is what keeps the
+        // Anthropic cache hint attached.
+        instructions: systemMessage(request.systemPrompt),
         messages,
         // Deliberately NO maxOutputTokens: each provider derives one from the model, and a
         // second ceiling here would drift from model capabilities we do not control — a new
@@ -224,7 +231,7 @@ export class LlmAgentClient implements AgentClient {
   }
 
   #redact(text: string): string {
-    return this.#apiKey === undefined || this.#apiKey.length === 0 ? text : text.replaceAll(this.#apiKey, "[REDACTED]");
+    return isUsableKey(this.#apiKey) ? text.replaceAll(this.#apiKey, "[REDACTED]") : text;
   }
 }
 
@@ -275,7 +282,7 @@ function buildModel(
  * both ways out.
  */
 function requireApiKey(credentials: LlmCredentials, credentialsPath: string): string {
-  if (credentials.api_key === undefined || credentials.api_key.length === 0) {
+  if (!isUsableKey(credentials.api_key)) {
     throw new Error(
       `No API key for "${credentials.provider}" in ${credentialsPath}. Add one in Shorthand's settings, or switch to a provider that does not need one.`,
     );
@@ -283,7 +290,7 @@ function requireApiKey(credentials: LlmCredentials, credentialsPath: string): st
   return credentials.api_key;
 }
 
-function systemMessage(systemPrompt: string): ModelMessage {
+function systemMessage(systemPrompt: string): SystemModelMessage {
   return {
     role: "system",
     // Verbatim and unmodified. ENHANCEMENT_SAFETY_PREAMBLE is composed into this string
@@ -302,11 +309,16 @@ function systemMessage(systemPrompt: string): ModelMessage {
  * Drops oldest user+assistant PAIRS, never a half pair: a history ending on a user turn with
  * no reply reads to the model as an unanswered question.
  *
- * The budget covers retained history only. The system message and the current pass's user
- * message are excluded and are never evictable, which keeps the rule well defined when the
- * system prompt alone exceeds the budget — history goes empty and the call still proceeds
- * with system + current. A budget that could reach the system message would silently drop
- * ENHANCEMENT_SAFETY_PREAMBLE, and no memory saving is worth that.
+ * The budget covers retained history only, and the system prompt is outside it by STRUCTURE
+ * rather than by arithmetic: it travels as `generateText`'s `instructions` option and is
+ * never an element of the array this function walks, so no trim bug — not an off-by-one, not
+ * a future rewrite of the loop below — can reach it. That matters because evicting the
+ * system message would silently drop ENHANCEMENT_SAFETY_PREAMBLE, and the pass would look
+ * entirely healthy while doing it.
+ *
+ * The current pass's user message is likewise safe: the outgoing message array is built
+ * before this runs, so a budget too small to retain the newest pair empties the history
+ * without ever affecting the call that produced it.
  */
 function trimHistory(messages: readonly ModelMessage[], budget: number): readonly ModelMessage[] {
   let characters = messages.reduce((total, message) => total + messageCharacters(message), 0);
@@ -336,6 +348,18 @@ function describeWarning(warning: CallWarning): string {
     default:
       return JSON.stringify(warning);
   }
+}
+
+/**
+ * Trimmed, because the credentials reader's `nonEmptyString` does not trim and so lets a
+ * whitespace-only `api_key` through as a present value. Untrimmed, `"   "` would both count
+ * as a usable key for `requireApiKey` and drive `replaceAll("   ", "[REDACTED]")` across
+ * every diagnostic, warning and error message — rewriting every run of three spaces in
+ * operator output. Not a leak, but unreadable, and the reader's tolerance is settled
+ * behaviour that belongs to another file.
+ */
+function isUsableKey(apiKey: string | undefined): apiKey is string {
+  return apiKey !== undefined && apiKey.trim().length > 0;
 }
 
 function errorMessage(error: unknown): string {

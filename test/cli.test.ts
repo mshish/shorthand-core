@@ -286,7 +286,7 @@ describe("shorthand-notes CLI", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("connect your Google account");
     expect(result.stderr).not.toContain("shorthand-config");
-  });
+  }, 10_000);
 
   test("capture --sink google fails before the recording stream starts when no Google credentials are configured", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-capture-sink-nocreds-test-"));

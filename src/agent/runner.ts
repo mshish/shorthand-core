@@ -1,3 +1,4 @@
+import { DEFAULT_CONFIG } from "../config.js";
 import type { Section } from "../note/markers.js";
 import type { NoteSink, SinkReadResult, SinkSnapshot, SinkWriteResult } from "../note/sink.js";
 import {
@@ -88,7 +89,10 @@ export class EnhanceRunner {
       minNewChars: options.minNewChars ?? 600,
       minIntervalMs: options.minIntervalMs ?? 60_000,
       maxDurationMs: options.maxDurationMs ?? (4 * 60 * 60 * 1000),
-      timeoutMs: options.timeoutMs ?? 45_000,
+      // Falls back to the constant rather than a second hardcoded number, so the default and
+      // its fallback cannot drift apart the way they did before (config.ts said 45s while this
+      // literal quietly still said 45s too — a coincidence, not an enforced relationship).
+      timeoutMs: options.timeoutMs ?? DEFAULT_CONFIG.enhancement.timeoutMs,
       maxTurns: options.maxTurns ?? 75,
       maxRequeuedCharacters: options.maxRequeuedCharacters ?? 20_000,
       maxRequeuesPerDelta: options.maxRequeuesPerDelta ?? 3,

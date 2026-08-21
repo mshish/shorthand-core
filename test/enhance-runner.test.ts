@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   buildSectionOutputSchema,
   DEFAULT_EDITORIAL_GUIDANCE,
@@ -9,6 +9,7 @@ import {
 } from "../src/agent/contract.js";
 import { buildClaudeAgentOptions } from "../src/agent/client.js";
 import { EnhanceRunner, type EnhanceRunnerOptions, type EnhanceStatus } from "../src/agent/runner.js";
+import { DEFAULT_CONFIG } from "../src/config.js";
 import type { Section } from "../src/note/markers.js";
 import { busySinkError, type NoteSink, type SinkReadResult, type SinkWriteResult } from "../src/note/sink.js";
 
@@ -270,6 +271,78 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(runner.state.inFlight).toBe(false);
     expect((await runner.tick()).status).toBe("completed");
     expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toBe("not lost");
+  });
+
+  /**
+   * These three go around `makeRunner`, which always supplies its own test-only `timeoutMs`
+   * override, rather than through it: exercising the constructor's real fallback means
+   * constructing `EnhanceRunner` directly with no `timeoutMs` at all. Since a full 120s (or
+   * 300s) wait per test isn't practical, each one spies on the global `setTimeout` that
+   * `raceTimeout` calls with the resolved bound and asserts on the delay it was given,
+   * letting the fast-resolving fake agent settle the race long before the real timer fires.
+   */
+  test("the runner's default timeoutMs is 120_000, not the old 45_000", async () => {
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+    try {
+      const agent = new FakeAgent([Promise.resolve(response())]);
+      const runner = new EnhanceRunner({
+        sink: new FakeSink({ cwd: process.cwd() }),
+        agent,
+        minNewChars: 1,
+        minIntervalMs: 0,
+        maxTurns: 3,
+        logger: silentLogger,
+      });
+      expect((await runner.enhanceNow("tick")).status).toBe("completed");
+      const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+      expect(delays).toContain(120_000);
+      expect(delays).not.toContain(45_000);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  test("a caller-supplied timeoutMs still wins over the runner's own default", async () => {
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+    try {
+      const agent = new FakeAgent([Promise.resolve(response())]);
+      const runner = new EnhanceRunner({
+        sink: new FakeSink({ cwd: process.cwd() }),
+        agent,
+        minNewChars: 1,
+        minIntervalMs: 0,
+        maxTurns: 3,
+        timeoutMs: 30_000,
+        logger: silentLogger,
+      });
+      expect((await runner.enhanceNow("tick")).status).toBe("completed");
+      const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+      expect(delays).toContain(30_000);
+      expect(delays).not.toContain(120_000);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  test("constructing the runner the way the standalone enhance command does yields a 300_000ms bound", async () => {
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+    try {
+      const agent = new FakeAgent([Promise.resolve(response())]);
+      const runner = new EnhanceRunner({
+        sink: new FakeSink({ cwd: process.cwd() }),
+        agent,
+        minNewChars: 1,
+        minIntervalMs: 0,
+        maxTurns: 3,
+        timeoutMs: DEFAULT_CONFIG.enhancement.standaloneTimeoutMs,
+        logger: silentLogger,
+      });
+      expect((await runner.enhanceNow("tick")).status).toBe("completed");
+      const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+      expect(delays).toContain(300_000);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 
   test("a late-settling timed-out pass still counts its attempts and its own rescheduling still picks up newly queued transcript", async () => {

@@ -1,14 +1,15 @@
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
+import { createEnhanceRunner, runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
 import { ClaudeAgentClient } from "../src/agent/client.js";
 import { LlmAgentClient } from "../src/agent/llm-client.js";
 import { llmCredentialsPath } from "../src/agent/llm-credentials.js";
 import type { LlmCredentials } from "../src/agent/llm-credentials.js";
 import type { PassOutcome } from "../src/agent/runner.js";
+import { DEFAULT_CONFIG } from "../src/config.js";
 
 const scratchDirectories: string[] = [];
 afterEach(async () => {
@@ -472,6 +473,88 @@ describe("shorthand-notes CLI", () => {
       ], environment, "started (tick)");
       expect(stderr).toContain("started (tick)");
     }, 10_000);
+  });
+
+  /**
+   * `createEnhanceRunner` is shared by `capture` and `enhance`, so which of
+   * DEFAULT_CONFIG.enhancement.timeoutMs / standaloneTimeoutMs applies is entirely down to
+   * which constant each command's call site passes in — see the comment above
+   * createEnhanceRunner. These call it directly (in-process, not via a subprocess) the same
+   * way each command does, and spy on the global setTimeout that EnhanceRunner's raceTimeout
+   * schedules with the resolved bound, to catch the two constants ever being swapped between
+   * call sites. The agent stub resolves fast, so the real 2/5-minute timer this schedules is
+   * cleared long before it would fire.
+   */
+  describe("createEnhanceRunner timeout wiring", () => {
+    async function scratchNote(): Promise<{ vault: string; note: string }> {
+      const vault = await mkdtemp(join(tmpdir(), ".cli-timeout-wiring-test-"));
+      scratchDirectories.push(vault);
+      const note = join(vault, "meeting.md");
+      await writeFile(
+        note,
+        "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->",
+        "utf8",
+      );
+      return { vault, note };
+    }
+
+    test("capture's default timeoutMs is the live per-pass bound, not the standalone one", async () => {
+      const { vault, note } = await scratchNote();
+      const agentStub = join(process.cwd(), "test", "fixtures", "fake-agent.mjs");
+      const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub], {}, false,
+          DEFAULT_CONFIG.enhancement.timeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+        const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+        expect(delays).toContain(DEFAULT_CONFIG.enhancement.timeoutMs);
+        expect(delays).not.toContain(DEFAULT_CONFIG.enhancement.standaloneTimeoutMs);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    test("enhance's default timeoutMs is the standalone bound, not the live one", async () => {
+      const { vault, note } = await scratchNote();
+      const agentStub = join(process.cwd(), "test", "fixtures", "fake-agent.mjs");
+      const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub], {}, false,
+          DEFAULT_CONFIG.enhancement.standaloneTimeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+        const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+        expect(delays).toContain(DEFAULT_CONFIG.enhancement.standaloneTimeoutMs);
+        expect(delays).not.toContain(DEFAULT_CONFIG.enhancement.timeoutMs);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    test("HANDY_NOTES_AGENT_TIMEOUT_MS overrides whichever default createEnhanceRunner was given", async () => {
+      const { vault, note } = await scratchNote();
+      const agentStub = join(process.cwd(), "test", "fixtures", "fake-agent.mjs");
+      const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub],
+          { HANDY_NOTES_AGENT_TIMEOUT_MS: "7000" }, false,
+          DEFAULT_CONFIG.enhancement.timeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+        const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+        expect(delays).toContain(7_000);
+        expect(delays).not.toContain(DEFAULT_CONFIG.enhancement.timeoutMs);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
   });
 });
 

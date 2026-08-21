@@ -154,7 +154,9 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   if (args.includes("--enhance")) {
     const sinkArg = argumentValue(args, "--sink") ?? "markdown";
     if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
-    const resolved = await createEnhanceRunner(note, vault, sinkArg, args, environment, false);
+    const resolved = await createEnhanceRunner(
+      note, vault, sinkArg, args, environment, false, DEFAULT_CONFIG.enhancement.timeoutMs,
+    );
     if (!resolved.ok) {
       console.error(resolved.message);
       return 1;
@@ -313,7 +315,9 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     return 1;
   }
   const dryRun = args.includes("--dry-run");
-  const resolved = await createEnhanceRunner(note, vault, sinkArg, args, environment, dryRun);
+  const resolved = await createEnhanceRunner(
+    note, vault, sinkArg, args, environment, dryRun, DEFAULT_CONFIG.enhancement.standaloneTimeoutMs,
+  );
   if (!resolved.ok) {
     console.error(resolved.message);
     return 1;
@@ -387,13 +391,23 @@ type CreateEnhanceRunnerResult =
 // --sink and exit 2 via usage() before calling this) so an invalid value is structurally
 // unreachable here, rather than merely prevented by convention — see the Fix 4 note in
 // the whole-branch review this responds to.
-async function createEnhanceRunner(
+//
+// `timeoutMs` arrives as a parameter rather than being resolved in here, because this helper
+// is shared by both commands and has no way to tell which one called it. Each caller resolves
+// its own default before calling — runCapture passes DEFAULT_CONFIG.enhancement.timeoutMs (a
+// live pass bounded by the meeting in progress), runEnhance passes
+// DEFAULT_CONFIG.enhancement.standaloneTimeoutMs (the one-shot pass with nothing waiting on
+// it) — and HANDY_NOTES_AGENT_TIMEOUT_MS still overrides whichever default was passed in.
+//
+// Exported for testing (see selectAgent's comment above for the same reason).
+export async function createEnhanceRunner(
   note: string,
   vault: string,
   sink: "markdown" | "google",
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   dryRun: boolean,
+  timeoutMs: number,
 ): Promise<CreateEnhanceRunnerResult> {
   let resolvedSink: NoteSink;
   if (sink === "google") {
@@ -422,7 +436,7 @@ async function createEnhanceRunner(
       minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
       minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
       maxDurationMs: environmentNumber(environment.HANDY_NOTES_MAX_DURATION_MS, DEFAULT_CONFIG.enhancement.maxDurationMs),
-      timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, DEFAULT_CONFIG.enhancement.timeoutMs),
+      timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, timeoutMs),
       maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
       dryRun,
       ...(claudeExecutable === undefined

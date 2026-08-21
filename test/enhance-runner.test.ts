@@ -65,7 +65,7 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     expect(statuses.map(({ kind, tier }) => [kind, tier])).toEqual([["started", "tick"], ["finished", "tick"]]);
     expect(agent.requests[0]!.tools).toEqual([]);
     expect(agent.requests[0]).not.toHaveProperty("cwd");
-    expect(agent.requests[0]!.prompt).toStartWith("This live tick has no vault tools.");
+    expect(agent.requests[0]!.prompt).toStartWith("You have no vault tools on this pass.");
   });
 
   /**
@@ -104,7 +104,7 @@ describe("EnhanceRunner trigger and watermark policy", () => {
       });
       expect(guarded?.behavior).toBe("deny");
     }
-    expect(agent.requests[0]!.prompt).toStartWith("This live tick has no vault tools.");
+    expect(agent.requests[0]!.prompt).toStartWith("You have no vault tools on this pass.");
   });
 
   test("the effective tier is reported, not the requested one, when the sink offers no context", async () => {

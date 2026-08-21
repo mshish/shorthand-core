@@ -479,11 +479,11 @@ describe("shorthand-notes CLI", () => {
    * `createEnhanceRunner` is shared by `capture` and `enhance`, so which of
    * DEFAULT_CONFIG.enhancement.timeoutMs / standaloneTimeoutMs applies is entirely down to
    * which constant each command's call site passes in — see the comment above
-   * createEnhanceRunner. These call it directly (in-process, not via a subprocess) the same
-   * way each command does, and spy on the global setTimeout that EnhanceRunner's raceTimeout
-   * schedules with the resolved bound, to catch the two constants ever being swapped between
-   * call sites. The agent stub resolves fast, so the real 2/5-minute timer this schedules is
-   * cleared long before it would fire.
+   * createEnhanceRunner. These construct the runner directly in-process the same way each
+   * command does, then enhanceNow invokes the executable agent stub in a subprocess. They spy
+   * on the global setTimeout that EnhanceRunner's raceTimeout schedules with the resolved
+   * bound, to catch the two constants ever being swapped between call sites. The agent stub
+   * resolves fast, so the real 2/5-minute timer this schedules is cleared long before it fires.
    */
   describe("createEnhanceRunner timeout wiring", () => {
     async function scratchNote(): Promise<{ vault: string; note: string }> {
@@ -515,7 +515,7 @@ describe("shorthand-notes CLI", () => {
       } finally {
         setTimeoutSpy.mockRestore();
       }
-    });
+    }, 10_000);
 
     test("enhance's default timeoutMs is the standalone bound, not the live one", async () => {
       const { vault, note } = await scratchNote();
@@ -534,7 +534,7 @@ describe("shorthand-notes CLI", () => {
       } finally {
         setTimeoutSpy.mockRestore();
       }
-    });
+    }, 10_000);
 
     test("HANDY_NOTES_AGENT_TIMEOUT_MS overrides whichever default createEnhanceRunner was given", async () => {
       const { vault, note } = await scratchNote();
@@ -554,7 +554,7 @@ describe("shorthand-notes CLI", () => {
       } finally {
         setTimeoutSpy.mockRestore();
       }
-    });
+    }, 10_000);
   });
 });
 

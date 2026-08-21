@@ -89,9 +89,9 @@ export class EnhanceRunner {
       minNewChars: options.minNewChars ?? 600,
       minIntervalMs: options.minIntervalMs ?? 60_000,
       maxDurationMs: options.maxDurationMs ?? (4 * 60 * 60 * 1000),
-      // Falls back to the constant rather than a second hardcoded number, so the default and
-      // its fallback cannot drift apart the way they did before (config.ts said 45s while this
-      // literal quietly still said 45s too — a coincidence, not an enforced relationship).
+      // Falls back to the constant rather than a second hardcoded number. Matching literals
+      // would only agree by coincidence and leave the relationship unenforced, allowing a
+      // later config change to miss this fallback.
       timeoutMs: options.timeoutMs ?? DEFAULT_CONFIG.enhancement.timeoutMs,
       maxTurns: options.maxTurns ?? 75,
       maxRequeuedCharacters: options.maxRequeuedCharacters ?? 20_000,

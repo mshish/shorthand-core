@@ -348,7 +348,7 @@ type SelectAgentResult =
  * is rejected rather than ignored: a user who passes both has a wrong mental model of what
  * `--backend` does, and silently honouring `--claude` would teach them it worked.
  *
- * Exported for testing (see runFinalEnhancementWithRetries above for the same reason).
+ * Exported for testing (see runFinalEnhancementWithRetries below for the same reason).
  */
 export async function selectAgent(
   args: readonly string[],

@@ -125,6 +125,16 @@ export type AgentQueryResponse = Readonly<{
 }>;
 
 export interface AgentClient {
+  /**
+   * Whether this client can honour `tools`. Absent means yes, so every client
+   * written before this flag existed keeps its behaviour.
+   *
+   * The runner consults it rather than trusting the sink alone, because
+   * `agentContext` describes what the *note* can offer, not what the *client*
+   * can do. A client that cannot drive Read/Glob/Grep and is handed them anyway
+   * produces a prompt promising vault lookups it will never perform.
+   */
+  readonly supportsVaultTools?: boolean;
   query(request: AgentQueryRequest): Promise<AgentQueryResponse>;
 }
 

@@ -44,8 +44,44 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     runner.updateTranscript(" link text");
     await runner.enhanceNow("link");
     expect(agent.requests).toHaveLength(2);
-    expect(agent.requests[0]).toMatchObject({ cwd: "C:\\vault", tools: [], settingSources: [], maxTurns: 4 });
+    // cwd moves with the tier, not with the sink alone: a tick pass gets no cwd even
+    // though this sink offers agentContext, because `tools: []` means there is nothing
+    // a cwd could confine on this tier.
+    expect(agent.requests[0]).not.toHaveProperty("cwd");
+    expect(agent.requests[0]).toMatchObject({ tools: [], settingSources: [], maxTurns: 4 });
     expect(agent.requests[1]).toMatchObject({ cwd: "C:\\vault", tools: ["Read", "Glob", "Grep"], settingSources: [], maxTurns: 4 });
+  });
+
+  test("a client that cannot use vault tools runs the tick tier even when the sink offers agent context", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())], { supportsVaultTools: false });
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({
+      agent,
+      sink: new FakeSink({ cwd: "C:\\vault" }),
+      onStatus: (status) => statuses.push(status),
+    });
+    runner.updateTranscript("enough transcript");
+    expect(await runner.enhanceNow("link")).toMatchObject({ status: "completed", tier: "tick" });
+    expect(statuses.map(({ kind, tier }) => [kind, tier])).toEqual([["started", "tick"], ["finished", "tick"]]);
+    expect(agent.requests[0]!.tools).toEqual([]);
+    expect(agent.requests[0]).not.toHaveProperty("cwd");
+    expect(agent.requests[0]!.prompt).toStartWith("This live tick has no vault tools.");
+  });
+
+  /**
+   * The regression guard that matters most: every client written before `supportsVaultTools`
+   * existed leaves it absent, and `ClaudeAgentClient`/`ExecutableAgentStub` must keep earning
+   * the link tier exactly as before. If the runner's check ever became a truthiness test
+   * instead of `!== false`, this is the case that would silently start failing.
+   */
+  test("a client that leaves supportsVaultTools undefined still earns the link tier when the sink offers agent context", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    expect(agent.supportsVaultTools).toBeUndefined();
+    const runner = makeRunner({ agent, sink: new FakeSink({ cwd: "C:\\vault" }) });
+    runner.updateTranscript("enough transcript");
+    expect(await runner.enhanceNow("link")).toMatchObject({ status: "completed", tier: "link" });
+    expect(agent.requests[0]!.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect(agent.requests[0]!.cwd).toBe("C:\\vault");
   });
 
   test("a link pass over a sink with no agent context degrades to tick-style: no cwd at all, and no tool can reach a file", async () => {
@@ -497,12 +533,17 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
 
 class FakeAgent implements AgentClient {
   readonly requests: AgentQueryRequest[] = [];
+  readonly supportsVaultTools?: boolean;
   maximumConcurrent = 0;
   #concurrent = 0;
   readonly #responses: Promise<AgentQueryResponse>[];
 
-  constructor(responses: Promise<AgentQueryResponse>[]) {
+  constructor(responses: Promise<AgentQueryResponse>[], options: Readonly<{ supportsVaultTools?: boolean }> = {}) {
     this.#responses = responses;
+    // exactOptionalPropertyTypes: assigning only when present keeps a client that never
+    // mentions the flag indistinguishable from one that mentions it as absent, which is
+    // exactly the "undefined means yes" case the regression guard below exercises.
+    if (options.supportsVaultTools !== undefined) this.supportsVaultTools = options.supportsVaultTools;
   }
 
   async query(request: AgentQueryRequest): Promise<AgentQueryResponse> {

@@ -178,12 +178,17 @@ export class EnhanceRunner {
   }
 
   async #runPass(requestedTier: AgentTier, input: PassInput): Promise<PassOutcome> {
-    // A "link" pass only earns vault tools when the sink offers somewhere to look.
-    // Without an agent context (an API sink) it degrades to a tick-style pass: no
-    // tools and no cwd at all, rather than an invented one. Resolved up front so
-    // every status this pass reports names the tier that actually ran.
+    // A "link" pass only earns vault tools when the sink offers somewhere to look
+    // AND the client can actually drive Read/Glob/Grep. `!== false`, not truthy:
+    // `undefined` means "yes" so every client written before this flag existed
+    // (ClaudeAgentClient, ExecutableAgentStub) keeps today's behaviour. Without
+    // either, the pass degrades to a tick-style pass: no tools and no cwd at all,
+    // rather than an invented one. Resolved up front so every status this pass
+    // reports names the tier that actually ran.
     const agentContext = this.#options.sink.agentContext;
-    const tier: AgentTier = requestedTier === "link" && agentContext !== undefined ? "link" : "tick";
+    const toolsUsable = this.#options.agent.supportsVaultTools !== false;
+    const tier: AgentTier =
+      requestedTier === "link" && agentContext !== undefined && toolsUsable ? "link" : "tick";
     let read: SinkReadResult;
     try {
       read = await this.#options.sink.read();
@@ -222,7 +227,10 @@ export class EnhanceRunner {
       // half a user may replace, and a replacement must not be able to drop the untrusted-data
       // framing or the marker-token rule with it. This is the only place the two are joined.
       systemPrompt: `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${this.#options.guidance}`,
-      ...(agentContext === undefined ? {} : { cwd: agentContext.cwd }),
+      // cwd is a link-tier capability, not a byproduct of the sink alone: a client
+      // that cannot use vault tools (or a pass that downgraded to tick for any other
+      // reason) must not be handed a vault path it has no tool to confine.
+      ...(agentContext === undefined || tier !== "link" ? {} : { cwd: agentContext.cwd }),
       tools: tier === "tick" ? [] : ["Read", "Glob", "Grep"],
       settingSources: [],
       maxTurns: this.#options.maxTurns,

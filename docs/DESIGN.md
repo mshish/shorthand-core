@@ -72,9 +72,9 @@ shorthand.exe --follow-stream json     (child process, stdout NDJSON)
         |
         | trigger policy
         v
-  EnhanceRunner ──► Agent SDK query()  ──► structured section array
-  (resumed session,   (resume, no fork)          |  (schema-enforced + zod)
-   two tiers)                                   v
+  EnhanceRunner ──► AgentClient.query() ──► structured section array
+  (two tiers)       (Claude Agent SDK or         |  (schema-enforced + zod)
+                     ordinary LLM API)           v
                                           NoteSink.write()
                                                  |
                                     MarkdownNoteSink (reference impl)
@@ -89,6 +89,15 @@ reference implementation; an API-backed target (etag for revision, `409` for sta
 busy) is expressible without core learning anything about it. Revision is opaque to core, and
 `read()` returns sections, user notes, and revision from one observation so they cannot skew.
 The full contract is [`CONTRACT.md`](CONTRACT.md).
+
+**The agent is a port too, and the second implementation proved it.** `AgentClient` was
+already public and transport-neutral: it accepts a prompt, system prompt, output schema and
+optional session id, then returns structured output and a session id. `LlmAgentClient` plugs
+ordinary OpenAI, Anthropic and OpenAI-compatible APIs (including a local Ollama endpoint) into
+that seam through the Vercel AI SDK; `ClaudeAgentClient` remains the default. Nothing in
+`EnhanceRunner`'s scheduling, the `queryForSections` corrective retry loop, `NoteSink`, the
+section schema, or `validateSectionOutput` had to split by provider. That is the evidence that
+the seam describes enhancement transport rather than merely wrapping one SDK.
 
 **One entry point, enforced by `exports`.** Consumers import `shorthand-core` (and
 `/markdown`, `/testing`) — never a deep path. The `exports` map in `package.json` is the
@@ -120,6 +129,26 @@ nested, inverted) **fail closed** — no write at all, rather than a guess.
 removes them from its context entirely. The only mutation path is our code. Vault reads are
 confined to the vault by a `canUseTool` guard.
 
+**Vault lookup requires a capability on both sides of the seam.** A sink's `agentContext`
+says that the note has a searchable corpus; it does not prove that an agent client can drive
+`Read`/`Glob`/`Grep`. `AgentClient.supportsVaultTools` therefore defaults by absence to yes,
+preserving every pre-existing client, while `LlmAgentClient` declares false. The runner
+downgrades every pass through that backend to the tick tier — including the requested closing
+link pass — and withholds `cwd` as well as the tools. The user-visible cost is plain: notes
+produced by the LLM backend will **not** reference people, projects or prior meetings found
+elsewhere in the vault, because that backend performs no vault reads. Putting this choice on
+the client rather than asking consumers to omit `vaultRoot` prevents a forgotten omission
+from silently shipping tools and a vault path to a client that cannot honour them.
+
+**Provider credentials stay outside the document they unlock.** `llm-credentials.json` lives
+in `shorthandConfigDirectory()`, following `google-credentials.json` exactly. Core reads it
+and never writes it; the consumer is the sole writer, and `shorthand-core/testing` exports an
+executable conformance suite that writer must satisfy. It is deliberately not an Obsidian
+settings field: `data.json` is plaintext and travels with vault sync, which would copy a
+billable API key to every synced machine and every vault backup. Provider, model, `base_url`
+and key share one file because they have one owner and one write moment; splitting the
+non-secret selection into a sibling file would create a torn profile between two writes.
+
 **The safety preamble is not the caller's to replace.** The system prompt is composed at one
 site (`runner.ts`) as `ENHANCEMENT_SAFETY_PREAMBLE` + the editorial guidance, in that order.
 Only the second half is caller-supplied, through `EnhanceRunnerOptions.guidance`; an empty or
@@ -139,7 +168,7 @@ Offsets are never carried across an `await`.
 **Optimistic concurrency.** The block hash observed at pass start is re-checked at write
 time; a mismatch discards the agent result and re-queues rather than overwriting.
 
-**Passes resume one Agent SDK session per capture.** Every pass after the first sends
+**Claude passes resume one Agent SDK session per capture.** Every pass after the first sends
 `resume: <sessionId>` — never `forkSession`, so there is no session branching — which lets the
 model carry its own reasoning forward instead of re-deriving it from a bare snapshot on every
 tick. This does **not** make the SDK session the source of truth: the full current section
@@ -147,6 +176,20 @@ array and only the transcript delta since the last pass are still resent on ever
 regardless of what the session remembers, and `ENHANCEMENT_SAFETY_PREAMBLE` explicitly tells the
 model that the sections it was given are authoritative when they disagree with its memory of
 earlier passes — the note stays authoritative, the session is memory, not state.
+
+The AI SDK backend is stateless at the provider boundary — there is no resume — so
+`LlmAgentClient` owns a `ModelMessage[]` per instance and resends that history instead. The
+same "memory, not state" rule still applies: every pass independently includes the full
+current sections and the transcript delta, and the safety preamble says those sections win
+over remembered turns.
+Owning the array buys an explicit trim policy that provider-side resume does not: a character
+budget drops whole user+assistant pairs from the oldest end, never half a pair. The system
+message is structurally outside that budget and can never be evicted; otherwise trimming
+could silently remove the safety preamble while leaving an apparently healthy pass. The
+current pass's user message is inside the trimmed array and can be evicted from future history
+under a tight budget, but only after the call that used it has already completed.
+By contrast, Agent SDK resume delegates storage to the `claude` CLI and grows toward its
+auto-compaction path, which remains untested here as described below.
 
 This reverses an earlier documented decision, not an accidental regression of one: see
 `docs/original-plan.md`'s "Enhancement passes: stateless and bounded (Codex blocker 3)" for the
@@ -231,13 +274,14 @@ recorded because the fix is easy to undo by accident.
 transcript stream and agent stub). CI runs all of it offline — no Shorthand, vault, or credentials
 required. See `README.md` for commands and `.github/workflows/` for the pipeline.
 
-**The conformance suite is shipped API, not a test.** It lives at
-`src/testing/sink-conformance.ts` and is exported as `shorthand-core/testing`. It
-imports no test runner: scenarios are plain async functions that throw, plus a thin adapter
-that takes a caller's `describe`/`test`. That inversion is deliberate — the artifact defining
-the contract must be runnable by a second package, a different runner (Vitest, `node:test`),
-or a consumer in another repo, not only by `bun test` in this repo. `test/markdown-sink.test.ts` runs
-`MarkdownNoteSink` through it. Every future sink must pass it unchanged.
+**The conformance suites are shipped API, not tests.** They are exported as
+`shorthand-core/testing` and import no test runner: scenarios are plain async functions that
+throw, plus thin adapters that take a caller's `describe`/`test`. That inversion is deliberate
+— the artifact defining a contract must be runnable by a second package, a different runner
+(Vitest, `node:test`), or a consumer in another repo, not only by `bun test` in this repo.
+`test/markdown-sink.test.ts` runs `MarkdownNoteSink` through the sink suite; writers of the
+Google and LLM credentials files run their respective suites from the owning consumer. Every
+future sink and credentials writer must pass its contract unchanged.
 
 **Two checks left with the plugin, and that is correct.** The bundle-load test — which
 `require`s the built `main.js` under a stub `obsidian` and asserts a size ceiling — now lives

@@ -69,12 +69,17 @@ exported symbol is a minor bump, not a patch.
 - `DEFAULT_EDITORIAL_GUIDANCE` — the note-writing voice. Callers replace it via
   `EnhanceRunnerOptions.guidance`.
 
-Output *shape* is not defended by prose. It is enforced by the Agent SDK's
-`outputFormat: { type: "json_schema" }`, with the schema derived from the zod
-schema by `buildSectionOutputSchema()`, and re-validated after the fact by
-`validateSectionOutput()` for everything a JSON Schema cannot express (marker
-tokens, the total-character cap, one-line headings, image and raw-HTML
-neutralization, the `renderSections` writer check).
+Output *shape* is not defended by prose. Both backends enforce it at the
+provider boundary, with the schema derived from the zod schema by
+`buildSectionOutputSchema()`: the Claude Agent SDK backend passes
+`outputFormat: { type: "json_schema" }`; the LLM backend passes
+`responseFormat: { type: "json", schema }`, which the AI SDK's `Output.object()`
+builds and `generateText` forwards to the provider. The result is re-validated
+after the fact by `validateSectionOutput()` for everything a JSON Schema cannot
+express (marker tokens, the total-character cap, one-line headings, image and
+raw-HTML neutralization, the `renderSections` writer check). Enforcement is only
+as good as the endpoint: a weak local model, or an OpenAI-compatible endpoint
+that ignores `response_format`, degrades to best-effort.
 
 That split is the whole reason a user-supplied prompt is safe. If you touch the
 composition in `EnhanceRunner`, the `test.each` cases in

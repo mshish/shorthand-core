@@ -47,6 +47,12 @@ export type { SidecarWriterOptions } from "./note/sidecar.js";
 
 export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
 
+export { LlmAgentClient } from "./agent/llm-client.js";
+export type { LlmAgentClientOptions } from "./agent/llm-client.js";
+
+export { llmCredentialsPath, readLlmCredentials } from "./agent/llm-credentials.js";
+export type { LlmCredentials, LlmCredentialsReadResult, LlmProviderId } from "./agent/llm-credentials.js";
+
 export { DEFAULT_EDITORIAL_GUIDANCE, ENHANCEMENT_SAFETY_PREAMBLE, MAX_GUIDANCE_CHARACTERS } from "./agent/contract.js";
 
 export { parseTemplateSections } from "./note/template.js";

@@ -16,6 +16,9 @@ import {
   detectClaudeExecutable,
   detectShorthandExecutable,
   EnhanceRunner,
+  LlmAgentClient,
+  llmCredentialsPath,
+  readLlmCredentials,
   SidecarWriter,
   StreamClient,
   TranscriptStore,
@@ -37,7 +40,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm] [--dry-run] [--agent-stub <script>] [--claude <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
   );
   return 2;
 }
@@ -50,7 +53,7 @@ function timestampName(date: Date): string {
 const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
-  "--tier", "--dry-run", "--agent-stub", "--claude", "--sink",
+  "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend",
 ]);
 
 class ArgumentError extends Error {}
@@ -151,7 +154,9 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   if (args.includes("--enhance")) {
     const sinkArg = argumentValue(args, "--sink") ?? "markdown";
     if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
-    const resolved = await createEnhanceRunner(note, vault, sinkArg, args, environment, false);
+    const resolved = await createEnhanceRunner(
+      note, vault, sinkArg, args, environment, false, DEFAULT_CONFIG.enhancement.timeoutMs,
+    );
     if (!resolved.ok) {
       console.error(resolved.message);
       return 1;
@@ -310,7 +315,9 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     return 1;
   }
   const dryRun = args.includes("--dry-run");
-  const resolved = await createEnhanceRunner(note, vault, sinkArg, args, environment, dryRun);
+  const resolved = await createEnhanceRunner(
+    note, vault, sinkArg, args, environment, dryRun, DEFAULT_CONFIG.enhancement.standaloneTimeoutMs,
+  );
   if (!resolved.ok) {
     console.error(resolved.message);
     return 1;
@@ -327,6 +334,55 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
   return outcome.status === "requeued" ? 3 : 1;
 }
 
+type SelectAgentResult =
+  | Readonly<{ ok: true; agent: AgentClient }>
+  | Readonly<{ ok: false; message: string }>;
+
+/**
+ * The single place backend precedence is decided, so it cannot drift into three separately
+ * maintained checks in runCapture, runEnhance and createEnhanceRunner.
+ *
+ * Order: `--agent-stub` wins over everything — it exists to make the Claude and LLM
+ * backends unreachable in tests, and the e2e smoke test depends on that. Otherwise
+ * `--backend` selects, defaulting to `claude`. `--claude` combined with `--backend llm`
+ * is rejected rather than ignored: a user who passes both has a wrong mental model of what
+ * `--backend` does, and silently honouring `--claude` would teach them it worked.
+ *
+ * Exported for testing (see runFinalEnhancementWithRetries below for the same reason).
+ */
+export async function selectAgent(
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<SelectAgentResult> {
+  const stubPath = argumentValue(args, "--agent-stub") ?? environment.HANDY_NOTES_AGENT_STUB;
+  if (stubPath !== undefined) {
+    return { ok: true, agent: new ExecutableAgentStub(resolveFrom(process.cwd(), stubPath)) };
+  }
+  const backendArg = argumentValue(args, "--backend") ?? "claude";
+  if (backendArg !== "claude" && backendArg !== "llm") {
+    throw new ArgumentError("--backend must be claude or llm.");
+  }
+  if (backendArg === "claude") {
+    return { ok: true, agent: new ClaudeAgentClient() };
+  }
+  if (argumentValue(args, "--claude") !== undefined) {
+    throw new ArgumentError("--claude cannot be combined with --backend llm; the LLM backend never launches a Claude Code executable.");
+  }
+  const credentialsPath = llmCredentialsPath(environment);
+  const credentialsResult = await readLlmCredentials(credentialsPath);
+  if (!credentialsResult.ok) return { ok: false, message: credentialsResult.message };
+  try {
+    return { ok: true, agent: new LlmAgentClient({ credentials: credentialsResult.value, credentialsPath }) };
+  } catch (error) {
+    // Construction throws when the profile has no API key for a provider that needs one.
+    // Routed through the same ok:false + console.error(message) path a credential-read
+    // failure takes, rather than rethrown, so runCli's catch-all (which reformats anything
+    // that is not an ArgumentError) does not print a different message for the same
+    // underlying user mistake.
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 type CreateEnhanceRunnerResult =
   | Readonly<{ ok: true; runner: EnhanceRunner; sinkDescribe: string }>
   | Readonly<{ ok: false; message: string }>;
@@ -335,14 +391,27 @@ type CreateEnhanceRunnerResult =
 // --sink and exit 2 via usage() before calling this) so an invalid value is structurally
 // unreachable here, rather than merely prevented by convention — see the Fix 4 note in
 // the whole-branch review this responds to.
-async function createEnhanceRunner(
+//
+// `timeoutMs` arrives as a parameter rather than being resolved in here, because this helper
+// is shared by both commands and has no way to tell which one called it. Each caller resolves
+// its own default before calling — runCapture passes DEFAULT_CONFIG.enhancement.timeoutMs (a
+// live pass bounded by the meeting in progress), runEnhance passes
+// DEFAULT_CONFIG.enhancement.standaloneTimeoutMs (the one-shot pass with nothing waiting on
+// it) — and HANDY_NOTES_AGENT_TIMEOUT_MS still overrides whichever default was passed in.
+//
+// Exported for testing (see selectAgent's comment above for the same reason).
+export async function createEnhanceRunner(
   note: string,
   vault: string,
   sink: "markdown" | "google",
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   dryRun: boolean,
+  timeoutMs: number,
 ): Promise<CreateEnhanceRunnerResult> {
+  const selected = await selectAgent(args, environment);
+  if (!selected.ok) return { ok: false, message: selected.message };
+  const agent = selected.agent;
   let resolvedSink: NoteSink;
   if (sink === "google") {
     // Loaded dynamically, not as a top-level import: src/google/docs-client.ts pulls in
@@ -356,10 +425,6 @@ async function createEnhanceRunner(
   } else {
     resolvedSink = new MarkdownNoteSink({ notePath: note, vaultRoot: vault });
   }
-  const stubPath = argumentValue(args, "--agent-stub") ?? environment.HANDY_NOTES_AGENT_STUB;
-  const agent: AgentClient = stubPath === undefined
-    ? new ClaudeAgentClient()
-    : new ExecutableAgentStub(resolveFrom(process.cwd(), stubPath));
   const claudeOverride = argumentValue(args, "--claude");
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
   return {
@@ -371,7 +436,7 @@ async function createEnhanceRunner(
       minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
       minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
       maxDurationMs: environmentNumber(environment.HANDY_NOTES_MAX_DURATION_MS, DEFAULT_CONFIG.enhancement.maxDurationMs),
-      timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, DEFAULT_CONFIG.enhancement.timeoutMs),
+      timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, timeoutMs),
       maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
       dryRun,
       ...(claudeExecutable === undefined

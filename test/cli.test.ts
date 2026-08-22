@@ -1,10 +1,15 @@
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { runFinalEnhancementWithRetries } from "../bin/shorthand-notes.js";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { createEnhanceRunner, runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
+import { ClaudeAgentClient } from "../src/agent/client.js";
+import { LlmAgentClient } from "../src/agent/llm-client.js";
+import { llmCredentialsPath } from "../src/agent/llm-credentials.js";
+import type { LlmCredentials } from "../src/agent/llm-credentials.js";
 import type { PassOutcome } from "../src/agent/runner.js";
+import { DEFAULT_CONFIG } from "../src/config.js";
 
 const scratchDirectories: string[] = [];
 afterEach(async () => {
@@ -286,7 +291,7 @@ describe("shorthand-notes CLI", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("connect your Google account");
     expect(result.stderr).not.toContain("shorthand-config");
-  });
+  }, 10_000);
 
   test("capture --sink google fails before the recording stream starts when no Google credentials are configured", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-capture-sink-nocreds-test-"));
@@ -355,6 +360,202 @@ describe("shorthand-notes CLI", () => {
       GOOGLE_OAUTH_CLIENT_SECRET: null,
     });
   });
+
+  describe("--backend selection", () => {
+    test("defaults to the Claude Agent SDK backend when neither --backend nor --agent-stub is given", async () => {
+      const result = await selectAgent([], {});
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(ClaudeAgentClient);
+    });
+
+    test.each([
+      ["--backend", "llm"],
+      ["--backend=llm", undefined],
+    ])("%s parses and selects the LLM backend", async (flag, value) => {
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-llm-test-"));
+      scratchDirectories.push(configDirectory);
+      const environment = await withLlmCredentials(configDirectory, {
+        provider: "openai-compatible", model: "local-model", base_url: "http://127.0.0.1:1",
+      });
+      const args = value === undefined ? [flag] : [flag, value];
+      const result = await selectAgent(args, environment);
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(LlmAgentClient);
+    });
+
+    test("an unknown --backend value is a usage error, not a runtime one", async () => {
+      await expect(selectAgent(["--backend", "bogus"], {})).rejects.toThrow("--backend must be claude or llm.");
+    });
+
+    test("a missing LLM credentials file exits non-zero with the reader's message verbatim", async () => {
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-missing-creds-test-"));
+      scratchDirectories.push(configDirectory);
+      const environment = await withLlmCredentials(configDirectory, undefined);
+      const result = await selectAgent(["--backend", "llm"], environment);
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toBe(`No LLM credentials at ${llmCredentialsPath(environment)}; configure an LLM provider, then retry.`);
+    });
+
+    test("a malformed LLM credentials file exits non-zero with the reader's message verbatim", async () => {
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-bad-creds-test-"));
+      scratchDirectories.push(configDirectory);
+      const environment = await withLlmCredentials(configDirectory, undefined);
+      const path = llmCredentialsPath(environment);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "{ not json", "utf8");
+      const result = await selectAgent(["--backend", "llm"], environment);
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toContain(`LLM credentials at ${path} are not valid JSON`);
+    });
+
+    test("keyless openai-compatible credentials are accepted", async () => {
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-keyless-test-"));
+      scratchDirectories.push(configDirectory);
+      const environment = await withLlmCredentials(configDirectory, {
+        provider: "openai-compatible", model: "local-model", base_url: "http://127.0.0.1:1",
+      });
+      const result = await selectAgent(["--backend", "llm"], environment);
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(LlmAgentClient);
+    });
+
+    test("a provider that needs a key but has none surfaces through ok:false, not a thrown exception", async () => {
+      // Construction throws inside LlmAgentClient for a keyed provider with no key.
+      // selectAgent must catch it and route it through the same ok:false path a
+      // credential-read failure takes, so runCli's catch-all (which reformats anything
+      // that is not an ArgumentError) never sees it.
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-nokey-test-"));
+      scratchDirectories.push(configDirectory);
+      const environment = await withLlmCredentials(configDirectory, { provider: "openai", model: "gpt-4o-mini" });
+      const result = await selectAgent(["--backend", "llm"], environment);
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toContain("No API key");
+      expect(!result.ok && result.message).toContain(llmCredentialsPath(environment));
+    });
+
+    test("rejects --claude combined with --backend llm instead of silently ignoring one", async () => {
+      await expect(selectAgent(["--backend", "llm", "--claude", "C:\\fake\\claude.exe"], {}))
+        .rejects.toThrow("--claude cannot be combined with --backend llm");
+    });
+
+    test("--agent-stub wins over --backend, even when the LLM credentials would fail to resolve", async () => {
+      const result = await selectAgent(
+        ["--backend", "llm", "--agent-stub", join(process.cwd(), "test", "fixtures", "fake-agent.mjs")],
+        {},
+      );
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).not.toBeInstanceOf(LlmAgentClient);
+      expect(result.agent).not.toBeInstanceOf(ClaudeAgentClient);
+    });
+
+    test("capture --backend llm runs the tick tier, since the LLM backend cannot drive vault tools", async () => {
+      const vault = await mkdtemp(join(tmpdir(), ".cli-capture-llm-tick-test-"));
+      scratchDirectories.push(vault);
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-capture-llm-config-"));
+      scratchDirectories.push(configDirectory);
+      const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+      expect((await run(entry, [
+        "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
+      ])).code).toBe(0);
+      // Port 1 refuses the TCP connection almost immediately (confirmed ~50ms locally), but
+      // the AI SDK wraps every call in its own retry loop with backoff, which stacks with the
+      // contract's own retry — confirmed empirically to stretch a full failed pass to ~13s.
+      // The assertion only needs the tier the runner requested, and that is decided before the
+      // network call ever happens (runner.ts:189-191), so runUntilStderrContains below kills
+      // the child the moment "started (tick)" appears rather than waiting out those retries.
+      const environment = await withLlmCredentials(configDirectory, {
+        provider: "openai-compatible", model: "local-model", base_url: "http://127.0.0.1:1",
+      });
+      const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
+      const stderr = await runUntilStderrContains(entry, [
+        "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture,
+        "--no-reconnect", "--enhance", "--backend", "llm",
+      ], environment, "started (tick)");
+      expect(stderr).toContain("started (tick)");
+    }, 10_000);
+  });
+
+  /**
+   * `createEnhanceRunner` is shared by `capture` and `enhance`, so which of
+   * DEFAULT_CONFIG.enhancement.timeoutMs / standaloneTimeoutMs applies is entirely down to
+   * which constant each command's call site passes in — see the comment above
+   * createEnhanceRunner. These construct the runner directly in-process the same way each
+   * command does, then enhanceNow invokes the executable agent stub in a subprocess. They spy
+   * on the global setTimeout that EnhanceRunner's raceTimeout schedules with the resolved
+   * bound, to catch the two constants ever being swapped between call sites. The agent stub
+   * resolves fast, so the real 2/5-minute timer this schedules is cleared long before it fires.
+   */
+  describe("createEnhanceRunner timeout wiring", () => {
+    async function scratchNote(): Promise<{ vault: string; note: string }> {
+      const vault = await mkdtemp(join(tmpdir(), ".cli-timeout-wiring-test-"));
+      scratchDirectories.push(vault);
+      const note = join(vault, "meeting.md");
+      await writeFile(
+        note,
+        "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->",
+        "utf8",
+      );
+      return { vault, note };
+    }
+
+    test("capture's default timeoutMs is the live per-pass bound, not the standalone one", async () => {
+      const { vault, note } = await scratchNote();
+      const agentStub = join(process.cwd(), "test", "fixtures", "fake-agent.mjs");
+      const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub], {}, false,
+          DEFAULT_CONFIG.enhancement.timeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+        const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+        expect(delays).toContain(DEFAULT_CONFIG.enhancement.timeoutMs);
+        expect(delays).not.toContain(DEFAULT_CONFIG.enhancement.standaloneTimeoutMs);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    }, 10_000);
+
+    test("enhance's default timeoutMs is the standalone bound, not the live one", async () => {
+      const { vault, note } = await scratchNote();
+      const agentStub = join(process.cwd(), "test", "fixtures", "fake-agent.mjs");
+      const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub], {}, false,
+          DEFAULT_CONFIG.enhancement.standaloneTimeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+        const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+        expect(delays).toContain(DEFAULT_CONFIG.enhancement.standaloneTimeoutMs);
+        expect(delays).not.toContain(DEFAULT_CONFIG.enhancement.timeoutMs);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    }, 10_000);
+
+    test("HANDY_NOTES_AGENT_TIMEOUT_MS overrides whichever default createEnhanceRunner was given", async () => {
+      const { vault, note } = await scratchNote();
+      const agentStub = join(process.cwd(), "test", "fixtures", "fake-agent.mjs");
+      const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub],
+          { HANDY_NOTES_AGENT_TIMEOUT_MS: "7000" }, false,
+          DEFAULT_CONFIG.enhancement.timeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+        const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+        expect(delays).toContain(7_000);
+        expect(delays).not.toContain(DEFAULT_CONFIG.enhancement.timeoutMs);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    }, 10_000);
+  });
 });
 
 // Strips the two Google OAuth env vars from an arbitrary env object. Exists as its own
@@ -368,6 +569,27 @@ function stripGoogleOAuthEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 function withoutGoogleOAuthEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...stripGoogleOAuthEnv(process.env), ...overrides };
+}
+
+// Redirects the config directory the same way withoutGoogleOAuthEnv's Google-credentials
+// callers already do (APPDATA/XDG_CONFIG_HOME/HOME/USERPROFILE all pointed at a scratch
+// directory), then optionally seeds llm-credentials.json at the path llmCredentialsPath
+// resolves under that redirect — so a test can control exactly what selectAgent/readLlmCredentials
+// see without touching the real per-user config directory. `credentials === undefined` leaves
+// the file absent, for the missing-file case.
+async function withLlmCredentials(
+  configDirectory: string,
+  credentials: LlmCredentials | undefined,
+): Promise<NodeJS.ProcessEnv> {
+  const environment = withoutGoogleOAuthEnv({
+    APPDATA: configDirectory, XDG_CONFIG_HOME: configDirectory, HOME: configDirectory, USERPROFILE: configDirectory,
+  });
+  if (credentials !== undefined) {
+    const path = llmCredentialsPath(environment);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(credentials), "utf8");
+  }
+  return environment;
 }
 
 function run(
@@ -393,5 +615,52 @@ function run(
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     child.once("error", rejectRun);
     child.once("close", (code) => resolveRun({ code, stdout, stderr }));
+  });
+}
+
+// Like run(), but for a command whose OWN retries (the AI SDK wraps a failed call in its
+// own backoff, on top of the contract's retry) would otherwise stretch the subprocess's
+// lifetime well past what the test needs. Resolves with whatever stderr has accumulated the
+// moment it contains `needle`, and kills the child rather than waiting for it to exit — the
+// assertion this exists for only needs a status line the runner emits before it ever makes
+// the network call the retries are wrapping.
+function runUntilStderrContains(
+  entry: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  needle: string,
+  timeoutMs = 8_000,
+): Promise<string> {
+  return new Promise((resolveRun, rejectRun) => {
+    const spawnOptions: any = { stdio: ["ignore", "pipe", "pipe"], env: stripGoogleOAuthEnv(env) };
+    const child = spawn(process.execPath, ["--no-env-file", entry, ...args], spawnOptions);
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      rejectRun(new Error(`Timed out waiting for stderr to contain ${JSON.stringify(needle)}. stderr so far:\n${stderr}`));
+    }, timeoutMs);
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (settled || !stderr.includes(needle)) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      resolveRun(stderr);
+    });
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectRun(error);
+    });
+    child.once("close", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveRun(stderr);
+    });
   });
 }

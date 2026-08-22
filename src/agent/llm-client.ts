@@ -266,6 +266,15 @@ function buildModel(
       return createOpenAICompatible({
         name: "openai-compatible",
         baseURL: baseUrl,
+        // Not optional for this backend. The flag defaults to false, and a false value makes
+        // the provider DROP the schema and send `response_format: {"type":"json_object"}`
+        // instead — so the model is asked for unconstrained JSON, `Output.object` fails to
+        // parse whatever comes back, and every pass burns the whole retry ladder before
+        // reporting a generic invalid-output error. The other two providers send schemas
+        // natively, so this silently broke local endpoints only. An endpoint that cannot
+        // honour `json_schema` cannot serve a backend whose entire contract is a validated
+        // section object, and failing its way is clearer than degrading into that ladder.
+        supportsStructuredOutputs: true,
         // No key at all is legitimate here: a local Ollama endpoint authenticates nothing.
         ...(credentials.api_key === undefined ? {} : { apiKey: credentials.api_key }),
         ...(fetch === undefined ? {} : { fetch }),

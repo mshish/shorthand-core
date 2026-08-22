@@ -301,9 +301,22 @@ describe("LlmAgentClient provider construction", () => {
     expect(providerCalls[0]!.options).toEqual({
       name: "openai-compatible",
       baseURL: "http://127.0.0.1:11434/v1",
+      supportsStructuredOutputs: true,
       fetch: injected,
     });
     expect(providerCalls[0]!.modelIds).toEqual(["llama3.1"]);
+  });
+
+  test("openai-compatible is told it supports structured outputs, or the schema is dropped", () => {
+    // Pinned separately from the construction test above because the consequence is invisible
+    // at construction time: the provider defaults this to false and then silently downgrades
+    // `response_format` to `{"type":"json_object"}`, discarding the section schema. Every pass
+    // against a local endpoint then fails to parse and exhausts the retry ladder. Deleting the
+    // flag would leave the assertion above passing, so it needs a test that names the reason.
+    new LlmAgentClient({
+      credentials: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:1234/v1" },
+    });
+    expect(providerCalls[0]!.options).toMatchObject({ supportsStructuredOutputs: true });
   });
 
   test("a keyless openai-compatible endpoint is allowed, because a local Ollama needs no key", () => {

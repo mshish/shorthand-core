@@ -94,11 +94,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     // frontier model needs. Live runners still have to keep up with a meeting in progress, so
     // they stay bounded at 2 minutes rather than growing further.
     timeoutMs: 120_000,
-    // This is the per-runner default for the one-shot `enhance` command, whose full
-    // vault-linked work can take longest and has no continuing live loop behind it. A capture
-    // constructs its runner with timeoutMs and reuses that runner for the closing pass, so
-    // the closing pass still inherits the 2-minute live bound even though it has the same
-    // expensive, post-meeting characteristics that motivate this larger standalone budget.
+    // The one-shot `enhance` command gets no retry if its full vault-linked pass times out,
+    // so losing that attempt hurts most. A capture's closing pass keeps the live bound but
+    // has a retry ladder that can issue the pass twice more after a timeout or requeue.
     standaloneTimeoutMs: 300_000,
     // A loop breaker like maxDurationMs, not a budget: `timeoutMs` is the real per-pass
     // bound. Hitting this ends the query on `error_max_turns`, which carries no

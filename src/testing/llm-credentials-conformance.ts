@@ -346,10 +346,9 @@ function assertOnlyEntry(entries: readonly string[], target: string, when: strin
  * resort, and is skipped when the inode is 0 — Windows reports that for files whose index
  * it cannot supply, and two zeroes are not evidence of anything.
  *
- * Duplicated from google-credentials-conformance.ts rather than shared. These are two
- * separately published contracts and a consumer may run either one alone; keeping each
- * self-contained means editing one cannot silently change what the other asserts. A third
- * suite would be the point to extract a shared helper — two is not.
+ * Duplicated from google-credentials-conformance.ts rather than shared so editing one
+ * cannot silently change what the other asserts. A third suite would be the point to
+ * extract a shared helper — two is not.
  */
 async function sameFile(actual: string, expected: string): Promise<boolean> {
   if (resolve(actual) === resolve(expected)) return true;

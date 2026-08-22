@@ -143,7 +143,7 @@ Established during research on 2026-08-21. The plan is built on them.
 2. **The Agent SDK is not used as a file editor.** `DESIGN.md:119-121`: "The agent has no write tool. `options.tools` never contains `Write`/`Edit`/`Bash`". The only mutation path is `sink.write()` in `runner.ts:267`. A chat-completions backend therefore substitutes without reimplementing any write path.
 3. **`src/agent/client.ts` is the only file importing `@anthropic-ai/claude-agent-sdk`.** The new backend must keep that true for its own SDK — put every `ai` / `@ai-sdk/*` import in one new file, so `mock.module` in one test file cannot disturb another suite.
 4. **`vaultRoot` feeds only `agentContext`** — `markdown-sink.ts:33` and `:75`, nowhere else.
-5. **Everything requests the `link` tier.** `enhanceNow(tier: AgentTier = "link")` (`runner.ts:143`); `bin/shorthand-notes.ts:403,410` pass `"link"` explicitly. The `tick` tier is reached only via the Google Docs sink (no `agentContext`) or `--tier tick`.
+5. **Correction: the claim that everything requests the `link` tier was false.** `EnhanceRunner.tick()` starts the `tick` tier, and `requestTick()` drives every scheduled live pass on transcript deltas. The capture's closing pass requests `link`; the standalone command defaults to `link`, and `--tier tick` can request tick explicitly.
 6. **Package versions, checked against the registry on 2026-08-21:** `ai@7.0.74`, `@ai-sdk/openai@4.0.45`, `@ai-sdk/anthropic@4.0.40`, `@ai-sdk/openai-compatible@3.0.34`, all Apache-2.0, all `engines.node >=22`.
 7. **zod peer range is `^3.25.76 || ^4.1.8`.** Core currently pins `zod ^4.1.5`, which is **below** the peer floor. Task 1 bumps it.
 8. **`@ai-sdk/provider-utils@5.0.28` depends on `undici@^7.28.0`** plus `@workflow/serde` and `eventsource-parser`. `undici` reaches for Node built-ins. Task 1 contains a bundling spike that must pass before any other task starts.
@@ -334,13 +334,13 @@ const tier: AgentTier =
 
 `!== false`, not truthiness — `undefined` must mean "yes" (fact: `ClaudeAgentClient` does not set it).
 
-**`cwd` must move with the tier.** `runner.ts:219` currently sets `cwd` whenever the sink has an `agentContext`, independent of tier, so the capability flag alone would still hand a vault path to a client that cannot use it:
+**`cwd` must move with the client capability, not the tier.** A client that declines vault tools must not receive the sink's path, while a capable client needs the same cwd on live tick and closing link passes so its resumed session stays in one cwd-derived project store:
 
 ```ts
-...(agentContext === undefined || tier !== "link" ? {} : { cwd: agentContext.cwd }),
+...(agentContext === undefined || !toolsUsable ? {} : { cwd: agentContext.cwd }),
 ```
 
-This also changes the *existing* tick path, deliberately and in the safe direction: `buildClaudeAgentOptions` picks its guard on `cwd` alone (`client.ts:70`), so dropping `cwd` on a tick swaps `createVaultToolGuard` for `denyAllToolGuard`. With `tools: []` already in force nothing was reachable either way, so this tightens a belt that was never load-bearing rather than changing behaviour. `test/enhance-runner.test.ts:39` asserts the old shape and must be updated deliberately.
+The earlier tier-based proposal was based on false fact 5 and would regress the default backend: live Markdown tick passes would run from `process.cwd()` while the closing link pass ran from the vault root, even though both resume one Agent SDK session. `test/enhance-runner.test.ts` must keep asserting no cwd for a client with `supportsVaultTools: false`, while the ordinary tick pass with `agentContext` must retain cwd.
 
 - [ ] **Step 3: Verify** — `bun test`, `bun run typecheck`. The whole existing suite must stay green; any red test here means the default changed, which it must not.
 

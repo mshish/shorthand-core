@@ -409,6 +409,9 @@ export async function createEnhanceRunner(
   dryRun: boolean,
   timeoutMs: number,
 ): Promise<CreateEnhanceRunnerResult> {
+  const selected = await selectAgent(args, environment);
+  if (!selected.ok) return { ok: false, message: selected.message };
+  const agent = selected.agent;
   let resolvedSink: NoteSink;
   if (sink === "google") {
     // Loaded dynamically, not as a top-level import: src/google/docs-client.ts pulls in
@@ -422,9 +425,6 @@ export async function createEnhanceRunner(
   } else {
     resolvedSink = new MarkdownNoteSink({ notePath: note, vaultRoot: vault });
   }
-  const selected = await selectAgent(args, environment);
-  if (!selected.ok) return { ok: false, message: selected.message };
-  const agent = selected.agent;
   const claudeOverride = argumentValue(args, "--claude");
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
   return {

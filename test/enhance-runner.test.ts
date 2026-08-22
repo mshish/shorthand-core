@@ -45,11 +45,9 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     runner.updateTranscript(" link text");
     await runner.enhanceNow("link");
     expect(agent.requests).toHaveLength(2);
-    // cwd moves with the tier, not with the sink alone: a tick pass gets no cwd even
-    // though this sink offers agentContext, because `tools: []` means there is nothing
-    // a cwd could confine on this tier.
-    expect(agent.requests[0]).not.toHaveProperty("cwd");
-    expect(agent.requests[0]).toMatchObject({ tools: [], settingSources: [], maxTurns: 4 });
+    // A capable client's cwd remains stable across tiers because the Claude CLI uses it
+    // to locate the project-scoped session that subsequent passes resume.
+    expect(agent.requests[0]).toMatchObject({ cwd: "C:\\vault", tools: [], settingSources: [], maxTurns: 4 });
     expect(agent.requests[1]).toMatchObject({ cwd: "C:\\vault", tools: ["Read", "Glob", "Grep"], settingSources: [], maxTurns: 4 });
   });
 

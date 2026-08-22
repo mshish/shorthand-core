@@ -186,9 +186,10 @@ export class EnhanceRunner {
     // AND the client can actually drive Read/Glob/Grep. `!== false`, not truthy:
     // `undefined` means "yes" so every client written before this flag existed
     // (ClaudeAgentClient, ExecutableAgentStub) keeps today's behaviour. Without
-    // either, the pass degrades to a tick-style pass: no tools and no cwd at all,
-    // rather than an invented one. Resolved up front so every status this pass
-    // reports names the tier that actually ran.
+    // either, the pass degrades to a tick-style pass with no tools. Clients that
+    // decline vault tools also receive no cwd; capable clients still need the sink's
+    // cwd on tick passes to preserve their project-scoped session. Resolved up front
+    // so every status this pass reports names the tier that actually ran.
     const agentContext = this.#options.sink.agentContext;
     const toolsUsable = this.#options.agent.supportsVaultTools !== false;
     const tier: AgentTier =
@@ -231,10 +232,10 @@ export class EnhanceRunner {
       // half a user may replace, and a replacement must not be able to drop the untrusted-data
       // framing or the marker-token rule with it. This is the only place the two are joined.
       systemPrompt: `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${this.#options.guidance}`,
-      // cwd is a link-tier capability, not a byproduct of the sink alone: a client
-      // that cannot use vault tools (or a pass that downgraded to tick for any other
-      // reason) must not be handed a vault path it has no tool to confine.
-      ...(agentContext === undefined || tier !== "link" ? {} : { cwd: agentContext.cwd }),
+      // Capable clients need a stable project directory on every tier so one capture's
+      // resumable session is not split across cwd-derived transcript stores. Clients
+      // without vault-tool support must not receive a path they cannot use or confine.
+      ...(agentContext === undefined || !toolsUsable ? {} : { cwd: agentContext.cwd }),
       tools: tier === "tick" ? [] : ["Read", "Glob", "Grep"],
       settingSources: [],
       maxTurns: this.#options.maxTurns,

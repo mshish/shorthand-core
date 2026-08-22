@@ -68,6 +68,32 @@ think.
 Version on the `0.x` line: minor is the breaking slot. Removing or retyping an
 exported symbol is a minor bump, not a patch.
 
+## A change here is not done when it is tagged
+
+The tag is the middle of the work. `obsidian-shorthand` pins this package by
+tag, so every breaking change lands in two halves: the retype here, and the
+consumer that has to survive it. Stopping at the tag leaves a repo that builds
+from a clean checkout and a consumer that does not — and nothing in either
+repo's CI will tell you, because they are tested independently.
+
+**Take the whole change, across both repos, as one unit of work.** After
+pushing and tagging here: bump the plugin's pin, fix what the new types break,
+and run the plugin's own gates. Only then is the change finished. If you truly
+cannot reach the other repo, say so plainly and name exactly what is left
+undone — do not report the work as complete.
+
+This is not hypothetical caution. The plugin's `onEnhanceStatus` once had a
+missing case that made enhancement passes fail silently, forever, with every
+check green. Adding a member to `EnhanceStatus["kind"]` reproduces that exact
+failure by construction: an exhaustive switch that no longer is one, in a repo
+whose tests never imported the new type. Widening an exported union here is
+therefore a change to the plugin, whether or not anyone opens that repo.
+
+The same holds inside this repo. A number changed in `src/config.ts` is not
+done until `docs/ENHANCEMENT-LIMITS.md` agrees with it, and a behaviour changed
+in `EnhanceRunner` is not done until the comment naming the failure it prevents
+still tells the truth.
+
 ## The enhancement prompt is split, deliberately
 
 `src/agent/contract.ts` exports two halves:

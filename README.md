@@ -1,10 +1,10 @@
 # shorthand-core
 
 The headless engine behind Shorthand: it captures [Shorthand](https://github.com/cjpais/Shorthand)'s
-live microphone and system-audio transcript into a linked sidecar note, and runs Claude Agent SDK
-passes — resuming one session per capture — that use the new transcript plus your own notes to
-maintain a structured summary in the meeting note. Sections may be added, rewritten, reordered, or
-removed as the meeting develops.
+live microphone and system-audio transcript into a linked sidecar note, and runs enhancement
+passes through either the default Claude Agent SDK backend or ordinary LLM provider APIs. Those
+passes use the new transcript plus your own notes to maintain a structured summary in the meeting
+note. Sections may be added, rewritten, reordered, or removed as the meeting develops.
 
 Core owns capture, transcript reconciliation, enhancement, and every write. It has **no Obsidian
 dependency**: writes go straight to files and Obsidian picks up external changes itself. Two
@@ -32,7 +32,8 @@ esbuild and Node alike, so a deep path fails to resolve rather than merely being
 | --- | --- | --- |
 | `shorthand-core` | `src/index.ts` | The engine and the `NoteSink` port |
 | `shorthand-core/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
-| `shorthand-core/testing` | `src/testing/sink-conformance.ts` | The executable `NoteSink` conformance suite, runner-independent |
+| `shorthand-core/google` | `src/google.ts` | The Google Docs sink, credentials reader, and capture resolver |
+| `shorthand-core/testing` | `src/testing/index.ts` | Runner-independent executable contracts for sinks and credentials writers |
 
 Entry points use explicit named re-exports, never `export *`. Block-format internals and test
 seams are deliberately not exported; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and says
@@ -59,12 +60,32 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
 - Shorthand must be running with **Follow Live Transcript Output** enabled under **Advanced
   settings**. If Shorthand is stopped or that setting is disabled, `--follow-stream` exits with code 2
   and core reports both remedies.
-- The `claude` CLI must be installed and logged in. On Windows the standard
-  `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location can be passed with
-  `--claude`.
+- For the default Claude backend, the `claude` CLI must be installed and logged in. On Windows
+  the standard `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location
+  can be passed with `--claude`.
 - Node.js 22 for headless CLI use. The floor follows a dependency's requirement rather than a
   preference: the AI SDK packages (`ai`, `@ai-sdk/*`) declare `engines.node >=22`. Bun is
   required for the development build and test commands.
+
+## Enhancement backends
+
+The CLI selects a backend with `--backend claude|llm`; omitting the flag selects `claude`.
+The default backend resumes a Claude Agent SDK session and requires the `claude` CLI described
+above. The `llm` backend instead uses the Vercel AI SDK to call OpenAI, Anthropic, Ollama, or
+another OpenAI-compatible endpoint, and does not launch Claude Code.
+
+The LLM profile is `llm-credentials.json` under Shorthand's configuration directory: on
+Windows, `%APPDATA%\Shorthand\llm-credentials.json`; on macOS,
+`~/Library/Application Support/Shorthand/llm-credentials.json`; and on Linux,
+`${XDG_CONFIG_HOME:-~/.config}/shorthand/llm-credentials.json`. It contains the provider,
+model, optional API key and `base_url` (required for `openai-compatible`, optional otherwise).
+This location is deliberately outside the vault so a plaintext provider key is not copied
+through vault sync or included in vault backups.
+
+The backends do not have identical lookup capabilities. Claude link-tier passes can use
+`Read`/`Glob`/`Grep` inside the vault. The LLM backend has no tool loop, so every pass runs as
+a tick pass, including the closing pass: its notes will not reference people, projects or
+prior meetings discovered elsewhere in the vault.
 
 ## Headless CLI
 

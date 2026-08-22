@@ -24,10 +24,10 @@ frowned upon. There are four entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, `ClaudeAgentClient`, `AgentClient`/`AgentTier`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`/`MAX_GUIDANCE_CHARACTERS`, `parseTemplateSections`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
+| `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, the default `ClaudeAgentClient` and the ordinary-provider `LlmAgentClient`/`LlmAgentClientOptions`, `AgentClient`/`AgentTier`, `readLlmCredentials`/`llmCredentialsPath` and `LlmCredentials`/`LlmCredentialsReadResult`/`LlmProviderId`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`/`MAX_GUIDANCE_CHARACTERS`, `parseTemplateSections`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
 | `shorthand-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
 | `shorthand-core/google` | The Google Docs sink and the pieces it needs: `GoogleDocsNoteSink`, `GOOGLE_DOCS_SCOPE`, `GoogleApiDocsClient` and its API types, the credentials reader — `FileTokenProvider`, `credentialsPath`, `readCredentials`, `GoogleCredentials`, `CredentialsReadResult`, `FileTokenProviderOptions` — and `resolveGoogleDocsSink`/`ResolveGoogleSinkOptions`/`ResolveGoogleSinkResult`, which mints or reuses a per-capture tab and constructs the sink | Google Docs consumers only. **A Markdown or other API sink must not import this.** Core reads the credentials file and never writes it; see §5.4 |
-| `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For the credentials file: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsFixture`, `CredentialsConformanceSupport` | Any sink's test suite; any writer of the Google credentials file |
+| `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For Google credentials: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsHarnessFactory`, `CredentialsFixture`, `CredentialsGoldenFixture`, `CredentialsConformanceScenario`, and `CredentialsConformanceSupport`. For LLM credentials: `LLM_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeLlmCredentialsConformance`, `LLM_CREDENTIALS_FIXTURES`, `LlmCredentialsWriterHarness`, `LlmCredentialsHarnessFactory`, `LlmCredentialsFixture`, `LlmCredentialsGoldenFixture`, `LlmCredentialsConformanceScenario`, and `LlmCredentialsConformanceSupport` | Any sink's test suite; any writer of either credentials file |
 
 `parseTemplateSections` is on the root entry point rather than `shorthand-core/markdown`
 even though its output is fed to `ensureNoteScaffold`: the starting sections of a note are
@@ -173,7 +173,10 @@ is the vault root, which lets the *link tier* pass use `Read`/`Glob`/`Grep` (con
 root by a `canUseTool` guard) to pull in neighbouring notes.
 
 For an API sink there is no such thing, and **it must be omitted** — not faked, not set to
-`process.cwd()`. When it is absent, core degrades honestly and in two visible ways
+`process.cwd()`. A requested link tier also downgrades independently when the selected
+`AgentClient` declares `supportsVaultTools: false`; a searchable target cannot give a
+non-agentic provider client a tool loop. When either prerequisite is absent, core degrades
+honestly and in two visible ways
 (`src/agent/runner.ts:184-227`):
 
 1. **A requested `link` tier is downgraded to `tick`.** A link pass without a searchable

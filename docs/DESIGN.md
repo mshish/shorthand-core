@@ -284,8 +284,7 @@ Google and LLM credentials files run their respective suites from the owning con
 future sink and credentials writer must pass its contract unchanged.
 
 **Two checks left with the plugin, and that is correct.** The bundle-load test — which
-`require`s the built `main.js` under a stub `obsidian` and reports bundle-size drift without
-asserting a ceiling — now lives
+`require`s the built `main.js` under a stub `obsidian` — now lives
 in the plugin repo, where the bundle is. It exists because CI once built the bundle and never
 loaded it, which is how the load-bearing `import.meta.url` banner in the esbuild config came
 to exist after a real Obsidian load failure with everything green. `consumer-imports.test.ts`

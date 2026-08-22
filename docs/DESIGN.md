@@ -184,9 +184,10 @@ current sections and the transcript delta, and the safety preamble says those se
 over remembered turns.
 Owning the array buys an explicit trim policy that provider-side resume does not: a character
 budget drops whole user+assistant pairs from the oldest end, never half a pair. The system
-message and current pass's user message are outside that budget and are never evictable. This
-is structural, not an accounting convention, because a budget able to evict the system
-message could silently remove the safety preamble while leaving an apparently healthy pass.
+message is structurally outside that budget and can never be evicted; otherwise trimming
+could silently remove the safety preamble while leaving an apparently healthy pass. The
+current pass's user message is inside the trimmed array and can be evicted from future history
+under a tight budget, but only after the call that used it has already completed.
 By contrast, Agent SDK resume delegates storage to the `claude` CLI and grows toward its
 auto-compaction path, which remains untested here as described below.
 

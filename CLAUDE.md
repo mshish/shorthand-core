@@ -14,6 +14,8 @@ The rest is deliberately not imported — open it only when the work calls for i
 - `README.md` — commands, and what each entry point deliberately does and does
   not export.
 
-Changing an exported symbol makes the Obsidian plugin at
-`D:/tools/obsidian-shorthand` part of this task, not a follow-up. See
-`AGENTS.md` § "A change here is not done when it is tagged".
+A **breaking** change to an entry point the Obsidian plugin imports — the root
+export or `./markdown` — makes that plugin at `D:/tools/obsidian-shorthand` part
+of this task, not a follow-up. Changes confined to `./google` or `./testing`, and
+additive exports nothing consumes, do not. See `AGENTS.md` § "A change here is
+not done when it is tagged".

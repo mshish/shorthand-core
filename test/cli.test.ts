@@ -3,13 +3,14 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { createEnhanceRunner, runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
+import { createEnhanceRunner, runCli, runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
 import { ClaudeAgentClient } from "../src/agent/client.js";
 import { LlmAgentClient } from "../src/agent/llm-client.js";
 import { llmCredentialsPath } from "../src/agent/llm-credentials.js";
 import type { LlmCredentials } from "../src/agent/llm-credentials.js";
 import type { PassOutcome } from "../src/agent/runner.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
+import { SidecarWriter } from "../src/note/sidecar.js";
 
 const scratchDirectories: string[] = [];
 afterEach(async () => {
@@ -475,15 +476,61 @@ describe("shorthand-notes CLI", () => {
     }, 10_000);
   });
 
+  test("capture teardown cancels the live interval timer before a sidecar close failure", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-teardown-timer-test-"));
+    scratchDirectories.push(vault);
+    const note = join(vault, "meeting.md");
+    const sidecar = join(vault, "transcript.md");
+    const fixture = join(vault, "timer-stream.mjs");
+    await writeFile(
+      note,
+      "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->",
+      "utf8",
+    );
+    await writeFile(
+      fixture,
+      `process.stdout.write('{"t":"hello","protocol":1,"version":"test","emitted_at":"now"}\\n');
+process.stdout.write('{"t":"begin","session":1,"streaming":true,"emitted_at":"now","session_elapsed_ms":0}\\n');
+process.stdout.write(JSON.stringify({t:"partial",session:1,speaker:"me",committed:"a".repeat(200),tentative:"",emitted_at:"now",session_elapsed_ms:1})+"\\n");
+await new Promise((resolve) => setTimeout(resolve, 1500));
+process.stdout.write(JSON.stringify({t:"partial",session:1,speaker:"me",committed:"a".repeat(200)+"b".repeat(200),tentative:"",emitted_at:"now",session_elapsed_ms:2})+"\\n");
+await new Promise((resolve) => setTimeout(resolve, 100));
+process.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","emitted_at":"now","session_elapsed_ms":3}\\n');`,
+      "utf8",
+    );
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = spyOn(globalThis, "clearTimeout");
+    const closeSpy = spyOn(SidecarWriter.prototype, "close").mockRejectedValue(new Error("close failed"));
+    const exitListenersBefore = process.listenerCount("exit");
+    try {
+      await expect(runCli([
+        "capture", "--vault", vault, "--note", note, "--sidecar", sidecar,
+        "--fake-stream", fixture, "--no-reconnect", "--enhance", "--agent-stub",
+        join(process.cwd(), "test", "fixtures", "fake-agent.mjs"),
+      ], process.env)).rejects.toThrow("close failed");
+      const intervalIndex = setTimeoutSpy.mock.calls.findIndex((call) => (
+        typeof call[1] === "number" && call[1] > 20_000 && call[1] <= DEFAULT_CONFIG.thresholds.enhancementIntervalMs
+      ));
+      expect(intervalIndex).toBeGreaterThanOrEqual(0);
+      const intervalTimer = setTimeoutSpy.mock.results[intervalIndex]!.value;
+      expect(clearTimeoutSpy.mock.calls.some((call) => call[0] === intervalTimer)).toBe(true);
+      expect(process.listenerCount("exit")).toBe(exitListenersBefore);
+    } finally {
+      closeSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  }, 10_000);
+
   /**
    * `createEnhanceRunner` is shared by `capture` and `enhance`, so which of
    * DEFAULT_CONFIG.enhancement.timeoutMs / standaloneTimeoutMs applies is entirely down to
    * which constant each command's call site passes in — see the comment above
    * createEnhanceRunner. These construct the runner directly in-process the same way each
    * command does, then enhanceNow invokes the executable agent stub in a subprocess. They spy
-   * on the global setTimeout that EnhanceRunner's raceTimeout schedules with the resolved
+   * on the global setTimeout that XState's running-state `after` schedules with the resolved
    * bound, to catch the two constants ever being swapped between call sites. The agent stub
-   * resolves fast, so the real 2/5-minute timer this schedules is cleared long before it fires.
+   * resolves fast, so the real 4/10-minute timer this schedules is cleared long before it fires.
    */
   describe("createEnhanceRunner timeout wiring", () => {
     async function scratchNote(): Promise<{ vault: string; note: string }> {

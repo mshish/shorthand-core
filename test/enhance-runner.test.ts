@@ -36,13 +36,13 @@ const GUIDANCE_CASES: Readonly<{ label: string; guidance?: string; editorial: st
   { label: "custom guidance", guidance: CUSTOM_GUIDANCE, editorial: CUSTOM_GUIDANCE },
 ];
 
-describe("EnhanceRunner trigger and watermark policy", () => {
+describe("EnhanceRunner trigger and transcript cutoff policy", () => {
   test("each pass sends a bounded request with fixed tier tools and isolated settings", async () => {
     const agent = new FakeAgent([Promise.resolve(response()), Promise.resolve(response())]);
     const runner = makeRunner({ agent, sink: new FakeSink({ cwd: "C:\\vault" }), maxTurns: 4 });
-    runner.updateTranscript("tick text");
+    runner.appendTranscript("tick text");
     await runner.enhanceNow("tick");
-    runner.updateTranscript(" link text");
+    runner.appendTranscript(" link text");
     await runner.enhanceNow("link");
     expect(agent.requests).toHaveLength(2);
     // A capable client's cwd remains stable across tiers because the Claude CLI uses it
@@ -59,9 +59,12 @@ describe("EnhanceRunner trigger and watermark policy", () => {
       sink: new FakeSink({ cwd: "C:\\vault" }),
       onStatus: (status) => statuses.push(status),
     });
-    runner.updateTranscript("enough transcript");
+    runner.appendTranscript("enough transcript");
     expect(await runner.enhanceNow("link")).toMatchObject({ status: "completed", tier: "tick" });
-    expect(statuses.map(({ kind, tier }) => [kind, tier])).toEqual([["started", "tick"], ["finished", "tick"]]);
+    expect(statuses.map((status) => [status.kind, "tier" in status ? status.tier : undefined]))
+      .toEqual([["started", "tick"], ["finished", "tick"]]);
+    expect(statuses[0]).not.toHaveProperty("durationMs");
+    expect(statuses[1]).toHaveProperty("durationMs");
     expect(agent.requests[0]!.tools).toEqual([]);
     expect(agent.requests[0]).not.toHaveProperty("cwd");
     expect(agent.requests[0]!.prompt).toStartWith("You have no vault tools on this pass.");
@@ -77,7 +80,7 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     const agent = new FakeAgent([Promise.resolve(response())]);
     expect(agent.supportsVaultTools).toBeUndefined();
     const runner = makeRunner({ agent, sink: new FakeSink({ cwd: "C:\\vault" }) });
-    runner.updateTranscript("enough transcript");
+    runner.appendTranscript("enough transcript");
     expect(await runner.enhanceNow("link")).toMatchObject({ status: "completed", tier: "link" });
     expect(agent.requests[0]!.tools).toEqual(["Read", "Glob", "Grep"]);
     expect(agent.requests[0]!.cwd).toBe("C:\\vault");
@@ -88,7 +91,7 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     const sink = new FakeSink();
     expect(sink.agentContext).toBeUndefined();
     const runner = makeRunner({ agent, sink });
-    runner.updateTranscript("api sink transcript");
+    runner.appendTranscript("api sink transcript");
     expect((await runner.enhanceNow("link")).status).toBe("completed");
     expect(agent.requests[0]!.tools).toEqual([]);
     // No inherited process.cwd(): that directory would become the tool-guard root and
@@ -110,9 +113,10 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     const agent = new FakeAgent([Promise.resolve(response())]);
     const statuses: EnhanceStatus[] = [];
     const runner = makeRunner({ agent, sink: new FakeSink(), onStatus: (status) => statuses.push(status) });
-    runner.updateTranscript("api sink transcript");
+    runner.appendTranscript("api sink transcript");
     expect(await runner.enhanceNow("link")).toMatchObject({ status: "completed", tier: "tick" });
-    expect(statuses.map(({ kind, tier }) => [kind, tier])).toEqual([["started", "tick"], ["finished", "tick"]]);
+    expect(statuses.map((status) => [status.kind, "tier" in status ? status.tier : undefined]))
+      .toEqual([["started", "tick"], ["finished", "tick"]]);
   });
 
   test("the revision read is handed straight back to the sink's write, unexamined", async () => {
@@ -122,7 +126,7 @@ describe("EnhanceRunner trigger and watermark policy", () => {
       read: async () => ({ ok: true, value: { sections: SECTIONS, userNotes: USER_NOTES, revision: "etag-42" } }),
     });
     const runner = makeRunner({ agent, sink });
-    runner.updateTranscript("some transcript");
+    runner.appendTranscript("some transcript");
     expect((await runner.enhanceNow("tick")).status).toBe("completed");
     expect(sink.writes).toEqual([{ sections: [{ heading: "Summary", markdown: "Updated" }], expectedRevision: "etag-42" }]);
   });
@@ -133,9 +137,9 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     const agent = new FakeAgent([first.promise, Promise.resolve(response())]);
     const runner = makeRunner({ agent, now: () => now, minNewChars: 5, minIntervalMs: 100 });
 
-    runner.updateTranscript("1234");
+    runner.appendTranscript("1234");
     expect(await runner.tick()).toEqual({ status: "not-ready", reason: "characters" });
-    runner.updateTranscript("5");
+    runner.appendTranscript("5");
     const running = runner.tick();
     expect(await runner.tick()).toEqual({ status: "in-flight" });
     first.resolve(response());
@@ -143,7 +147,7 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     // The real property under test: the guard never let two queries overlap.
     expect(agent.maximumConcurrent).toBe(1);
 
-    runner.updateTranscript("67890");
+    runner.appendTranscript("67890");
     now = 99;
     expect(await runner.tick()).toEqual({ status: "not-ready", reason: "interval" });
     now = 100;
@@ -155,10 +159,10 @@ describe("EnhanceRunner trigger and watermark policy", () => {
     const first = deferred<AgentQueryResponse>();
     const agent = new FakeAgent([first.promise, Promise.resolve(response())]);
     const runner = makeRunner({ agent, minNewChars: 1, minIntervalMs: 0 });
-    runner.updateTranscript("first chunk");
+    runner.appendTranscript("first chunk");
     const running = runner.tick();
     await until(() => agent.requests.length === 1);
-    runner.updateTranscript(" SECOND chunk");
+    runner.appendTranscript(" SECOND chunk");
     first.resolve(response());
     await running;
     await runner.tick();
@@ -182,9 +186,9 @@ describe("EnhanceRunner trigger and watermark policy", () => {
         read: async () => (++reads === 1 ? delayedRead.promise : snapshot),
       }),
     });
-    runner.updateTranscript("before read");
+    runner.appendTranscript("before read");
     const firstPass = runner.tick();
-    runner.updateTranscript(" AFTER read started");
+    runner.appendTranscript(" AFTER read started");
     delayedRead.resolve(snapshot);
     await firstPass;
     await runner.tick();
@@ -195,14 +199,76 @@ describe("EnhanceRunner trigger and watermark policy", () => {
   test("live requestTick schedules the interval gate even when the transcript becomes quiet", async () => {
     const agent = new FakeAgent([Promise.resolve(response()), Promise.resolve(response())]);
     const runner = makeRunner({ agent, minIntervalMs: 15 });
-    runner.updateTranscript("first");
+    runner.appendTranscript("first");
     runner.requestTick();
     await until(() => agent.requests.length === 1 && !runner.state.inFlight);
-    runner.updateTranscript(" second");
+    runner.appendTranscript(" second");
     runner.requestTick();
     await waitUntil(() => agent.requests.length === 2, 250);
     runner.stopLiveTicks();
     expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toBe(" second");
+  });
+
+  test("declined status deduplicates within an episode and reports the same reason after an accepted pass", async () => {
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({
+      agent: new FakeAgent([Promise.resolve(response())]),
+      minNewChars: 3,
+      onStatus: (status) => statuses.push(status),
+    });
+    runner.appendTranscript("ab");
+    await runner.tick();
+    await runner.tick();
+    runner.appendTranscript("c");
+    expect((await runner.tick()).status).toBe("completed");
+    await runner.tick();
+    expect(statuses.filter((status) => status.kind === "declined" && status.reason === "characters"))
+      .toHaveLength(2);
+    expect(statuses.filter((status) => status.kind === "declined").every((status) => !("durationMs" in status)))
+      .toBe(true);
+  });
+
+  test("stopLiveTicks cancels the interval after owned by live waiting", async () => {
+    let now = 0;
+    const setTimeoutSpy = spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = spyOn(globalThis, "clearTimeout");
+    try {
+      const runner = makeRunner({
+        agent: new FakeAgent([Promise.resolve(response())]),
+        now: () => now,
+        minIntervalMs: 100,
+      });
+      runner.appendTranscript("first");
+      expect((await runner.tick()).status).toBe("completed");
+      runner.appendTranscript("second");
+      runner.requestTick();
+      const timerIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 100);
+      expect(timerIndex).toBeGreaterThanOrEqual(0);
+      const intervalTimer = setTimeoutSpy.mock.results[timerIndex]!.value;
+      runner.stopLiveTicks();
+      expect(clearTimeoutSpy.mock.calls.some((call) => call[0] === intervalTimer)).toBe(true);
+    } finally {
+      clearTimeoutSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  test("stopLiveTicks is a permanent latch even when transcript events request more live ticks", async () => {
+    const first = deferred<AgentQueryResponse>();
+    const agent = new FakeAgent([first.promise, Promise.resolve(response())]);
+    const runner = makeRunner({ agent, minIntervalMs: 0 });
+    runner.appendTranscript("first");
+    runner.requestTick();
+    await until(() => agent.requests.length === 1);
+    runner.stopLiveTicks();
+    runner.appendTranscript("late event");
+    runner.requestTick();
+    first.resolve(response());
+    await runner.waitForIdle();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(agent.requests).toHaveLength(1);
+    expect((await runner.enhanceNow("link")).status).toBe("completed");
+    expect(agent.requests).toHaveLength(2);
   });
 
   test("prompt data cannot close or forge the untrusted-data delimiters", async () => {
@@ -251,35 +317,107 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       onStatus: (status) => statuses.push(status),
     });
     now = 100;
-    runner.updateTranscript("one");
+    runner.appendTranscript("one");
     expect(await runner.tick()).toEqual({ status: "expired" });
     expect(runner.state).toMatchObject({ enhancementEnabled: false, pendingCharacters: 3, elapsedMs: 100 });
-    runner.updateTranscript(" two");
+    runner.appendTranscript(" two");
     expect(await runner.tick()).toEqual({ status: "expired" });
     expect(runner.state.pendingCharacters).toBe(8); // "one" + joinTranscript's "\n" + " two"
     expect(statuses.filter(({ kind }) => kind === "expired")).toHaveLength(1);
     expect(agent.requests).toHaveLength(0);
   });
 
-  test("timeout abandons a hung pass, re-queues its transcript, and permits the next tick", async () => {
+  test("timeout aborts a hung query, re-queues its transcript, and permits the next tick", async () => {
+    const statuses: EnhanceStatus[] = [];
     const agent = new FakeAgent([new Promise<AgentQueryResponse>(() => {}), Promise.resolve(response())]);
-    const runner = makeRunner({ agent, timeoutMs: 10, minNewChars: 1, minIntervalMs: 0 });
-    runner.updateTranscript("not lost");
+    const runner = makeRunner({ agent, timeoutMs: 10, minNewChars: 1, minIntervalMs: 0, onStatus: (status) => statuses.push(status) });
+    runner.appendTranscript("not lost");
     expect((await runner.tick()).status).toBe("timed-out");
+    expect(agent.requests[0]!.signal?.aborted).toBe(true);
+    expect(statuses.find(({ kind }) => kind === "started")?.passCount).toBe(0);
+    expect(statuses.find(({ kind }) => kind === "timed-out")?.passCount).toBe(1);
+    expect(runner.state.passCount).toBe(1);
     expect(runner.state.inFlight).toBe(false);
     expect((await runner.tick()).status).toBe("completed");
     expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toBe("not lost");
   });
 
+  test("a timed-out sink read cannot emit started or initiate model and write work after settling", async () => {
+    const delayedRead = deferred<SinkReadResult>();
+    const statuses: EnhanceStatus[] = [];
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const sink = new FakeSink({ cwd: process.cwd(), read: async () => delayedRead.promise });
+    const runner = makeRunner({ agent, sink, timeoutMs: 5, onStatus: (status) => statuses.push(status) });
+    runner.appendTranscript("not lost");
+    expect((await runner.tick()).status).toBe("timed-out");
+    delayedRead.resolve({ ok: true, value: { sections: SECTIONS, userNotes: USER_NOTES, revision: "late" } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(statuses.map(({ kind }) => kind)).toEqual(["timed-out"]);
+    expect(agent.requests).toHaveLength(0);
+    expect(sink.writes).toHaveLength(0);
+  });
+
+  test("a timed-out model result cannot initiate a late sink write", async () => {
+    const late = deferred<AgentQueryResponse>();
+    const sink = new FakeSink({ cwd: process.cwd() });
+    const runner = makeRunner({ agent: new FakeAgent([late.promise]), sink, timeoutMs: 5 });
+    runner.appendTranscript("not lost");
+    expect((await runner.tick()).status).toBe("timed-out");
+    late.resolve(response());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(sink.writes).toHaveLength(0);
+  });
+
+  test("stop aborts an active pass and resolves both its request and waitForIdle", async () => {
+    const agent = new FakeAgent([new Promise<AgentQueryResponse>(() => {})]);
+    const runner = makeRunner({ agent });
+    runner.appendTranscript("active");
+    const pass = runner.tick();
+    await until(() => agent.requests.length === 1);
+    const idle = runner.waitForIdle();
+    runner.stop();
+    expect(await pass).toEqual({ status: "failed", error: "Enhancement runner stopped." });
+    await idle;
+    expect(agent.requests[0]!.signal?.aborted).toBe(true);
+    expect(await runner.enhanceNow()).toEqual({ status: "failed", error: "Enhancement runner stopped." });
+    await runner.waitForIdle();
+  });
+
+  test("timeout covers a hung sink read and releases the in-flight state", async () => {
+    const runner = makeRunner({
+      agent: new FakeAgent([]),
+      timeoutMs: 5,
+      sink: new FakeSink({ cwd: process.cwd(), read: async () => new Promise<SinkReadResult>(() => {}) }),
+    });
+    runner.appendTranscript("not lost");
+    expect((await runner.tick()).status).toBe("timed-out");
+    expect(runner.state).toMatchObject({ inFlight: false, pendingCharacters: 8, passCount: 0 });
+  });
+
+  test("timeout covers a hung sink write and keeps only model latency in durationMs", async () => {
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({
+      agent: new FakeAgent([Promise.resolve(response())]),
+      timeoutMs: 5,
+      sink: new FakeSink({ cwd: process.cwd(), write: async () => new Promise<SinkWriteResult>(() => {}) }),
+      onStatus: (status) => statuses.push(status),
+    });
+    runner.appendTranscript("not lost");
+    expect((await runner.tick()).status).toBe("timed-out");
+    expect(runner.state).toMatchObject({ inFlight: false, pendingCharacters: 8, passCount: 1 });
+    const terminal = statuses.find((status) => status.kind === "timed-out");
+    expect(terminal).toMatchObject({ kind: "timed-out", durationMs: expect.any(Number) });
+  });
+
   /**
    * These three go around `makeRunner`, which always supplies its own test-only `timeoutMs`
    * override, rather than through it: exercising the constructor's real fallback means
-   * constructing `EnhanceRunner` directly with no `timeoutMs` at all. Since a full 120s (or
-   * 300s) wait per test isn't practical, each one spies on the global `setTimeout` that
-   * `raceTimeout` calls with the resolved bound and asserts on the delay it was given,
-   * letting the fast-resolving fake agent settle the race long before the real timer fires.
+   * constructing `EnhanceRunner` directly with no `timeoutMs` at all. Since a full 240s (or
+   * 600s) wait per test isn't practical, each one spies on the global `setTimeout` that
+   * XState's running-state `after` schedules with the resolved bound and asserts on its delay,
+   * letting the fast-resolving fake agent leave that state long before the timer fires.
    */
-  test("the runner's default timeoutMs is 120_000, not the old 45_000", async () => {
+  test("the runner's default timeoutMs is 240_000, not the old 120_000", async () => {
     const setTimeoutSpy = spyOn(globalThis, "setTimeout");
     try {
       const agent = new FakeAgent([Promise.resolve(response())]);
@@ -293,8 +431,8 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       });
       expect((await runner.enhanceNow("tick")).status).toBe("completed");
       const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
-      expect(delays).toContain(120_000);
-      expect(delays).not.toContain(45_000);
+      expect(delays).toContain(240_000);
+      expect(delays).not.toContain(120_000);
     } finally {
       setTimeoutSpy.mockRestore();
     }
@@ -316,13 +454,13 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       expect((await runner.enhanceNow("tick")).status).toBe("completed");
       const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
       expect(delays).toContain(30_000);
-      expect(delays).not.toContain(120_000);
+      expect(delays).not.toContain(240_000);
     } finally {
       setTimeoutSpy.mockRestore();
     }
   });
 
-  test("constructing the runner the way the standalone enhance command does yields a 300_000ms bound", async () => {
+  test("constructing the runner the way the standalone enhance command does yields a 600_000ms bound", async () => {
     const setTimeoutSpy = spyOn(globalThis, "setTimeout");
     try {
       const agent = new FakeAgent([Promise.resolve(response())]);
@@ -337,32 +475,10 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       });
       expect((await runner.enhanceNow("tick")).status).toBe("completed");
       const delays = setTimeoutSpy.mock.calls.map((call) => call[1]);
-      expect(delays).toContain(300_000);
+      expect(delays).toContain(600_000);
     } finally {
       setTimeoutSpy.mockRestore();
     }
-  });
-
-  test("a late-settling timed-out pass still counts its attempts and its own rescheduling still picks up newly queued transcript", async () => {
-    const late = deferred<AgentQueryResponse>();
-    const agent = new FakeAgent([late.promise, Promise.resolve(response())]);
-    const runner = makeRunner({ agent, timeoutMs: 5, minIntervalMs: 0, minNewChars: 8 });
-    runner.appendTranscript("late");
-    // enhanceNow bypasses the character/interval gate, so this one pass starts despite
-    // "late" being under minNewChars — isolating the reschedule check below to the late
-    // settle's own #scheduleTick() call rather than #start's ordinary post-pass reschedule.
-    expect((await runner.enhanceNow("tick")).status).toBe("timed-out");
-    expect(runner.state.passCount).toBe(0);
-    expect(runner.state.pendingCharacters).toBe(4);
-    // "late" alone is still below minNewChars, so this settles as not-ready and schedules
-    // nothing yet — it only flips on live ticking for the reschedule check below.
-    runner.requestTick();
-    runner.appendTranscript(" more!");
-    late.resolve(response());
-    await waitUntil(() => agent.requests.length === 2, 250);
-    runner.stopLiveTicks();
-    expect(runner.state.passCount).toBe(2);
-    expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toBe("late\n more!");
   });
 
   test("validation retries all count as model attempts toward passCount", async () => {
@@ -375,13 +491,23 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(runner.state.passCount).toBe(2);
   });
 
+  test("a timeout during validation retry counts both attempts", async () => {
+    const invalid = { structuredOutput: { sections: [] }, sessionId: "session-invalid" };
+    const agent = new FakeAgent([Promise.resolve(invalid), new Promise<AgentQueryResponse>(() => {})]);
+    const runner = makeRunner({ agent, timeoutMs: 10 });
+    runner.appendTranscript("retry then hang");
+    expect((await runner.enhanceNow("tick")).status).toBe("timed-out");
+    expect(agent.requests).toHaveLength(2);
+    expect(runner.state.passCount).toBe(2);
+  });
+
   test("the second pass resumes the first pass's session id", async () => {
     const agent = new FakeAgent([Promise.resolve(response("session-1")), Promise.resolve(response("session-2"))]);
     const runner = makeRunner({ agent, minNewChars: 1, minIntervalMs: 0 });
-    runner.updateTranscript("first chunk");
+    runner.appendTranscript("first chunk");
     expect((await runner.tick()).status).toBe("completed");
     expect(agent.requests[0]).not.toHaveProperty("sessionId");
-    runner.updateTranscript("second chunk");
+    runner.appendTranscript("second chunk");
     expect((await runner.tick()).status).toBe("completed");
     expect(agent.requests[1]!.sessionId).toBe("session-1");
   });
@@ -393,15 +519,15 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       Promise.resolve(response("session-3")),
     ]);
     const runner = makeRunner({ agent, minNewChars: 1, minIntervalMs: 0 });
-    runner.updateTranscript("first");
+    runner.appendTranscript("first");
     expect((await runner.tick()).status).toBe("completed");
     expect(agent.requests[0]).not.toHaveProperty("sessionId");
 
-    runner.updateTranscript("second");
+    runner.appendTranscript("second");
     expect((await runner.tick()).status).toBe("skipped");
     expect(agent.requests[1]!.sessionId).toBe("session-1");
 
-    runner.updateTranscript("third");
+    runner.appendTranscript("third");
     expect((await runner.tick()).status).toBe("completed");
     // Pass 2 never received a response, so #sessionId was never overwritten by its
     // (nonexistent) result — pass 3 still resumes pass 1's session.
@@ -410,11 +536,13 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
 
   test("requeued transcript is capped and dropped after a bounded number of retries", async () => {
     const agent = new FakeAgent(Array.from({ length: 6 }, () => Promise.resolve(response())));
+    const statuses: EnhanceStatus[] = [];
     const runner = makeRunner({
       agent,
       maxRequeuedCharacters: 64,
       maxRequeuesPerDelta: 2,
       sink: new FakeSink({ cwd: process.cwd(), write: async () => ({ status: "busy", retryAfterMs: 250 }) }),
+      onStatus: (status) => statuses.push(status),
     });
     runner.appendTranscript("x".repeat(200));
     expect((await runner.tick()).status).toBe("requeued");
@@ -422,29 +550,112 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect((await runner.tick()).status).toBe("requeued");
     expect(tag(agent.requests[1]!.prompt, "new_committed_transcript")).toStartWith("[...earlier transcript dropped...]");
     expect(tag(agent.requests[1]!.prompt, "new_committed_transcript").length).toBeLessThanOrEqual(64);
-    expect((await runner.tick()).status).toBe("requeued");
+    const statusesBeforeDrop = statuses.length;
+    expect((await runner.tick()).status).toBe("failed");
+    expect(statuses.slice(statusesBeforeDrop).filter((status) => status.kind !== "started").map((status) => status.kind))
+      .toEqual(["error"]);
+    expect(statuses.filter((status) => status.kind === "error")).toHaveLength(1);
+    expect(statuses.filter((status) => status.kind === "requeued")).toHaveLength(2);
     expect(runner.state.pendingCharacters).toBe(0);
     expect(await runner.tick()).toEqual({ status: "not-ready", reason: "characters" });
   });
 
+  test("a timed-out pass reports the drop when it exhausts the re-queue limit", async () => {
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({
+      agent: new FakeAgent([]),
+      timeoutMs: 5,
+      sink: new FakeSink({ cwd: process.cwd(), read: async () => new Promise<SinkReadResult>(() => {}) }),
+      onStatus: (status) => statuses.push(status),
+    });
+    runner.appendTranscript("drop after four timeouts");
+
+    expect((await runner.tick()).status).toBe("timed-out");
+    expect((await runner.tick()).status).toBe("timed-out");
+    expect((await runner.tick()).status).toBe("timed-out");
+    const statusesBeforeDrop = statuses.length;
+    const outcome = await runner.tick();
+
+    expect(outcome.status).toBe("failed");
+    expect(statuses.slice(statusesBeforeDrop).map((status) => status.kind)).toEqual(["error"]);
+    expect(statuses.slice(statusesBeforeDrop).some((status) => status.kind === "timed-out")).toBe(false);
+  });
+
   test("repeated note read failures disable enhancement without consuming model attempts", async () => {
     const agent = new FakeAgent([]);
+    const statuses: EnhanceStatus[] = [];
     const runner = makeRunner({
       agent,
       maxConsecutiveReadFailures: 3,
       sink: new FakeSink({ cwd: process.cwd(), read: async () => { throw new Error("locked"); } }),
+      onStatus: (status) => statuses.push(status),
     });
     runner.appendTranscript("keep capturing");
     expect((await runner.tick()).status).toBe("failed");
     expect((await runner.tick()).status).toBe("failed");
     expect((await runner.tick()).status).toBe("failed");
     expect(runner.state).toMatchObject({ passCount: 0, enhancementEnabled: false });
+    expect(statuses.filter((status) => status.kind === "disabled-for-read-failures")).toHaveLength(1);
     expect(agent.requests).toHaveLength(0);
   });
 
+  test("a pass failure uses onStatus without also writing through the private logger", async () => {
+    const errors: string[] = [];
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({
+      agent: new FakeAgent([Promise.resolve(response())]),
+      sink: new FakeSink({ cwd: process.cwd(), write: async () => { throw new Error("write failed"); } }),
+      logger: { info: () => {}, error: (message) => errors.push(String(message)) },
+      onStatus: (status) => statuses.push(status),
+    });
+    runner.appendTranscript("keep capturing");
+    expect((await runner.tick()).status).toBe("failed");
+    expect(errors).toEqual([]);
+    expect(statuses.filter((status) => status.kind === "error")).toHaveLength(1);
+  });
+
+  test("machine inspection logs only the safe projection", async () => {
+    const debug: string[] = [];
+    const runner = makeRunner({
+      agent: new FakeAgent([Promise.resolve(response("session-secret"))]),
+      logger: { info: (message) => debug.push(String(message)), error: () => {} },
+      traceMachine: true,
+    });
+    runner.appendTranscript("transcript-secret");
+    expect((await runner.tick()).status).toBe("completed");
+    expect(debug.length).toBeGreaterThan(0);
+    expect(debug.join("\n")).not.toContain("transcript-secret");
+    expect(debug.join("\n")).not.toContain("session-secret");
+    expect(debug.join("\n")).toContain("passCount");
+  });
+
+  test("a supplied logger reports failures without enabling machine tracing", async () => {
+    const info: string[] = [];
+    const errors: string[] = [];
+    const runner = makeRunner({
+      agent: new FakeAgent([Promise.resolve(response())]),
+      sink: new FakeSink({ cwd: process.cwd(), write: async () => { throw new Error("write failed"); } }),
+      logger: { info: (message) => info.push(String(message)), error: (message) => errors.push(String(message)) },
+    });
+    runner.appendTranscript("keep capturing");
+    expect((await runner.tick()).status).toBe("failed");
+    expect(info).toEqual([]);
+    expect(errors).toEqual([expect.stringContaining("write failed")]);
+  });
+
   test("terminal link pass skips a paid no-op when no transcript remains", async () => {
+    const statuses: EnhanceStatus[] = [];
     const agent = new FakeAgent([Promise.resolve(response())]);
-    const runner = makeRunner({ agent });
+    const runner = makeRunner({ agent, onStatus: (status) => statuses.push(status) });
+    expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
+    expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
+    expect(agent.requests).toHaveLength(0);
+    expect(statuses.filter(({ kind }) => kind === "declined")).toHaveLength(1);
+  });
+
+  test("a requested link pass keeps the empty-transcript guard when the backend downgrades it", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())], { supportsVaultTools: false });
+    const runner = makeRunner({ agent, sink: new FakeSink() });
     expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
     expect(agent.requests).toHaveLength(0);
   });
@@ -464,7 +675,7 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
         write: async () => (++writes === 1 ? firstWrite : { status: "written", revision: "next" }),
       }),
     });
-    runner.updateTranscript("retry me");
+    runner.appendTranscript("retry me");
     expect(await runner.tick()).toEqual({ status: "requeued", reason: expectedReason, ...expectedHint });
     expect((await runner.tick()).status).toBe("completed");
     expect(tag(agent.requests[0]!.prompt, "new_committed_transcript")).toBe("retry me");
@@ -485,7 +696,7 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       }),
       onStatus: (status) => statuses.push(status),
     });
-    runner.updateTranscript("user is typing");
+    runner.appendTranscript("user is typing");
     const outcome = await runner.tick();
     expect(outcome).toEqual({ status: "requeued", reason: "busy" });
     expect(outcome).not.toHaveProperty("retryAfterMs");
@@ -504,7 +715,7 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       sink: new FakeSink({ cwd: process.cwd(), write: async () => ({ status: "busy", retryAfterMs: 250 }) }),
       onStatus: (status) => statuses.push(status),
     });
-    runner.updateTranscript("note is locked");
+    runner.appendTranscript("note is locked");
     expect(await runner.tick()).toEqual({ status: "requeued", reason: "busy", retryAfterMs: 250 });
     expect(statuses.filter(({ kind }) => kind === "requeued")[0]).toMatchObject({ retryAfterMs: 250 });
   });
@@ -544,17 +755,19 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
       Promise.resolve({ structuredOutput: invalid, sessionId: "session-marker-2" }),
     ]);
     const sink = new FakeSink({ cwd: process.cwd() });
-    const runner = makeRunner({ agent, sink });
-    runner.updateTranscript("enough transcript");
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({ agent, sink, onStatus: (status) => statuses.push(status) });
+    runner.appendTranscript("enough transcript");
     expect(await runner.enhanceNow("tick")).toEqual({ status: "skipped", reason: "invalid-output" });
     expect(agent.requests).toHaveLength(2);
     expect(sink.writes).toHaveLength(0);
+    expect(statuses.find(({ kind }) => kind === "skipped")?.message.toLowerCase()).toContain("marker");
   });
 
   test("every pass carries the derived output schema, so shape enforcement is never optional", async () => {
     const agent = new FakeAgent([Promise.resolve(response())]);
     const runner = makeRunner({ agent });
-    runner.updateTranscript("enough transcript");
+    runner.appendTranscript("enough transcript");
     expect((await runner.enhanceNow("tick")).status).toBe("completed");
     expect(agent.requests[0]!.outputSchema).toEqual(buildSectionOutputSchema());
   });
@@ -570,9 +783,9 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
         sink: new FakeSink({ cwd: process.cwd() }),
         ...(guidance === undefined ? {} : { guidance }),
       });
-      runner.updateTranscript("enough transcript");
+      runner.appendTranscript("enough transcript");
       await runner.enhanceNow("tick");
-      runner.updateTranscript(" more transcript");
+      runner.appendTranscript(" more transcript");
       await runner.enhanceNow("link");
       expect(agent.requests).toHaveLength(2);
       for (const request of agent.requests) {
@@ -595,7 +808,7 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
   test("a custom guidance is trimmed, so stray editor whitespace cannot change the prompt", async () => {
     const agent = new FakeAgent([Promise.resolve(response())]);
     const runner = makeRunner({ agent, guidance: "\n\n  Write terse bullets.  \n\n" });
-    runner.updateTranscript("enough transcript");
+    runner.appendTranscript("enough transcript");
     await runner.enhanceNow("tick");
     expect(agent.requests[0]!.systemPrompt)
       .toBe(`${ENHANCEMENT_SAFETY_PREAMBLE}\n\nWrite terse bullets.`);

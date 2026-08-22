@@ -1,6 +1,6 @@
 {
   "name": "shorthand-core",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "private": true,
   "license": "MIT",
   "author": "Michael Sciscenti",
@@ -33,6 +33,7 @@
     "google-auth-library": "10.5.0",
     "googleapis": "^175.0.0",
     "marked": "^18.0.10",
+    "xstate": "5.32.5",
     "zod": "^4.1.8"
   },
   "devDependencies": {

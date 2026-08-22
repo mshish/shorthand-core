@@ -23,13 +23,14 @@ committed characters.
 
 ## Gates — all must pass before a pass starts
 
-Checked in order by `EnhanceRunner.tick()`. Any failure returns an outcome without calling the
-agent.
+The state machine rejects requests from `running`, `expired`, or
+`disabledForReadFailures` directly from those states. In `idle`, `minNewChars` and
+`minIntervalMs` are the only guards. Any decline resolves without calling the agent.
 
 | Gate | Library default | `capture --enhance` | In speech | Prevents |
 | --- | --- | --- | --- | --- |
-| `#inFlight` | 1 concurrent pass | same | — | Two overlapping queries. Correctness, not tuning — a second pass would re-send a transcript the first already took |
-| `#disabledForReadFailures` | after 3 failures | same | — | Repeated calls against a note that cannot be read. Never resets for the rest of the session |
+| `running` state | 1 concurrent pass | same | — | Two overlapping queries. Correctness, not tuning — a second pass would re-send a transcript the first already took |
+| `disabledForReadFailures` state | after 3 failures | same | — | Repeated calls against a note that cannot be read. Never resets for the rest of the session |
 | `maxDurationMs` | 4h | 4h, `HANDY_NOTES_MAX_DURATION_MS` | — | A capture left running overnight still calling the model |
 | `minNewChars` | 600 | **180** | ~55s | A pass with nothing new to say |
 | `minIntervalMs` | 60_000 | **25_000** | — | Passes firing back-to-back. This is the real rate bound — even a failing pass respects it |
@@ -41,50 +42,63 @@ capture-stop pass and the standalone `enhance` command use.
 
 | Bound | Library default | `capture --enhance` | `enhance` (standalone) | Covers |
 | --- | --- | --- | --- | --- |
-| `timeoutMs` | `DEFAULT_CONFIG.enhancement.timeoutMs` | 120_000 | 300_000 | The agent query only — see the gap below |
+| `timeoutMs` | `DEFAULT_CONFIG.enhancement.timeoutMs` | 240_000 | 600_000 | The whole pass: sink read, both model attempts, and sink write |
 | `maxTurns` | 75 | same | same | Agent tool-loop runaway. Deliberately far above legitimate vault exploration, because hitting it ends the query with no structured output and the pass loses its work entirely |
 | `maxAttempts` | 2 | same | same | One corrective retry, inside the same `timeoutMs` |
 
 `HANDY_NOTES_AGENT_TIMEOUT_MS` overrides `timeoutMs` for both commands.
 
-**`timeoutMs` does not cover the whole pass.** It wraps `queryForSections` only. `sink.read()`
-runs before it and `sink.write()` after, and neither has a timeout of its own — `docs-client.ts`
-sets none either. A hung Docs API call therefore holds the in-flight slot indefinitely, which
-is the only path by which a pass outlives its stated bound.
+`running` owns an XState `after: timeoutMs` transition. Leaving `running` cancels the invoked
+promise actor and passes its `AbortSignal` through `queryForSections`, so an active model query
+is genuinely aborted. The bound starts before `sink.read()` and remains active through
+`sink.write()`; a hung document call therefore releases the in-flight state at the deadline.
+The sink interface does not accept an abort signal, so a `read()` or `write()` already in
+progress can still settle later in the background. Its result is discarded and it no longer
+blocks another pass. The runner checks the signal after `read()` and after the model query, so
+a timed-out pass never *starts* a write; a write that began before the deadline may still commit.
 
 ## What happens to the transcript when a pass doesn't land
 
-Every one of these re-queues the delta and lets the next tick retry it. The transcript is never
-lost on a single failure.
+Failures retain the delta until `maxRequeuesPerDelta` is exceeded. One conclusion boundary
+decides retention first, then mutates context, emits one terminal status, and constructs the
+outcome, so a dropped delta cannot be reported as re-queued.
 
 | `PassOutcome` | Cause | Reported via `onStatus` | Counts toward |
 | --- | --- | --- | --- |
 | `completed` | — | `finished` | — |
-| `not-ready` | `minNewChars` or `minIntervalMs` | not emitted | — |
-| `in-flight` | a pass is already running | not emitted | — |
-| `timed-out` | pass exceeded `timeoutMs`; query aborted | `requeued` | `maxRequeuesPerDelta` |
+| `not-ready` | `minNewChars` or `minIntervalMs` | `declined` with reason `characters` or `interval`, episode-deduplicated | — |
+| `in-flight` | a pass is already running | `declined` with reason `in-flight`, episode-deduplicated | — |
+| `timed-out` | whole pass exceeded `timeoutMs`; invoked query aborted | `timed-out` | `maxRequeuesPerDelta` |
 | `requeued` (`stale`) | the AI block changed while the pass ran | `requeued` | `maxRequeuesPerDelta` |
 | `requeued` (`busy`) | note locked, or a `429`; carries `retryAfterMs` | `requeued` | `maxRequeuesPerDelta` |
 | `skipped` | invalid output, or the agent errored | `skipped` | `maxRequeuesPerDelta` |
-| `failed` | read or write error | `error` | `maxRequeuesPerDelta`, and read errors toward `maxConsecutiveReadFailures` |
+| `failed` | read or write error, or the delta was dropped | `error`, or `disabled-for-read-failures` at the kill switch | `maxRequeuesPerDelta`, and read errors toward `maxConsecutiveReadFailures` |
 | `expired` | past `maxDurationMs` | `expired`, once | — |
 
 A `busy` read resets `maxConsecutiveReadFailures` rather than advancing it: a target that is
 merely contended will come back, and marching it into a kill switch that never resets would
 disable enhancement for the rest of the session.
 
+`EnhanceStatus` is discriminated on `kind`. Only pass-terminal variants carry `durationMs`,
+measured around `queryForSections` so it is model latency rather than sink latency. Only tiered
+variants carry `tier`, and only `requeued` can carry `retryAfterMs`. `onStatus` is the public
+observability channel; machine inspection is a private safe projection enabled only by the
+explicit `traceMachine` option and sent to `logger.info`. It never includes snapshots,
+transcript text, or session ids. Supplying a logger alone reports error statuses without
+turning on per-microstep tracing.
+
 ## Retry and drop limits
 
 | Limit | Library default | `capture --enhance` | In speech | Behaviour at the limit |
 | --- | --- | --- | --- | --- |
-| `maxRequeuesPerDelta` | 3 | 3 (not overridden) | — | **The delta is dropped.** Only a `logger.error` line records it — no `onStatus`, so nothing surfaces in any UI |
+| `maxRequeuesPerDelta` | 3 | 3 (not overridden) | — | **The delta is dropped.** The outcome is `failed` and exactly one terminal `error` status reports the drop (or the disabling status when the same read failure trips the kill switch) |
 | `maxRequeuedCharacters` | 20_000 | 20_000 (not overridden) | ~1h 45m | Oldest text trimmed, `[...earlier transcript dropped...]` inserted at the front |
 | `maxConsecutiveReadFailures` | 3 | 3 (not overridden) | — | Enhancement disabled for the rest of the session; capture continues |
 | final-pass retry ladder | `[200, 500]` ms | same | — | `runFinalEnhancementWithRetries` reissues the closing `link` pass up to twice more after a timeout or requeue, preferring the target's own `retryAfterMs` |
 
-`#pendingTranscript` — text arriving while a pass is in flight — has **no cap**. In practice
-`timeoutMs` bounds it: 120s of speech is ~390 characters, against a 20_000 limit on the
-re-queued half. The sink gap above is the only way it grows further.
+Pending transcript — text arriving while a pass is in flight — has **no cap**. In practice
+the whole-pass `timeoutMs` bounds it: 240s of speech is ~780 characters, against a 20_000
+limit on the re-queued half.
 
 ## Adjacent timeouts that are not part of this budget
 
@@ -99,11 +113,21 @@ Listed so they are not confused with the enhancement path. All in `DEFAULT_CONFI
 
 ## Known sharp edges
 
-Recorded here rather than fixed, so a future change is a decision and not a surprise.
+Recorded here so a future change is a decision and not a surprise.
 
-- **A drop at `maxRequeuesPerDelta` is invisible.** A model that reliably exceeds `timeoutMs`
-  loses transcript in blocks of three passes with no user-visible signal. Routing that through
-  `#fail` instead of the bare logger call would emit an `error` status the CLI already prints.
-- **No per-tick telemetry.** `onStatus` reports what happened but not why a tick declined —
-  `not-ready` and `in-flight` are not emitted at all, so the common case of "nothing is
-  happening" produces no record of which gate held.
+- **Sink cancellation remains cooperative outside the runner contract.** The state-machine
+  deadline releases the pass slot and discards a late sink result, but `NoteSink.read()` and
+  `write()` do not accept an `AbortSignal`. A provider with no cancellation of its own may keep
+  an already-started operation alive in the background. Signal checks prevent a late read or
+  model result from initiating a write; a write started before the deadline may still commit.
+- **XState timers are referenced.** Unlike the deleted hand-rolled tick timer, which called
+  `unref()`, XState's default clock keeps Node alive. `idle.waiting` owns the interval and
+  duration `after` timers; `running` owns the whole-pass timeout and a duration timer. Calling
+  `stopLiveTicks()` permanently latches automatic ticks off and leaves `idle.waiting`, but it
+  deliberately does not interrupt an active pass. Embedders must call `stop()` when finished:
+  it stops the actor, cancels every state-owned timer, aborts an invoked pass, resolves an
+  outstanding pass as `failed`, and resolves all `waitForIdle()` callers. Both CLI commands do
+  this in `finally`, including when earlier teardown fails.
+- **A timed-out first Claude pass does not bootstrap the resumable session.** Its server-side
+  session id arrives, if at all, after the conclusion boundary has committed. The next pass
+  starts a fresh session rather than adopting late state outside that single boundary.

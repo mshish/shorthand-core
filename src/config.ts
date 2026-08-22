@@ -87,19 +87,14 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   enhancement: {
     maxDurationMs: 4 * 60 * 60 * 1000, // 4h — a loop breaker, not a product limit
-    // Per pass, both attempts: this wraps the whole of queryForSections, including its
-    // sequential corrective retry, so each attempt gets whatever budget the other leaves.
-    // A pass that outlives it is aborted and its work discarded and requeued. If every pass
-    // times out, that requeue repeats forever and the note silently stops updating, so the
-    // bound has to clear the slowest legitimate pass rather than sit near typical latency: a
-    // local model generating a full section array takes minutes, not the seconds a hosted
-    // frontier model needs. Live runners still have to keep up with a meeting in progress, so
-    // they stay bounded at 2 minutes rather than growing further.
-    timeoutMs: 120_000,
+    // Per pass, including the sink read and write as well as both model attempts. Four minutes
+    // leaves room for a slow local model while still releasing the live in-flight slot when a
+    // provider or document API hangs. The two corrective attempts share this one bound.
+    timeoutMs: 240_000,
     // The one-shot `enhance` command gets no retry if its full vault-linked pass times out,
     // so losing that attempt hurts most. A capture's closing pass keeps the live bound but
     // has a retry ladder that can issue the pass twice more after a timeout or requeue.
-    standaloneTimeoutMs: 300_000,
+    standaloneTimeoutMs: 600_000,
     // A loop breaker like maxDurationMs, not a budget: `timeoutMs` is the real per-pass
     // bound. Hitting this ends the query on `error_max_turns`, which carries no
     // structured output, so a capped pass loses its work entirely — the cap has to sit

@@ -267,32 +267,35 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     armShutdownTimeout();
     client.forceStop();
   };
-  const exitGuard = () => client.forceStop();
   process.on("SIGINT", gracefulInterrupt);
   process.on("SIGTERM", forcedShutdown);
   process.on("SIGHUP", forcedShutdown);
-  process.on("exit", exitGuard);
 
   try {
-    client.start();
-    await Promise.race([settled, shutdownTimeout]);
-    if (shutdownTimer !== undefined) clearTimeout(shutdownTimer);
+    try {
+      client.start();
+      await Promise.race([settled, shutdownTimeout]);
+    } finally {
+      process.off("SIGINT", gracefulInterrupt);
+      process.off("SIGTERM", forcedShutdown);
+      process.off("SIGHUP", forcedShutdown);
+      if (shutdownTimer !== undefined) clearTimeout(shutdownTimer);
+      enhancer?.stopLiveTicks();
+      await sidecar.close();
+    }
+    if (enhancer !== undefined) {
+      await enhancer.waitForIdle();
+      const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
+      if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+    }
+    console.log(`${linkedSidecarFile === undefined && noteLinked ? "Meeting note linked" : "Meeting note left unchanged"}: ${note}`);
+    console.log(`Sidecar written: ${sidecarPath}`);
+    return exitCode;
   } finally {
-    process.off("SIGINT", gracefulInterrupt);
-    process.off("SIGTERM", forcedShutdown);
-    process.off("SIGHUP", forcedShutdown);
-    await sidecar.close();
+    // XState's clock uses referenced timers. Stopping the actor is the teardown guarantee
+    // even when sidecar close or the final pass throws before normal CLI completion.
+    enhancer?.stop();
   }
-  if (enhancer !== undefined) {
-    enhancer.stopLiveTicks();
-    await enhancer.waitForIdle();
-    const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
-    reportPassOutcome(finalEnhancement);
-    if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
-  }
-  console.log(`${linkedSidecarFile === undefined && noteLinked ? "Meeting note linked" : "Meeting note left unchanged"}: ${note}`);
-  console.log(`Sidecar written: ${sidecarPath}`);
-  return exitCode;
 }
 
 async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEnv): Promise<number> {
@@ -323,15 +326,18 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     return 1;
   }
   const runner = resolved.runner;
-  runner.appendTranscript(transcriptText);
-  const outcome = await runner.enhanceNow(tier);
-  if (outcome.status === "completed") {
-    if (dryRun) console.log(JSON.stringify(outcome.sections, null, 2));
-    else console.log(`AI sections ${outcome.written ? "written" : "unchanged"}: ${resolved.sinkDescribe}`);
-    return 0;
+  try {
+    runner.appendTranscript(transcriptText);
+    const outcome = await runner.enhanceNow(tier);
+    if (outcome.status === "completed") {
+      if (dryRun) console.log(JSON.stringify(outcome.sections, null, 2));
+      else console.log(`AI sections ${outcome.written ? "written" : "unchanged"}: ${resolved.sinkDescribe}`);
+      return 0;
+    }
+    return outcome.status === "requeued" ? 3 : 1;
+  } finally {
+    runner.stop();
   }
-  reportPassOutcome(outcome);
-  return outcome.status === "requeued" ? 3 : 1;
 }
 
 type SelectAgentResult =
@@ -448,19 +454,6 @@ export async function createEnhanceRunner(
       onStatus: ({ message }) => console.error(message),
     }),
   };
-}
-
-function reportPassOutcome(outcome: PassOutcome): void {
-  if (outcome.status === "completed") return;
-  if (outcome.status === "not-ready") console.error(`Enhancement did not run: ${outcome.reason} threshold not met.`);
-  else if (outcome.status === "in-flight") console.error("Enhancement did not run because another pass is in flight.");
-  else if (outcome.status === "expired") console.error("Enhancement stopped after the maximum duration; capture continues.");
-  else if (outcome.status === "timed-out") console.error("Enhancement timed out and was re-queued.");
-  else if (outcome.status === "requeued") console.error(`Enhancement was re-queued (${outcome.reason}).`);
-  else if (outcome.status === "skipped") console.error(outcome.reason === "invalid-output"
-    ? "Enhancement output was invalid; the existing sections were kept and transcript was re-queued."
-    : "Enhancement agent failed; the existing sections were kept and transcript was re-queued.");
-  else console.error(`Enhancement failed: ${outcome.error}`);
 }
 
 export async function runFinalEnhancementWithRetries(

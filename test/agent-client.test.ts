@@ -44,7 +44,7 @@ describe("Claude Agent vault tool confinement", () => {
   });
 
   test("SDK options honor settingSources and never pre-approve tools past the vault guard", async () => {
-    const vault = await temp("vault");
+    const vault = process.cwd();
     const options = buildClaudeAgentOptions({
       prompt: "prompt", systemPrompt: "system", cwd: vault,
       tools: ["Read"], settingSources: ["project"], maxTurns: 2, outputSchema: buildSectionOutputSchema(),
@@ -59,7 +59,7 @@ describe("Claude Agent vault tool confinement", () => {
   });
 
   test("the output schema reaches the SDK as a json_schema output format", async () => {
-    const vault = await temp("vault");
+    const vault = process.cwd();
     const options = buildClaudeAgentOptions({
       prompt: "prompt", systemPrompt: "system", cwd: vault,
       tools: [], settingSources: [], maxTurns: 2, outputSchema: buildSectionOutputSchema(),
@@ -68,7 +68,10 @@ describe("Claude Agent vault tool confinement", () => {
   });
 
   test("sessionId threads through as resume; its absence leaves resume unset", async () => {
-    const vault = await temp("vault");
+    // buildClaudeAgentOptions eagerly begins resolving the guard root. A disposable vault
+    // can be removed by afterEach before that unobserved promise settles because these
+    // options-only tests never invoke the guard; a stable existing path avoids that race.
+    const vault = process.cwd();
     const resumed = buildClaudeAgentOptions({
       prompt: "prompt", systemPrompt: "system", cwd: vault,
       tools: ["Read"], settingSources: ["project"], maxTurns: 2,

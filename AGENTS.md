@@ -8,8 +8,17 @@ Guidance for AI coding assistants working in this repository.
 the transcript stream client, the note sinks and marker contract, and the
 enhancement agent that turns a transcript into note sections.
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the architecture and
-[docs/CONTRACT.md](docs/CONTRACT.md) for the public surface.
+See [docs/DESIGN.md](docs/DESIGN.md) for the architecture,
+[docs/CONTRACT.md](docs/CONTRACT.md) for the public surface, and
+[docs/ENHANCEMENT-LIMITS.md](docs/ENHANCEMENT-LIMITS.md) for every gate, timeout
+and retry limit on the enhancement path.
+
+**The limits table is maintained by hand.** The effective budget is split across
+`DEFAULT_CONFIG`, the `EnhanceRunner` constructor fallbacks, and what
+`createEnhanceRunner` passes in `bin/shorthand-notes.ts` — no file shows the set
+that actually runs. If you change a number in any of the three, update the
+matching row in the same commit. Nothing enforces this, so a stale row will
+mislead the next agent rather than fail a test.
 
 ## Commands
 

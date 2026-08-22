@@ -83,6 +83,10 @@ export class EnhanceRunner {
   #disabledForReadFailures = false;
   #sessionId: string | undefined;
 
+  // These fallbacks are library defaults for a caller that passes nothing. The CLI overrides
+  // some of them and leaves the rest, so the set that actually runs during a capture is a mix
+  // of both and is visible in neither file alone. docs/ENHANCEMENT-LIMITS.md is the one place
+  // the effective budget is written down; update it in the same commit as any change here.
   constructor(options: EnhanceRunnerOptions) {
     this.#options = {
       ...options,

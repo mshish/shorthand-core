@@ -75,6 +75,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   drainTimeoutMs: 10_000,
   shutdownTimeoutMs: 12_000,
+  // Effective values, and how these interact with the EnhanceRunner fallbacks they override:
+  // docs/ENHANCEMENT-LIMITS.md. Change a number here and that table goes stale.
   thresholds: {
     // Tuned against a real run: ~40s of ordinary speech produced ~130 committed characters,
     // so a 600-char gate meant the first update landed minutes in — the note looked dead.

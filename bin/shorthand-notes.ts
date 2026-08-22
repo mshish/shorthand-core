@@ -433,6 +433,9 @@ export async function createEnhanceRunner(
     runner: new EnhanceRunner({
       sink: resolvedSink,
       agent,
+      // Which defaults this overrides and which it deliberately leaves at the runner's own
+      // fallback (maxRequeuedCharacters, maxRequeuesPerDelta, maxConsecutiveReadFailures):
+      // docs/ENHANCEMENT-LIMITS.md.
       minNewChars: DEFAULT_CONFIG.thresholds.enhancementNewCharacters,
       minIntervalMs: DEFAULT_CONFIG.thresholds.enhancementIntervalMs,
       maxDurationMs: environmentNumber(environment.HANDY_NOTES_MAX_DURATION_MS, DEFAULT_CONFIG.enhancement.maxDurationMs),

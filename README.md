@@ -18,7 +18,9 @@ pipeline headlessly.
 
 **Background:** [`docs/DESIGN.md`](docs/DESIGN.md) records the requirements, the deliberate
 decisions, the invariants that must not be weakened, and the bugs found by running it rather
-than reading it. [`docs/CONTRACT.md`](docs/CONTRACT.md) is the contract between core and a
+than reading it. [`docs/ENHANCEMENT-LIMITS.md`](docs/ENHANCEMENT-LIMITS.md) tabulates the gates,
+timeouts and retry limits that decide when an enhancement pass runs.
+[`docs/CONTRACT.md`](docs/CONTRACT.md) is the contract between core and a
 consumer — read it before writing a second output target.
 [`docs/original-plan.md`](docs/original-plan.md) is the plan as approved before implementation.
 

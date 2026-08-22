@@ -186,8 +186,14 @@ package and another test runner unchanged. Every sink must pass it.
 Consumers pin by tag, so a tag is a compatibility promise:
 
 ```sh
-git tag 0.1.0 && git push origin 0.1.0
+git tag -a 0.10.0 -m "0.10.0 — <summary>"
+git push origin 0.10.0
 ```
+
+**Annotated**, and bare with no `v` prefix. Every tag in this repo is a tag object and
+`AGENTS.md` requires that. The consequence worth knowing: `git ls-remote --tags origin 0.10.0`
+returns the tag object, not the commit, so use `git rev-parse 0.10.0^{}` when you need to know
+where a tag actually points.
 
 Then bump the dependency line in each consumer and run its own verification. There is no release
 workflow and no artifact — the tag is the whole deliverable.

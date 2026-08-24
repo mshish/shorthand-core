@@ -71,6 +71,7 @@ type PassMetrics = {
 type PassRequest = Readonly<{
   requestedTier: AgentTier;
   tier: AgentTier;
+  allowEmptyTranscript: boolean;
   input: PassInput;
   resolve: (outcome: PassOutcome) => void;
   metrics: PassMetrics;
@@ -104,7 +105,7 @@ type RunnerContext = {
 type RunnerEvent =
   | Readonly<{ type: "APPEND"; delta: string }>
   | Readonly<{ type: "TICK"; resolve: (outcome: PassOutcome) => void }>
-  | Readonly<{ type: "ENHANCE"; tier: AgentTier; resolve: (outcome: PassOutcome) => void }>
+  | Readonly<{ type: "ENHANCE"; tier: AgentTier; allowEmptyTranscript: boolean; resolve: (outcome: PassOutcome) => void }>
   | Readonly<{ type: "REQUEST_TICK" }>
   | Readonly<{ type: "STOP_LIVE_TICKS" }>
   | Readonly<{ type: "WAIT_FOR_IDLE"; resolve: () => void }>
@@ -180,12 +181,12 @@ export class EnhanceRunner {
         disableLiveTicks: assign({ liveTicksEnabled: false, liveTicksStopped: true }),
         deferExpiry: assign({ expireAfterPass: true }),
         acceptTick: assign(({ context, event }) => event.type === "TICK"
-          ? this.#acceptPass(context, "tick", event.resolve)
+          ? this.#acceptPass(context, "tick", false, event.resolve)
           : {}),
         acceptEnhance: assign(({ context, event }) => event.type === "ENHANCE"
-          ? this.#acceptPass(context, event.tier, event.resolve)
+          ? this.#acceptPass(context, event.tier, event.allowEmptyTranscript, event.resolve)
           : {}),
-        acceptLiveTick: assign(({ context }) => this.#acceptPass(context, "tick", () => {})),
+        acceptLiveTick: assign(({ context }) => this.#acceptPass(context, "tick", false, () => {})),
         declineCharacters: assign(({ context, event }) => this.#decline(context, "characters", requestResolver(event))),
         declineInterval: assign(({ context, event }) => this.#decline(context, "interval", requestResolver(event))),
         declineInFlight: assign(({ context, event }) => this.#decline(context, "in-flight", requestResolver(event))),
@@ -360,10 +361,20 @@ export class EnhanceRunner {
     return new Promise((resolve) => this.#actor.send({ type: "TICK", resolve }));
   }
 
-  enhanceNow(tier: AgentTier = "link"): Promise<PassOutcome> {
+  /**
+   * `allowEmptyTranscript` waives the empty-transcript gate in `#runPass` for this call only.
+   * It exists for a note that has no transcript and never will — written by hand, or dictated
+   * outside a capture — where the gate would otherwise decline forever. A capture must not
+   * pass it: the gate is what stops the closing pass paying for a call with nothing new to say.
+   */
+  enhanceNow(
+    tier: AgentTier = "link",
+    options?: Readonly<{ allowEmptyTranscript?: boolean }>,
+  ): Promise<PassOutcome> {
     if (this.#stopped) return Promise.resolve(stoppedOutcome());
     this.#syncExpiry();
-    return new Promise((resolve) => this.#actor.send({ type: "ENHANCE", tier, resolve }));
+    const allowEmptyTranscript = options?.allowEmptyTranscript ?? false;
+    return new Promise((resolve) => this.#actor.send({ type: "ENHANCE", tier, allowEmptyTranscript, resolve }));
   }
 
   requestTick(): void {
@@ -397,7 +408,12 @@ export class EnhanceRunner {
     if (this.#now() - this.#startedAt >= this.#options.maxDurationMs) this.#actor.send({ type: "EXPIRE" });
   }
 
-  #acceptPass(context: RunnerContext, requestedTier: AgentTier, resolve: (outcome: PassOutcome) => void): Partial<RunnerContext> {
+  #acceptPass(
+    context: RunnerContext,
+    requestedTier: AgentTier,
+    allowEmptyTranscript: boolean,
+    resolve: (outcome: PassOutcome) => void,
+  ): Partial<RunnerContext> {
     const toolsUsable = this.#options.agent.supportsVaultTools !== false;
     const tier: AgentTier = requestedTier === "link" && this.#options.sink.agentContext !== undefined && toolsUsable ? "link" : "tick";
     // The cutoff is taken in the accepting transition, before the invoked read begins, so
@@ -409,6 +425,7 @@ export class EnhanceRunner {
       current: {
         requestedTier,
         tier,
+        allowEmptyTranscript,
         input: {
           transcript: joinTranscript(context.requeuedTranscript, context.pendingTranscript),
           requeueCount: context.requeueCount,
@@ -579,7 +596,14 @@ export class EnhanceRunner {
       };
     }
     const observed: SinkSnapshot = read.value;
-    if (request.requestedTier === "link" && request.input.transcript.length === 0 && observed.sections.length > 0) {
+    // Declining here rather than in a machine guard is deliberate: the decision needs the
+    // note's current sections, which are only known after sink.read(). A caller that knows
+    // no transcript is coming waives it per call; a capture never does, because for a capture
+    // an empty transcript means the closing pass would be paid for and change nothing.
+    if (!request.allowEmptyTranscript
+      && request.requestedTier === "link"
+      && request.input.transcript.length === 0
+      && observed.sections.length > 0) {
       return { kind: "not-ready", tier, reason: "characters", attempts: 0 };
     }
 

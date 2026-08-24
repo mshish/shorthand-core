@@ -66,6 +66,24 @@ to its own repository, because a consumer in another repo has no root inside thi
 escape (`docs/DESIGN.md`). Vendoring a consumer back into this tree would reopen the hole and
 would need that test back.
 
+### `enhanceNow` can be told the empty transcript is deliberate
+
+```ts
+enhanceNow(tier: AgentTier = "link", options?: Readonly<{ allowEmptyTranscript?: boolean }>): Promise<PassOutcome>
+```
+
+A `link` pass with no new transcript, against a note that already has sections, is declined
+with `{ status: "not-ready", reason: "characters" }` and never reaches the model. That is
+right for a capture: the closing pass would be paid for and change nothing.
+
+It is wrong for a note that has no transcript and never will — one written by hand, or
+dictated outside a capture. `allowEmptyTranscript: true` says so, and the pass runs against
+the note's own prose, which `buildPassPrompt` already sends as `<user_notes>`.
+
+The waiver is per call, not per runner: the same runner declines the next empty `link` pass
+unless that call asks too. The default is `false`, which is what leaves every existing call
+site — the capture-stop pass, the CLI's `enhance` command — behaving exactly as before.
+
 ---
 
 ## 2. The `NoteSink` contract

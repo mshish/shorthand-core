@@ -34,9 +34,13 @@ The state machine rejects requests from `running`, `expired`, or
 | `maxDurationMs` | 4h | 4h, `HANDY_NOTES_MAX_DURATION_MS` | — | A capture left running overnight still calling the model |
 | `minNewChars` | 600 | **180** | ~55s | A pass with nothing new to say |
 | `minIntervalMs` | 60_000 | **25_000** | — | Passes firing back-to-back. This is the real rate bound — even a failing pass respects it |
+| empty `link` transcript | declines unless waived | same | — | A paid `link` pass that re-sends a note core has already summarised. Checked in `#runPass` after `sink.read()`, not by a machine guard, because it needs the note's current sections |
 
-`enhanceNow()` skips the two threshold gates and honours the first three. That is what the
-capture-stop pass and the standalone `enhance` command use.
+`enhanceNow()` skips the two threshold gates and honours the other four. That is what the
+capture-stop pass and the standalone `enhance` command use. The empty-`link`-transcript gate
+is the only one a caller may waive, and only for one call:
+`enhanceNow("link", { allowEmptyTranscript: true })`. The Obsidian plugin's "Clean up this
+note" command is the reason it exists.
 
 ## Bounds while a pass runs
 

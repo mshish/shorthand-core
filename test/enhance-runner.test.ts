@@ -660,6 +660,38 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(agent.requests).toHaveLength(0);
   });
 
+  /**
+   * The gate at the top of #runPass exists to suppress a redundant paid pass when nothing
+   * new arrived, and a capture's closing pass is exactly that case. A note written by hand
+   * is the case it gets wrong: there is no transcript and there never will be one, so the
+   * caller states that rather than leaving the runner to infer it from an empty string.
+   */
+  test("a link pass that declares its empty transcript deliberate runs on the note's own text", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const runner = makeRunner({ agent });
+    expect(await runner.enhanceNow("link", { allowEmptyTranscript: true }))
+      .toMatchObject({ status: "completed", tier: "link" });
+    expect(agent.requests).toHaveLength(1);
+    expect(tag(agent.requests[0]!.prompt, "new_committed_transcript")).toBe("");
+    expect(tag(agent.requests[0]!.prompt, "user_notes")).toBe(USER_NOTES);
+  });
+
+  /**
+   * The override is per call, not per runner. If it ever latched onto context, a capture
+   * that used it once would pay for every subsequent no-op closing pass for the rest of
+   * the session, and nothing else in this suite would notice.
+   */
+  test("the empty-transcript gate holds for calls that do not ask for the override", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const runner = makeRunner({ agent });
+    expect(await runner.enhanceNow("link", { allowEmptyTranscript: true }))
+      .toMatchObject({ status: "completed" });
+    expect(await runner.enhanceNow("link", { allowEmptyTranscript: false }))
+      .toEqual({ status: "not-ready", reason: "characters" });
+    expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
+    expect(agent.requests).toHaveLength(1);
+  });
+
   test.each([
     ["stale" as const, { status: "stale" } as SinkWriteResult, {}],
     ["busy" as const, { status: "busy", retryAfterMs: 250 } as SinkWriteResult, { retryAfterMs: 250 }],

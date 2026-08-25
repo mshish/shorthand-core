@@ -12,3 +12,6 @@ dist/
 
 # Local git worktrees (SDD scratch)
 .worktrees/
+
+# Subagent-driven-development scratch (ledgers, briefs, review packages)
+.superpowers/

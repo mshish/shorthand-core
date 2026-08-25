@@ -46,7 +46,13 @@ export class CodexAgentClient implements AgentClient {
     const thread = typeof request.sessionId === "string" && request.sessionId.length > 0
       ? codex.resumeThread(request.sessionId, threadOptions)
       : codex.startThread(threadOptions);
-    const turnOptions = { outputSchema: request.outputSchema };
+    const turnOptions = {
+      outputSchema: request.outputSchema,
+      // The SDK forwards this straight into child_process.spawn's own `signal`, so this is real
+      // cancellation, not cooperative — unlike ClaudeAgentClient, which has to call
+      // stream.interrupt() from an abort listener because the Agent SDK has no signal option.
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    };
     // runStreamed() resolves to { events: AsyncGenerator<ThreadEvent> } — the resolved value
     // is not itself async-iterable, unlike the Claude Agent SDK's query() stream.
     const { events } = await thread.runStreamed(request.prompt, turnOptions);

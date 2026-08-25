@@ -304,3 +304,18 @@ describe("CodexAgentClient failure mapping", () => {
     await expect(client.query(baseRequest())).rejects.toThrow(/no thread id/);
   });
 });
+
+describe("CodexAgentClient abort forwarding", () => {
+  test("forwards the request signal into TurnOptions.signal for real cancellation", async () => {
+    const controller = new AbortController();
+    const client = new CodexAgentClient();
+    await client.query(baseRequest({ signal: controller.signal }));
+    expect(runStreamedCalls[0]!.options.signal).toBe(controller.signal);
+  });
+
+  test("omits signal from TurnOptions when the request has none", async () => {
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    expect(runStreamedCalls[0]!.options).not.toHaveProperty("signal");
+  });
+});

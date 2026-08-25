@@ -47,6 +47,8 @@ export type { SidecarWriterOptions } from "./note/sidecar.js";
 
 export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
 
+export { CodexAgentClient, detectCodexExecutable } from "./agent/codex-client.js";
+
 export { LlmAgentClient } from "./agent/llm-client.js";
 export type { LlmAgentClientOptions } from "./agent/llm-client.js";
 

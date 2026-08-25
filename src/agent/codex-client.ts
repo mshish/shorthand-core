@@ -56,13 +56,25 @@ export class CodexAgentClient implements AgentClient {
     let sawAgentMessage = false;
     for await (const rawEvent of events) {
       const event = rawEvent as CodexEvent;
+      // The session id is stable for the life of the stream: capture it off the first
+      // thread.started message seen and never overwrite it on later messages.
       if (sessionId === undefined && event.type === "thread.started" && typeof event.thread_id === "string") {
         sessionId = event.thread_id;
       }
+      // TurnCompletedEvent carries only token usage, not the answer. The answer is an
+      // item.completed event wrapping an agent_message item; other item types (shell exec,
+      // file changes, MCP tool calls) can appear in the same stream and must be ignored here.
       if (event.type === "item.completed") {
         const item = event.item as CodexEvent | undefined;
         if (item?.type === "agent_message" && typeof item.text === "string") {
           sawAgentMessage = true;
+          // outputSchema is meant to be hard-enforced at the API level, so `text` should
+          // always be valid JSON here — but "should always be" is exactly what this
+          // project's own "do not assume, empirically test" principle distrusts. A parse
+          // failure is treated as an invalid pass (structuredOutput left undefined,
+          // diagnostics carried for the corrective retry in queryForSections), the same way
+          // ClaudeAgentClient's schema-exhaustion path is — not thrown, which would skip the
+          // corrective retry entirely.
           try {
             structuredOutput = JSON.parse(item.text);
           } catch {

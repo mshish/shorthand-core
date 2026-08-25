@@ -14,9 +14,12 @@ export type CodexAgentClientOptions = Readonly<{
 
 export class CodexAgentClient implements AgentClient {
   /**
-   * Codex always offers shell-exec and apply_patch to the model — there is no allowlist to
-   * withhold them the way ClaudeAgentClient's `tools: []` does. Never handing this client
-   * vault content is the mitigation; see docs/DESIGN.md's per-backend "no write tool" scoping.
+   * Codex's shell-command tool is disabled outright via `config.features.shell_tool = false`
+   * (see #ensureCodex) — verified empirically against the real SDK that this removes the tool
+   * entirely, the same never-offered guarantee ClaudeAgentClient's `tools: []` provides.
+   * `supportsVaultTools = false` and the scratch-only workingDirectory below remain as
+   * defense-in-depth: even if either were ever wired incorrectly, there is still no tool with
+   * which to act on whatever the model was handed. See docs/DESIGN.md's per-backend scoping.
    */
   readonly supportsVaultTools = false;
 
@@ -42,9 +45,9 @@ export class CodexAgentClient implements AgentClient {
       skipGitRepoCheck: true,
       sandboxMode: "read-only" as const,
       approvalPolicy: "never" as const,
-      // request.tools is deliberately never read into this object: ThreadOptions has no
-      // tool-allowlist field, so there is no way to keep shell-exec/apply_patch out of what
-      // the model is offered the way Claude's `tools: []` does.
+      // request.tools is deliberately never read into this object: Codex's own tool set is
+      // controlled entirely by config.features.shell_tool (see #ensureCodex), not by a
+      // per-request allowlist the way Claude's tools: [] is.
     };
     const thread = typeof request.sessionId === "string" && request.sessionId.length > 0
       ? codex.resumeThread(request.sessionId, threadOptions)
@@ -112,7 +115,15 @@ export class CodexAgentClient implements AgentClient {
     this.#codex ??= new Codex({
       ...(this.#options.codexPathOverride === undefined ? {} : { codexPathOverride: this.#options.codexPathOverride }),
       ...(this.#options.apiKey === undefined ? {} : { apiKey: this.#options.apiKey }),
-      config: { base_instructions: systemPrompt },
+      config: {
+        base_instructions: systemPrompt,
+        // Removes Codex's shell-command tool entirely — verified empirically against the real
+        // SDK that a turn run this way reports it has no shell-command tool available at all.
+        // This is what makes "the agent has no write tool" structural for this backend too,
+        // matching ClaudeAgentClient's tools: [] guarantee shape rather than relying solely on
+        // sandboxMode's after-the-fact write block. See docs/DESIGN.md's per-backend scoping.
+        features: { shell_tool: false },
+      },
     });
     return this.#codex;
   }

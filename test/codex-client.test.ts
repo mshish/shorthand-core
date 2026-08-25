@@ -193,6 +193,13 @@ describe("CodexAgentClient happy path", () => {
     expect(config.base_instructions).toBe("SAFE PREAMBLE\n\nGuidance.");
   });
 
+  test("disables Codex's shell-command tool entirely via config.features.shell_tool", async () => {
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    const config = constructedWith[0]!.config as { features: { shell_tool: boolean } };
+    expect(config.features).toEqual({ shell_tool: false });
+  });
+
   test("parses the agent_message item's text as the structured output", async () => {
     events = () => (async function* () {
       yield { type: "thread.started", thread_id: "thread-2" };

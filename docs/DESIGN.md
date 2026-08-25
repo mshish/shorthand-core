@@ -129,14 +129,23 @@ nested, inverted) **fail closed** — no write at all, rather than a guess.
 `Write`/`Edit`/`Bash`, which removes them from its context entirely. The only mutation path is
 our code. Vault reads are confined to the vault by a `canUseTool` guard.
 
-**The Codex backend cannot make the same guarantee.** `CodexAgentClient` wraps
-`@openai/codex-sdk`, which always offers the model shell-exec and `apply_patch` — there is no
-tool allowlist and no per-call approval hook to withhold them. `sandboxMode: "read-only"`
-blocks an attempted write at the OS layer only *after* the model has already tried it. The
-mitigation is `supportsVaultTools = false`: this backend never receives vault or note content
-as filesystem context, so the read-only-but-attempted directory it can see is a scratch
-directory this client owns and never contains anything sensitive for a write attempt to reach.
-See `docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the full reasoning.
+**The Codex backend achieves the same guarantee, structurally.** `CodexAgentClient` wraps
+`@openai/codex-sdk` and disables Codex's shell-command tool outright via
+`config: { features: { shell_tool: false } }` (`codex-rs/features/src/lib.rs`'s
+`Feature::ShellTool`, TOML key `shell_tool`) — verified empirically against the real SDK: a
+turn run this way reports it has no shell-command tool available at all, the same
+never-offered shape as Claude's `tools: []`. This was not the original design:
+`sandboxMode: "read-only"` alone only blocks an *attempted* write after the fact, and read
+access under that mode is unconfined to the filesystem root by default
+(`codex-rs/protocol/src/permissions.rs`'s `read_only_file_system_entries()` grants `Read` on
+`FileSystemSpecialPath::Root`) — confirmed with a live canary-file test that read a file
+entirely outside the scratch `workingDirectory` with no error. Disabling the shell tool
+removes that read path at the source rather than depending on the working directory being
+empty. `supportsVaultTools = false` and the scratch-only `workingDirectory` remain in place as
+defense-in-depth: even if either were ever wired incorrectly, the model still has no tool with
+which to act on whatever it was handed. See
+`docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the fuller history,
+including the earlier (weaker) design this replaces.
 
 **Vault lookup requires a capability on both sides of the seam.** A sink's `agentContext`
 says that the note has a searchable corpus; it does not prove that an agent client can drive

@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createEnhanceRunner, runCli, runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
 import { ClaudeAgentClient } from "../src/agent/client.js";
+import { CodexAgentClient } from "../src/agent/codex-client.js";
 import { LlmAgentClient } from "../src/agent/llm-client.js";
 import { llmCredentialsPath } from "../src/agent/llm-credentials.js";
 import type { LlmCredentials } from "../src/agent/llm-credentials.js";
@@ -385,7 +386,7 @@ describe("shorthand-notes CLI", () => {
     });
 
     test("an unknown --backend value is a usage error, not a runtime one", async () => {
-      await expect(selectAgent(["--backend", "bogus"], {})).rejects.toThrow("--backend must be claude or llm.");
+      await expect(selectAgent(["--backend", "bogus"], {})).rejects.toThrow("--backend must be claude, llm, or codex.");
     });
 
     test("a missing LLM credentials file exits non-zero with the reader's message verbatim", async () => {
@@ -437,6 +438,23 @@ describe("shorthand-notes CLI", () => {
     test("rejects --claude combined with --backend llm instead of silently ignoring one", async () => {
       await expect(selectAgent(["--backend", "llm", "--claude", "C:\\fake\\claude.exe"], {}))
         .rejects.toThrow("--claude cannot be combined with --backend llm");
+    });
+
+    test("parses --backend codex and selects the Codex backend", async () => {
+      const result = await selectAgent(["--backend", "codex"], {});
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(CodexAgentClient);
+    });
+
+    test("--codex-exe is resolved into the Codex client's codexPathOverride via detectCodexExecutable", async () => {
+      const result = await selectAgent(["--backend", "codex", "--codex-exe", "C:\\tools\\codex.exe"], {});
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(CodexAgentClient);
+    });
+
+    test("rejects --claude combined with --backend codex", async () => {
+      await expect(selectAgent(["--backend", "codex", "--claude", "C:\\fake\\claude.exe"], {}))
+        .rejects.toThrow("--claude cannot be combined with --backend codex");
     });
 
     test("--agent-stub wins over --backend, even when the LLM credentials would fail to resolve", async () => {

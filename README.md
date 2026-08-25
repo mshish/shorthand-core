@@ -65,11 +65,15 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
 - For the default Claude backend, the `claude` CLI must be installed and logged in. On Windows
   the standard `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location
   can be passed with `--claude`.
-- For the `codex` backend, the `codex` CLI must be installed and logged in. There is no
-  hardcoded install-path fallback (unlike the Claude backend's Windows default), so point
-  `--codex-exe <path>` or `SHORTHAND_CODEX_EXE` at it if it is not on `PATH`. The isolated
-  `CODEX_HOME` this backend runs under discards your `config.toml`, including your selected
-  model and any custom endpoint; re-supply those with `--codex-model <model>` /
+- For the `codex` backend you do **not** need a separately installed `codex` CLI: the
+  `@openai/codex-sdk` dependency vendors its own binary, and its `findCodexPath()` resolves it
+  from the platform package rather than consulting `PATH` — with no fallback, so the version
+  that runs is the one pinned in `package.json`, not whatever `codex --version` reports
+  globally. `--codex-exe <path>` / `SHORTHAND_CODEX_EXE` is an override for pointing at a
+  different build, not a requirement. You do still need to be logged in (`codex login`), because
+  the backend reuses that login rather than asking for a key — see the credential note below.
+  The isolated `CODEX_HOME` this backend runs under discards your `config.toml`, including your
+  selected model and any custom endpoint; re-supply those with `--codex-model <model>` /
   `SHORTHAND_CODEX_MODEL` and `--codex-base-url <url>` / `SHORTHAND_CODEX_BASE_URL`.
 - Node.js 22 for headless CLI use. The floor follows a dependency's requirement rather than a
   preference: the AI SDK packages (`ai`, `@ai-sdk/*`) declare `engines.node >=22`. Bun is

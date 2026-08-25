@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildSectionOutputSchema, type AgentQueryRequest } from "../src/agent/contract.js";
 
@@ -317,5 +318,44 @@ describe("CodexAgentClient abort forwarding", () => {
     const client = new CodexAgentClient();
     await client.query(baseRequest());
     expect(runStreamedCalls[0]!.options).not.toHaveProperty("signal");
+  });
+});
+
+describe("CodexAgentClient scratch directory cleanup", () => {
+  test("removes the scratch directory best-effort when the process exits", async () => {
+    const originalOnce = process.once.bind(process);
+    let exitHandler: (() => void) | undefined;
+    process.once = ((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    }) as typeof process.once;
+    try {
+      const client = new CodexAgentClient();
+      await client.query(baseRequest());
+      const workingDirectory = startThreadCalls[0]!.options.workingDirectory as string;
+      expect(existsSync(workingDirectory)).toBe(true);
+      expect(exitHandler).toBeDefined();
+      exitHandler!();
+      expect(existsSync(workingDirectory)).toBe(false);
+    } finally {
+      process.once = originalOnce;
+    }
+  });
+
+  test("registers the exit cleanup only once even across repeated calls", async () => {
+    let registrations = 0;
+    const originalOnce = process.once.bind(process);
+    process.once = ((event: string, handler: () => void) => {
+      if (event === "exit") registrations += 1;
+      return originalOnce(event, handler);
+    }) as typeof process.once;
+    try {
+      const client = new CodexAgentClient();
+      await client.query(baseRequest());
+      await client.query(baseRequest());
+      expect(registrations).toBe(1);
+    } finally {
+      process.once = originalOnce;
+    }
   });
 });

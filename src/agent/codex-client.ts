@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,6 +23,8 @@ export class CodexAgentClient implements AgentClient {
   readonly #options: CodexAgentClientOptions;
   #codex: Codex | undefined;
   #scratchDir: Promise<string> | undefined;
+  #cleanupRegistered = false;
+  #resolvedScratchDir: string | undefined;
 
   constructor(options: CodexAgentClientOptions = {}) {
     this.#options = options;
@@ -115,8 +118,25 @@ export class CodexAgentClient implements AgentClient {
   }
 
   #ensureScratchDir(): Promise<string> {
-    this.#scratchDir ??= mkdtemp(join(tmpdir(), "shorthand-codex-"));
+    this.#scratchDir ??= mkdtemp(join(tmpdir(), "shorthand-codex-")).then((dir) => {
+      this.#resolvedScratchDir = dir;
+      this.#registerCleanup();
+      return dir;
+    });
     return this.#scratchDir;
+  }
+
+  #registerCleanup(): void {
+    if (this.#cleanupRegistered) return;
+    this.#cleanupRegistered = true;
+    // `exit` handlers must run synchronously, so async `rm` cannot be awaited here — this is
+    // best-effort only, matching "reused for the life of the instance" in the design doc. A
+    // hard kill (SIGKILL) skips it entirely, same as any other exit-handler cleanup in Node.
+    process.once("exit", () => {
+      if (this.#resolvedScratchDir !== undefined) {
+        try { rmSync(this.#resolvedScratchDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+    });
   }
 }
 

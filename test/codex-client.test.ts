@@ -243,3 +243,27 @@ describe("CodexAgentClient happy path", () => {
     expect(constructedWith).toHaveLength(0);
   });
 });
+
+describe("CodexAgentClient session resume", () => {
+  test("resumes an existing thread when sessionId is present", async () => {
+    const client = new CodexAgentClient();
+    const first = await client.query(baseRequest());
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: first.sessionId };
+      yield agentMessageEvent({ sections: [{ heading: "H", markdown: "m" }] });
+      yield { type: "turn.completed", usage: ZERO_USAGE };
+    })();
+    const second = await client.query(baseRequest({ sessionId: first.sessionId }));
+    expect(resumeThreadCalls).toHaveLength(1);
+    expect(resumeThreadCalls[0]!.threadId).toBe(first.sessionId);
+    expect(startThreadCalls).toHaveLength(1);
+    expect(second.structuredOutput).toEqual({ sections: [{ heading: "H", markdown: "m" }] });
+  });
+
+  test("an empty sessionId starts a fresh thread rather than resuming", async () => {
+    const client = new CodexAgentClient();
+    await client.query(baseRequest({ sessionId: "" }));
+    expect(startThreadCalls).toHaveLength(1);
+    expect(resumeThreadCalls).toHaveLength(0);
+  });
+});

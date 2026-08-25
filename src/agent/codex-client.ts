@@ -43,7 +43,9 @@ export class CodexAgentClient implements AgentClient {
       // tool-allowlist field, so there is no way to keep shell-exec/apply_patch out of what
       // the model is offered the way Claude's `tools: []` does.
     };
-    const thread = codex.startThread(threadOptions);
+    const thread = typeof request.sessionId === "string" && request.sessionId.length > 0
+      ? codex.resumeThread(request.sessionId, threadOptions)
+      : codex.startThread(threadOptions);
     const turnOptions = { outputSchema: request.outputSchema };
     // runStreamed() resolves to { events: AsyncGenerator<ThreadEvent> } — the resolved value
     // is not itself async-iterable, unlike the Claude Agent SDK's query() stream.

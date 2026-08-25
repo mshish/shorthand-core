@@ -125,9 +125,18 @@ the version boundary between them.
 and `<!-- shorthand:ai:end -->`. User text is never touched. Marker anomalies (zero, duplicate,
 nested, inverted) **fail closed** — no write at all, rather than a guess.
 
-**The agent has no write tool.** `options.tools` never contains `Write`/`Edit`/`Bash`, which
-removes them from its context entirely. The only mutation path is our code. Vault reads are
-confined to the vault by a `canUseTool` guard.
+**The agent has no write tool — on the Claude backend.** `options.tools` never contains
+`Write`/`Edit`/`Bash`, which removes them from its context entirely. The only mutation path is
+our code. Vault reads are confined to the vault by a `canUseTool` guard.
+
+**The Codex backend cannot make the same guarantee.** `CodexAgentClient` wraps
+`@openai/codex-sdk`, which always offers the model shell-exec and `apply_patch` — there is no
+tool allowlist and no per-call approval hook to withhold them. `sandboxMode: "read-only"`
+blocks an attempted write at the OS layer only *after* the model has already tried it. The
+mitigation is `supportsVaultTools = false`: this backend never receives vault or note content
+as filesystem context, so the read-only-but-attempted directory it can see is a scratch
+directory this client owns and never contains anything sensitive for a write attempt to reach.
+See `docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the full reasoning.
 
 **Vault lookup requires a capability on both sides of the seam.** A sink's `agentContext`
 says that the note has a searchable corpus; it does not prove that an agent client can drive

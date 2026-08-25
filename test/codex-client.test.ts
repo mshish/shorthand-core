@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { buildSectionOutputSchema, type AgentQueryRequest } from "../src/agent/contract.js";
 
 type CodexEventLike = Record<string, unknown>;
@@ -60,7 +61,22 @@ class FakeCodex {
 
 mock.module("@openai/codex-sdk", () => ({ Codex: FakeCodex }));
 
-const { CodexAgentClient, detectCodexExecutable } = await import("../src/agent/codex-client.js");
+const { CodexAgentClient, detectCodexExecutable, resolveAmbientCodexHome } =
+  await import("../src/agent/codex-client.js");
+
+// Every client built without an apiKey materialises the ambient auth.json into its isolated
+// home. Left to resolve on its own that means the developer's real ~/.codex/auth.json, so the
+// whole file runs against an empty fixture home instead: a test run must never read, link or
+// write live credentials.
+const ambientFixtures: string[] = [];
+const originalCodexHome = process.env.CODEX_HOME;
+const emptyAmbientHome = ambientHome();
+
+afterAll(() => {
+  if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = originalCodexHome;
+  for (const path of ambientFixtures.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   startThreadCalls.length = 0;
@@ -68,7 +84,19 @@ beforeEach(() => {
   runStreamedCalls.length = 0;
   constructedWith.length = 0;
   events = () => defaultEvents();
+  process.env.CODEX_HOME = emptyAmbientHome;
 });
+
+function ambientHome(auth?: string): string {
+  const path = mkdtempSync(join(tmpdir(), "shorthand-codex-ambient-"));
+  ambientFixtures.push(path);
+  if (auth !== undefined) writeFileSync(join(path, "auth.json"), auth);
+  return path;
+}
+
+function isolatedHomeOf(construction: Record<string, unknown>): string {
+  return (construction.env as Record<string, string>).CODEX_HOME!;
+}
 
 function baseRequest(overrides: Partial<AgentQueryRequest> = {}): AgentQueryRequest {
   return {
@@ -193,11 +221,26 @@ describe("CodexAgentClient happy path", () => {
     expect(config.base_instructions).toBe("SAFE PREAMBLE\n\nGuidance.");
   });
 
-  test("disables Codex's shell-command tool entirely via config.features.shell_tool", async () => {
+  // Defence in depth, not a boundary: a live probe executed a shell command through an
+  // operator MCP server with this flag set. The isolated CODEX_HOME is what closes that path,
+  // and the tests below are the ones that cover the boundary.
+  test("pins config.features.shell_tool to false", async () => {
     const client = new CodexAgentClient();
     await client.query(baseRequest());
     const config = constructedWith[0]!.config as { features: { shell_tool: boolean } };
     expect(config.features).toEqual({ shell_tool: false });
+  });
+
+  test("pins the model on the Codex config when the caller supplies one", async () => {
+    const client = new CodexAgentClient({ model: "gpt-5.6-codex" });
+    await client.query(baseRequest());
+    expect((constructedWith[0]!.config as { model?: string }).model).toBe("gpt-5.6-codex");
+  });
+
+  test("omits the model entirely when the caller supplies none, inheriting the CLI default", async () => {
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    expect(constructedWith[0]!.config).not.toHaveProperty("model");
   });
 
   test("replaces ambient CODEX_HOME with a fresh isolated config root", async () => {
@@ -342,6 +385,90 @@ describe("CodexAgentClient abort forwarding", () => {
     const client = new CodexAgentClient();
     await client.query(baseRequest());
     expect(runStreamedCalls[0]!.options).not.toHaveProperty("signal");
+  });
+});
+
+describe("resolveAmbientCodexHome", () => {
+  test("an explicit option wins over the environment", () => {
+    expect(resolveAmbientCodexHome("/fixture/.codex", { CODEX_HOME: "/env/.codex" }))
+      .toBe("/fixture/.codex");
+  });
+
+  test("the environment wins over the home directory, whatever case it was set in", () => {
+    expect(resolveAmbientCodexHome(undefined, { codex_home: "/env/.codex" })).toBe("/env/.codex");
+  });
+
+  test("falls back to ~/.codex when neither is set", () => {
+    // Compares the resolved path only; nothing here opens it, so a developer's real
+    // credentials are neither read nor linked by running the suite.
+    expect(resolveAmbientCodexHome(undefined, {})).toBe(join(homedir(), ".codex"));
+  });
+
+  test("an empty value is treated as unset rather than as the current directory", () => {
+    expect(resolveAmbientCodexHome("", { CODEX_HOME: "" })).toBe(join(homedir(), ".codex"));
+  });
+});
+
+describe("CodexAgentClient ambient auth", () => {
+  test("materialises the ambient auth.json into the isolated home, which is not the ambient home", async () => {
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const client = new CodexAgentClient({ ambientCodexHome: ambient });
+    await client.query(baseRequest());
+    const isolated = isolatedHomeOf(constructedWith[0]!);
+    expect(isolated).not.toBe(ambient);
+    expect(isolated).not.toBe(join(homedir(), ".codex"));
+    expect(readFileSync(join(isolated, "auth.json"), "utf8")).toBe(`{"tokens":{"access_token":"fixture"}}`);
+    // Only auth.json crosses: config.toml, skills and MCP servers stay behind, which is the
+    // whole reason the isolated home is the boundary.
+    expect(existsSync(join(isolated, "config.toml"))).toBe(false);
+  });
+
+  test("a token rotated inside the isolated home writes through to the user's own auth.json", async () => {
+    // The security property the hard link exists for. A copy would leave the user's CLI holding
+    // a refresh token Codex already spent, i.e. logged out of a tool they never touched. Both
+    // paths are under the OS temp directory here, so the cross-volume copy fallback is not in
+    // play; if it were, this failing is the correct signal rather than a flake to silence.
+    const ambient = ambientHome(`{"tokens":{"refresh_token":"old"}}`);
+    const client = new CodexAgentClient({ ambientCodexHome: ambient });
+    await client.query(baseRequest());
+    const isolated = isolatedHomeOf(constructedWith[0]!);
+    writeFileSync(join(isolated, "auth.json"), `{"tokens":{"refresh_token":"rotated"}}`);
+    expect(readFileSync(join(ambient, "auth.json"), "utf8")).toBe(`{"tokens":{"refresh_token":"rotated"}}`);
+  });
+
+  test("an absent ambient auth.json is not an error: the query still runs", async () => {
+    const client = new CodexAgentClient({ ambientCodexHome: ambientHome() });
+    const response = await client.query(baseRequest());
+    expect(response.sessionId).toBe("thread-1");
+    expect(existsSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"))).toBe(false);
+  });
+
+  test("an ambient home that does not exist at all is not an error either", async () => {
+    const client = new CodexAgentClient({ ambientCodexHome: join(tmpdir(), "shorthand-codex-absent-home") });
+    await expect(client.query(baseRequest())).resolves.toBeDefined();
+  });
+
+  test("skips the ambient login entirely when an apiKey is supplied", async () => {
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const client = new CodexAgentClient({ apiKey: "sk-test", ambientCodexHome: ambient });
+    await client.query(baseRequest());
+    expect(existsSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"))).toBe(false);
+  });
+
+  test("the ambientCodexHome option beats an ambient CODEX_HOME", async () => {
+    process.env.CODEX_HOME = ambientHome(`{"tokens":{"access_token":"from-env"}}`);
+    const client = new CodexAgentClient({ ambientCodexHome: ambientHome(`{"tokens":{"access_token":"from-option"}}`) });
+    await client.query(baseRequest());
+    expect(readFileSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"), "utf8"))
+      .toContain("from-option");
+  });
+
+  test("falls back to the ambient CODEX_HOME when no option is given", async () => {
+    process.env.CODEX_HOME = ambientHome(`{"tokens":{"access_token":"from-env"}}`);
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    expect(readFileSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"), "utf8"))
+      .toContain("from-env");
   });
 });
 

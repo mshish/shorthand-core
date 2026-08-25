@@ -127,23 +127,24 @@ nested, inverted) **fail closed** — no write at all, rather than a guess.
 
 **The agent has no write tool — on the Claude backend.** `options.tools` never contains
 `Write`/`Edit`/`Bash`, which removes them from its context entirely. The only mutation path is
-our code. Vault reads are confined to the vault by a `canUseTool` guard.
+our code. Vault reads are confined to the vault by a `canUseTool` guard. MCP is independently
+closed with `mcpServers: {}` plus `strictMcpConfig: true`; the latter is required to exclude
+project `.mcp.json`, plugins, and agent-frontmatter servers rather than relying on the current
+caller's empty `settingSources` alone.
 
-**The Codex backend achieves the same guarantee, structurally.** `CodexAgentClient` wraps
-`@openai/codex-sdk` and disables Codex's shell-command tool outright via
-`config: { features: { shell_tool: false } }` (`codex-rs/features/src/lib.rs`'s
-`Feature::ShellTool`, TOML key `shell_tool`) — verified empirically against the real SDK: a
-turn run this way reports it has no shell-command tool available at all, the same
-never-offered shape as Claude's `tools: []`. This was not the original design:
-`sandboxMode: "read-only"` alone only blocks an *attempted* write after the fact, and read
-access under that mode is unconfined to the filesystem root by default
-(`codex-rs/protocol/src/permissions.rs`'s `read_only_file_system_entries()` grants `Read` on
-`FileSystemSpecialPath::Root`) — confirmed with a live canary-file test that read a file
-entirely outside the scratch `workingDirectory` with no error. Disabling the shell tool
-removes that read path at the source rather than depending on the working directory being
-empty. `supportsVaultTools = false` and the scratch-only `workingDirectory` remain in place as
-defense-in-depth: even if either were ever wired incorrectly, the model still has no tool with
-which to act on whatever it was handed. See
+**The Codex backend has a narrower, explicitly different boundary.** `CodexAgentClient` wraps
+`@openai/codex-sdk`, never accepts vault/note filesystem context (`supportsVaultTools = false`),
+and always runs in a client-owned scratch `workingDirectory` with `sandboxMode: "read-only"`
+and `approvalPolicy: "never"`. It also pins
+`config: { features: { shell_tool: false } }`, which removes the shell-command tool. That does
+**not** produce Claude's empty-tool-set guarantee: `apply_patch`, `view_image`, and other Codex
+built-ins remain, and read-only sandboxing does not make every tool's reads stay below the
+working directory. Ambient MCP is a separate unsandboxed capability, so each client instance
+uses a fresh temporary `CODEX_HOME`; only `auth.json` is copied for local-login reuse, never
+`config.toml`, skills, or MCP configuration. Live probes against the bundled CLI showed a
+configured home attempting the sentinel MCP URL while the isolated home reported no MCP
+servers and made no MCP attempt. An empty `--config mcp_servers={}` was not sufficient because
+Codex merges that empty parent table without deleting its named children. See
 `docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the fuller history,
 including the earlier (weaker) design this replaces.
 

@@ -26,10 +26,11 @@ Verified against `github.com/openai/codex` source and docs (not assumed):
   supplied — which **replaces** it wholesale, not appends. Confirmed by reading the struct
   and its `Default` impl directly; this makes it a true equivalent of Claude's `systemPrompt`,
   reachable from the TypeScript SDK via a `base_instructions_file`-style config override.
-- **No tool allowlist, no per-call approval callback.** `ThreadOptions` has no `tools` field;
-  `codex exec` always offers the model shell-exec and `apply_patch` (write) tools. There is no
+- **No complete tool allowlist, no per-call approval callback.** `ThreadOptions` has no `tools`
+  field. `config.features.shell_tool = false` removes shell execution, but `apply_patch`,
+  `view_image`, and other built-ins remain. There is no
   event in `ThreadEvent` for "approval requested" the caller can answer, and no code path to
-  remove a tool from what the model is offered. `sandboxMode` (`read-only` /
+  reduce the backend to Claude's literal empty tool set. `sandboxMode` (`read-only` /
   `workspace-write` / `danger-full-access`) governs only what an *attempted* tool call may
   actually do at the OS sandbox layer (Seatbelt / bubblewrap / Windows restricted tokens) —
   it does not stop the model from seeing and attempting the call.
@@ -38,26 +39,38 @@ Verified against `github.com/openai/codex` source and docs (not assumed):
   additionally requires that directory be a git repo unless `skipGitRepoCheck: true`.
 - `codexPathOverride` (constructor-level) is the executable-path override, analogous to
   `pathToClaudeCodeExecutable`.
+- Codex reads MCP servers from `$CODEX_HOME/config.toml`. A controlled live probe showed
+  `--config mcp_servers={}` still listing and connecting to a named server from that file:
+  config overrides merge, so assigning an empty parent table does not delete existing child
+  tables. Pointing the same real CLI at a fresh `CODEX_HOME` returned "No MCP servers
+  configured" and made no MCP connection attempt. `CodexOptions.env` replaces the spawned
+  process environment, making that discovery-root override available through the SDK.
 - ACP: no first-party OpenAI support: `codex-acp` is a third-party bridge maintained under
   `agentclientprotocol.com`/Zed, not shipped by `openai/codex`. Out of scope per the
   established condition ("only if Codex SDK is fully ACP compliant" — it is not).
 
 ## Capability gap this design accepts, deliberately
 
-`docs/DESIGN.md`'s Invariants section states unconditionally: *"The agent has no write
-tool."* For `ClaudeAgentClient` this is literal — `tools: []` plus a `canUseTool` deny-all
-callback means Write/Edit/Bash are never in the model's toolset at all. Codex cannot make
-that same guarantee: shell-exec and `apply_patch` are always offered; the strongest available
-mitigation is `sandboxMode: "read-only"`, which blocks an attempted write at the OS layer
-*after* the model has already tried it.
+For `ClaudeAgentClient`, `tools: []` plus a `canUseTool` deny-all callback literally removes
+Write/Edit/Bash. Codex cannot make that same guarantee. Disabling `features.shell_tool`
+removes shell execution, but other built-ins remain; `sandboxMode: "read-only"` is therefore
+still an after-the-fact OS boundary for attempted writes, not a tool-availability boundary.
 
 Decision (confirmed): `CodexAgentClient` never receives vault or note content as filesystem
 context. `supportsVaultTools = false`, matching `LlmAgentClient` — `EnhanceRunner` already
 downgrades any client that declares this to the `tick` tier and withholds `cwd`, so no
 `EnhanceRunner` change is needed. This sidesteps the gap rather than accepting it: the
-sandboxed-but-attempted directory the model can see is a scratch directory this client owns
-and never contains vault or note content, so there is nothing sensitive there for a write
-attempt to reach even in the weaker-guarantee case.
+sandboxed-but-attempted working directory is a scratch directory this client owns and never
+contains vault or note content. This limits what the application intentionally exposes; it is
+not a claim that every remaining built-in is path-confined.
+
+MCP needs its own boundary because Codex does not apply `sandboxMode` to MCP tools. Each client
+therefore creates a second scratch subdirectory and supplies it as `CODEX_HOME` through
+`CodexOptions.env`. The directory has no `config.toml`; when no API key override is supplied,
+the client copies only the ambient `auth.json` into it so CLI login can still work without
+copying MCP servers, skills, or other operator configuration. The isolated home is reused for
+the client lifetime so session resume still works, then removed with the same best-effort exit
+cleanup as the working directory.
 
 `docs/DESIGN.md`'s Invariants section must be updated in the same change to scope the "no
 write tool" claim per backend, rather than leaving it reading as a codebase-wide guarantee it
@@ -73,8 +86,9 @@ export class CodexAgentClient implements AgentClient {
 }
 ```
 
-- **Scratch directory**: created lazily on first `query()` call (`mkdtemp` under the OS temp
-  dir), reused for every subsequent call on the same instance, best-effort removed on process
+- **Runtime root**: created lazily on first `query()` call (`mkdtemp` under the OS temp dir),
+  with separate `work` and isolated `home` children, reused for every subsequent call on the
+  same instance, and best-effort removed on process
   exit. One instance already corresponds to one capture/runner lifecycle elsewhere in this
   codebase (`ClaudeAgentClient`/`LlmAgentClient` are constructed once per `EnhanceRunner`), so
   this matches existing lifetime assumptions rather than introducing a new one.
@@ -105,13 +119,10 @@ export class CodexAgentClient implements AgentClient {
   output, `turn.failed`/`error` events map to `AgentQueryError`, mirroring
   `ClaudeAgentClient.query`'s `is_error` / exhaustion-diagnostics handling so the two
   implementations read as siblings, not divergent styles.
-- **Auth**: no credentials handling in this client — reuses a locally logged-in `codex` CLI
-  session by default, the same posture already chosen for Claude ("reuse the already-logged-in
-  CLI, no API key in vault config" — `docs/DESIGN.md`'s requirements table). `apiKey` is an
-  optional constructor override for the rarer case, not the default path. Flagged for an
-  empirical smoke test before relying on CLI-session reuse in production, given one open,
-  unresolved upstream issue (`openai/codex#7144`) about 401s on that path — "do not assume,
-  empirically test" per this project's own stated requirement.
+- **Auth**: `apiKey` remains an optional constructor override. Without it, the isolated home
+  receives a copy of the ambient home's `auth.json` and nothing else. This preserves the
+  locally logged-in posture without inheriting `config.toml`; if no auth file exists, the CLI
+  reports its normal unauthenticated failure.
 - **Executable path**: `codexPathOverride` constructor option only. No new field on the
   shared `AgentQueryRequest`/`EnhanceRunnerOptions` contract — `pathToClaudeCodeExecutable`
   is already Claude-specific by name, and generalizing it is an unrelated breaking rename this
@@ -163,8 +174,9 @@ part of this task.
   `test/llm-client.test.ts`'s approach for mocking the `ai` package — the established pattern
   for testing a client that wraps a third-party SDK in this codebase. Covers: session
   resume vs. fresh thread, abort forwarding, `turn.failed` → `AgentQueryError`, structured
-  output pass-through, scratch-dir and instructions-file reuse across repeated calls on one
-  instance, and that `workingDirectory` is never derived from `request.cwd`.
+  output pass-through, scratch-dir reuse across repeated calls, that `workingDirectory` is
+  never derived from `request.cwd`, the exact `features.shell_tool = false` pin, and replacement
+  of an ambient `CODEX_HOME` with the isolated home.
 - `selectAgent()` gets a `--backend codex` case in its existing test coverage
   (`test/shorthand-notes` or wherever `selectAgent` is currently tested — confirm exact file
   at implementation time).

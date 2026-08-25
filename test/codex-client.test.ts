@@ -127,7 +127,7 @@ describe("CodexAgentClient construction", () => {
     expect(constructedWith[0]!.apiKey).toBe("sk-test");
   });
 
-  test("omits both when neither is given, so a locally logged-in codex CLI session is reused", async () => {
+  test("omits both constructor credentials when neither is given", async () => {
     const client = new CodexAgentClient();
     await client.query(baseRequest());
     expect(constructedWith[0]).not.toHaveProperty("codexPathOverride");
@@ -198,6 +198,23 @@ describe("CodexAgentClient happy path", () => {
     await client.query(baseRequest());
     const config = constructedWith[0]!.config as { features: { shell_tool: boolean } };
     expect(config.features).toEqual({ shell_tool: false });
+  });
+
+  test("replaces ambient CODEX_HOME with a fresh isolated config root", async () => {
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = "C:\\operator\\.codex";
+    try {
+      const client = new CodexAgentClient({ apiKey: "sk-test" });
+      await client.query(baseRequest());
+      const environment = constructedWith[0]!.env as Record<string, string>;
+      expect(environment.CODEX_HOME).not.toBe("C:\\operator\\.codex");
+      expect(environment.CODEX_HOME).toContain("shorthand-codex-");
+      expect(Object.keys(environment).filter((key) => key.toUpperCase() === "CODEX_HOME"))
+        .toEqual(["CODEX_HOME"]);
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+    }
   });
 
   test("parses the agent_message item's text as the structured output", async () => {

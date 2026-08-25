@@ -79,6 +79,11 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
     systemPrompt: request.systemPrompt,
     outputFormat: { type: "json_schema" as const, schema: request.outputSchema },
     settingSources: [...request.settingSources],
+    // settingSources: [] excludes user/project/local settings, but strictMcpConfig is the
+    // SDK's dedicated boundary for every other on-disk MCP source (including .mcp.json,
+    // plugins, and agent frontmatter). An explicit empty map leaves no permitted server.
+    mcpServers: {},
+    strictMcpConfig: true,
     maxTurns: request.maxTurns,
     ...(request.pathToClaudeCodeExecutable === undefined
       ? {}

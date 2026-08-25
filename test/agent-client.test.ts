@@ -51,6 +51,7 @@ describe("Claude Agent vault tool confinement", () => {
     });
     expect(options).toMatchObject({
       tools: ["Read"], settingSources: ["project"], permissionMode: "default",
+      mcpServers: {}, strictMcpConfig: true,
     });
     // A bare allowedTools entry auto-approves the call before canUseTool runs, silently
     // disabling path confinement (SDK warns CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). It must stay absent.

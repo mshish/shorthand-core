@@ -161,16 +161,19 @@ lever available.
 Isolation is not free, because `CODEX_HOME` is the single discovery root for **both**
 `config.toml` and `auth.json`. Two consequences, both deliberate:
 
-- *Auth is carried across, by hard link rather than copy.* Shorthand's model is that the user
-  installs and authenticates Codex themselves, so no API key is required and no credential is
-  duplicated: the isolated home gets a second name for the user's own `auth.json`, and a token
-  Codex rotates mid-run is written through to the user's real file instead of dying with the
-  scratch directory and leaving them logged out of a CLI they never touched. This rests on
-  Codex rewriting `auth.json` in place rather than writing a temp file and renaming over it,
-  verified against the real CLI on the `codex login --with-api-key` write path. Hard links
-  require one volume, so a temp directory on another volume (ordinary on Windows, and on Linux
-  with a tmpfs `/tmp`) falls back to a copy — which does duplicate live credentials on disk and
-  does discard the rotated token, cleaned up only best-effort at process exit.
+- *Auth is carried across, by hard link rather than copy — conditional on Codex rewriting
+  `auth.json` in place.* Shorthand's model is that the user installs and authenticates Codex
+  themselves, so no API key is required. As long as that rewrite-in-place assumption holds, no
+  credential is duplicated: the isolated home gets a second name for the user's own
+  `auth.json`, and a token Codex rotates mid-run is written through to the user's real file
+  instead of dying with the scratch directory and leaving them logged out of a CLI they never
+  touched. The assumption is verified only on the `codex login --with-api-key` write path; the
+  OAuth refresh write path has not been exercised directly, so treat the write-through property
+  as unconfirmed there — a temp-file-and-rename refresh would silently break the link instead of
+  writing through it. Hard links also require one volume, so a temp directory on another volume
+  (ordinary on Windows, and on Linux with a tmpfs `/tmp`) falls back to a copy — which does
+  duplicate live credentials on disk and does discard the rotated token, cleaned up only
+  best-effort at process exit.
 - *Everything else in `config.toml` is discarded, not just the MCP table.* An isolated run was
   observed silently switching model and reasoning effort because the user's config never
   loaded. `sandboxMode` and `approvalPolicy` are unaffected — the client pins both per thread —

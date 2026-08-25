@@ -194,6 +194,19 @@ Trust behaviour, not the model's self-report, when re-verifying any of this. Ask
 `functions.exec` while simultaneously reporting it had no tool able to run commands. Every claim
 here comes from asking it to actually perform an action and report the literal result.
 
+**These pins fail silently if a flag is ever renamed, and the CLI version is not always ours to
+choose.** `codex features list -c features.totally_bogus_flag_xyz=false` exits 0 with no error
+and no warning, so a future Codex build that renames or retires `apps`, `browser_use`,
+`shell_tool` or `unified_exec` turns the matching pin into a no-op that nothing here detects —
+no exception, no failing test, no log line. That matters more downstream than it does here: the
+Obsidian plugin cannot use the SDK's vendored binary, because its bundled `main.js` is deployed
+away from `node_modules`, so it spawns whatever Codex the user installed globally. The version
+actually enforcing these pins is therefore the user's, not the one pinned in this repo's
+`package.json` — verified live at 0.149.0 against a repo pinned to 0.149.1, where all four flags
+still existed and still held. Re-run a behavioural probe against the CLI version in play before
+trusting these pins on an unfamiliar install; a green test suite here is evidence about the
+vendored binary only.
+
 Anyone weakening the home isolation on the strength of any of these
 flags would be reinstating the exact bypass each flag was added to cover, not removing a
 redundant second control. There is no feature flag that disables MCP loading — the MCP-named

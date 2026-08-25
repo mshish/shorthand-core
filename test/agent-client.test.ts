@@ -51,8 +51,12 @@ describe("Claude Agent vault tool confinement", () => {
     });
     expect(options).toMatchObject({
       tools: ["Read"], settingSources: ["project"], permissionMode: "default",
-      mcpServers: {}, strictMcpConfig: true,
+      strictMcpConfig: true,
     });
+    // Asserted on its own with toEqual, not folded into the toMatchObject above: a subset match
+    // of `mcpServers: {}` passes just as happily when the table carries a real server, which is
+    // the one outcome this assertion exists to catch.
+    expect(options.mcpServers).toEqual({});
     // A bare allowedTools entry auto-approves the call before canUseTool runs, silently
     // disabling path confinement (SDK warns CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). It must stay absent.
     expect(options).not.toHaveProperty("allowedTools");

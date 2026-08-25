@@ -67,7 +67,10 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
   can be passed with `--claude`.
 - For the `codex` backend, the `codex` CLI must be installed and logged in. There is no
   hardcoded install-path fallback (unlike the Claude backend's Windows default), so point
-  `--codex-exe <path>` or `SHORTHAND_CODEX_EXE` at it if it is not on `PATH`.
+  `--codex-exe <path>` or `SHORTHAND_CODEX_EXE` at it if it is not on `PATH`. The isolated
+  `CODEX_HOME` this backend runs under discards your `config.toml`, including your selected
+  model and any custom endpoint; re-supply those with `--codex-model <model>` /
+  `SHORTHAND_CODEX_MODEL` and `--codex-base-url <url>` / `SHORTHAND_CODEX_BASE_URL`.
 - Node.js 22 for headless CLI use. The floor follows a dependency's requirement rather than a
   preference: the AI SDK packages (`ai`, `@ai-sdk/*`) declare `engines.node >=22`. Bun is
   required for the development build and test commands.
@@ -85,8 +88,10 @@ owns, with `sandboxMode: "read-only"`, `approvalPolicy: "never"`, and no tools e
 to the model in the allowlist sense — see "Invariants" in `docs/DESIGN.md` for the capability
 gap this accepts. It also runs the child against an isolated `CODEX_HOME`, which is what keeps
 your MCP servers out of a transcript-facing process. The visible cost is that your own
-`config.toml` does not apply: the model is the installed CLI's default unless the caller sets
-`CodexAgentClientOptions.model`, so a model you selected in `config.toml` is not the one used.
+`config.toml` does not apply: the model is the installed CLI's default, and the endpoint is
+whatever `codex` itself defaults to, unless the caller sets `CodexAgentClientOptions.model` /
+`baseUrl` — the CLI does this for you via `--codex-model`/`SHORTHAND_CODEX_MODEL` and
+`--codex-base-url`/`SHORTHAND_CODEX_BASE_URL`, described above.
 
 The LLM profile is `llm-credentials.json` under Shorthand's configuration directory: on
 Windows, `%APPDATA%\Shorthand\llm-credentials.json`; on macOS,

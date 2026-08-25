@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -16,6 +16,26 @@ import { SidecarWriter } from "../src/note/sidecar.js";
 const scratchDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+// The codex-backend tests below construct a CodexAgentClient through selectAgent and never
+// call query() today, so CODEX_HOME is never actually read — safe by accident, not by design.
+// Guarded anyway, the same way test/codex-client.test.ts guards its whole file: a future test
+// that does add a query() call must not be able to hardlink this machine's real ~/.codex
+// credentials into a leaked temp dir just because this file forgot to isolate the environment.
+let originalCliCodexHome: string | undefined;
+let emptyCliCodexHome: string;
+const cliCodexClients: CodexAgentClient[] = [];
+beforeAll(async () => {
+  originalCliCodexHome = process.env.CODEX_HOME;
+  emptyCliCodexHome = await mkdtemp(join(tmpdir(), "shorthand-codex-cli-ambient-"));
+  process.env.CODEX_HOME = emptyCliCodexHome;
+});
+afterAll(async () => {
+  await Promise.all(cliCodexClients.splice(0).map((client) => client.dispose()));
+  if (originalCliCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = originalCliCodexHome;
+  await rm(emptyCliCodexHome, { recursive: true, force: true });
 });
 
 describe("shorthand-notes CLI", () => {
@@ -444,12 +464,42 @@ describe("shorthand-notes CLI", () => {
       const result = await selectAgent(["--backend", "codex"], {});
       if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
       expect(result.agent).toBeInstanceOf(CodexAgentClient);
+      cliCodexClients.push(result.agent as CodexAgentClient);
     });
 
     test("--codex-exe is resolved into the Codex client's codexPathOverride via detectCodexExecutable", async () => {
       const result = await selectAgent(["--backend", "codex", "--codex-exe", "C:\\tools\\codex.exe"], {});
       if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
       expect(result.agent).toBeInstanceOf(CodexAgentClient);
+      cliCodexClients.push(result.agent as CodexAgentClient);
+    });
+
+    test("--codex-model is resolved into the Codex client via resolveCodexModel", async () => {
+      const result = await selectAgent(["--backend", "codex", "--codex-model", "gpt-5.6-codex"], {});
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(CodexAgentClient);
+      cliCodexClients.push(result.agent as CodexAgentClient);
+    });
+
+    test("SHORTHAND_CODEX_MODEL is honoured when --codex-model is not passed", async () => {
+      const result = await selectAgent(["--backend", "codex"], { SHORTHAND_CODEX_MODEL: "gpt-5.6-codex" });
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(CodexAgentClient);
+      cliCodexClients.push(result.agent as CodexAgentClient);
+    });
+
+    test("--codex-base-url is resolved into the Codex client via resolveCodexBaseUrl", async () => {
+      const result = await selectAgent(["--backend", "codex", "--codex-base-url", "https://compliance.example/v1"], {});
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(CodexAgentClient);
+      cliCodexClients.push(result.agent as CodexAgentClient);
+    });
+
+    test("SHORTHAND_CODEX_BASE_URL is honoured when --codex-base-url is not passed", async () => {
+      const result = await selectAgent(["--backend", "codex"], { SHORTHAND_CODEX_BASE_URL: "https://env.example/v1" });
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent).toBeInstanceOf(CodexAgentClient);
+      cliCodexClients.push(result.agent as CodexAgentClient);
     });
 
     test("rejects --claude combined with --backend codex", async () => {

@@ -21,6 +21,8 @@ import {
   LlmAgentClient,
   llmCredentialsPath,
   readLlmCredentials,
+  resolveCodexBaseUrl,
+  resolveCodexModel,
   SidecarWriter,
   StreamClient,
   TranscriptStore,
@@ -42,7 +44,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
   );
   return 2;
 }
@@ -56,6 +58,7 @@ const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
+  "--codex-model", "--codex-base-url",
 ]);
 
 class ArgumentError extends Error {}
@@ -378,9 +381,15 @@ export async function selectAgent(
       throw new ArgumentError("--claude cannot be combined with --backend codex; the Codex backend never launches a Claude Code executable.");
     }
     const codexOverride = detectCodexExecutable(argumentValue(args, "--codex-exe"), environment);
+    const codexModel = resolveCodexModel(argumentValue(args, "--codex-model"), environment);
+    const codexBaseUrl = resolveCodexBaseUrl(argumentValue(args, "--codex-base-url"), environment);
     return {
       ok: true,
-      agent: new CodexAgentClient(codexOverride === undefined ? {} : { codexPathOverride: codexOverride }),
+      agent: new CodexAgentClient({
+        ...(codexOverride === undefined ? {} : { codexPathOverride: codexOverride }),
+        ...(codexModel === undefined ? {} : { model: codexModel }),
+        ...(codexBaseUrl === undefined ? {} : { baseUrl: codexBaseUrl }),
+      }),
     };
   }
   if (argumentValue(args, "--claude") !== undefined) {

@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { copyFile, link, mkdir, mkdtemp } from "node:fs/promises";
+import { copyFile, link, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Codex } from "@openai/codex-sdk";
@@ -19,9 +19,18 @@ export type CodexAgentClientOptions = Readonly<{
   ambientCodexHome?: string;
   /**
    * Model slug for the child. Optional because there is no defensible default to hardcode
-   * here; see the pinning comment in #ensureCodex for what an unset value inherits.
+   * here; see the pinning comment in #threadOptions for what an unset value inherits.
    */
   model?: string;
+  /**
+   * API endpoint for the child, re-supplying what the isolated CODEX_HOME threw away.
+   * `openai_base_url` lives in the discarded `config.toml` like everything else, so a user
+   * who pointed Codex at a compliance-mandated endpoint would otherwise have transcript
+   * content sent to the public default instead, silently and with nothing to notice it by.
+   * Only the endpoint can be restored this way: a full `model_providers.<id>` table (wire
+   * API, custom headers, its own auth env var) has no typed SDK equivalent.
+   */
+  baseUrl?: string;
 }>;
 
 export class CodexAgentClient implements AgentClient {
@@ -37,7 +46,13 @@ export class CodexAgentClient implements AgentClient {
   #codex: Codex | undefined;
   #runtimeDirs: Promise<Readonly<{ root: string; workingDirectory: string; codexHome: string }>> | undefined;
   #cleanupRegistered = false;
-  #resolvedRuntimeRoot: string | undefined;
+  // Every root #ensureRuntimeDirs has ever mkdtemp'd for this client, not just the current
+  // one: a build that fails and is retried (see the .catch below) leaves its root behind with
+  // real mkdir'd state in it, and #runtimeDirs moves on to a fresh one on the next call. A
+  // single "current root" field would make that first root invisible to both the exit handler
+  // and dispose() the moment the retry's root replaced it, orphaning it — caught by the
+  // temp-dir count still not reaching zero after adding dispose() and its own test coverage.
+  #runtimeRoots: string[] = [];
 
   constructor(options: CodexAgentClientOptions = {}) {
     this.#options = options;
@@ -55,9 +70,29 @@ export class CodexAgentClient implements AgentClient {
       skipGitRepoCheck: true,
       sandboxMode: "read-only" as const,
       approvalPolicy: "never" as const,
+      // Web search is the one tool that reaches the internet without going through the OS
+      // sandbox at all — the model asks the server for it — so `sandboxMode: "read-only"`
+      // does nothing about it. Left unset it takes whatever the CLI defaults to, which is
+      // the same mistake as leaving MCP to an inherited default: this agent reads untrusted
+      // transcript text, and a search tool turns injected text into an outbound channel.
+      // A user's own `web_search = "disabled"` cannot be relied on either, since the
+      // isolated CODEX_HOME discards it along with the rest of config.toml.
+      webSearchMode: "disabled" as const,
+      // Inert while the sandbox is read-only: the SDK maps this to
+      // `sandbox_workspace_write.network_access`, which only governs the workspace-write
+      // sandbox. Pinned anyway so that widening sandboxMode later is a decision about writes
+      // and not a silent grant of outbound network to a transcript-reading agent.
+      networkAccessEnabled: false,
+      // Pinned per thread because an isolated CODEX_HOME discards the whole of the user's
+      // config.toml, not just its MCP table: a live isolated run was observed silently
+      // switching to a different model with reasoning effort "none", since the config that
+      // selected them never loaded. Passed through only when the caller supplies it — an
+      // unset model inherits whatever the installed Codex CLI defaults to, which is
+      // version-dependent and can change under a user who never changed anything.
+      ...(this.#options.model === undefined ? {} : { model: this.#options.model }),
       // request.tools is deliberately never read into this object: Codex has no per-thread
-      // allowlist. The isolated CODEX_HOME below is what actually narrows the tool surface;
-      // neither it nor the shell pin turns the remaining built-ins into Claude's tools: [] shape.
+      // allowlist. The isolated CODEX_HOME is what actually narrows the tool surface; neither
+      // it nor the exec pins turn the remaining built-ins into Claude's tools: [] shape.
     };
     const thread = typeof request.sessionId === "string" && request.sessionId.length > 0
       ? codex.resumeThread(request.sessionId, threadOptions)
@@ -125,6 +160,7 @@ export class CodexAgentClient implements AgentClient {
     this.#codex ??= new Codex({
       ...(this.#options.codexPathOverride === undefined ? {} : { codexPathOverride: this.#options.codexPathOverride }),
       ...(this.#options.apiKey === undefined ? {} : { apiKey: this.#options.apiKey }),
+      ...(this.#options.baseUrl === undefined ? {} : { baseUrl: this.#options.baseUrl }),
       // Codex merges `--config mcp_servers={}` into the ambient table, so named child servers
       // survive that override and still connect. CODEX_HOME changes the config discovery root;
       // passing it through CodexOptions.env is intentional because the SDK then replaces the
@@ -134,36 +170,52 @@ export class CodexAgentClient implements AgentClient {
         base_instructions: systemPrompt,
         // Defence in depth, explicitly NOT a boundary. A turn run this way does report that it
         // has no shell-command tool, but that proves nothing about what it can execute: with
-        // both shell_tool and unified_exec disabled under sandboxMode "read-only", a live probe
-        // still ran a shell command by calling out to an operator MCP server (`node_repl`),
-        // because Codex does not apply sandboxMode to MCP tools at all. The isolated CODEX_HOME
-        // above is the boundary that closes that path; this flag only removes the direct route.
-        features: { shell_tool: false },
-        // Pinned because an isolated CODEX_HOME discards the user's whole config.toml, not just
-        // its MCP table: a live isolated run was observed silently switching to a different
-        // model with reasoning effort "none", since the config that selected them never loaded.
-        // Passed through only when the caller supplies it — an unset model inherits whatever
-        // the installed Codex CLI defaults to, which is version-dependent and can change under
-        // a user who never changed anything. sandboxMode and approvalPolicy do not need the
-        // same treatment: both are pinned per thread above, so neither depends on config.toml.
-        ...(this.#options.model === undefined ? {} : { model: this.#options.model }),
+        // both of these disabled under sandboxMode "read-only", a live probe still ran a shell
+        // command by calling out to an operator MCP server (`node_repl`), because Codex does
+        // not apply sandboxMode to MCP tools at all. The isolated CODEX_HOME above is the
+        // boundary that closes that path; these flags only remove the direct routes.
+        //
+        // Both are needed, and both default to enabled: `codex features list` reports
+        // shell_tool and unified_exec as separate stable flags, so pinning shell_tool alone
+        // leaves a second exec tool switched on and makes the probe above describe a stricter
+        // configuration than the one this code creates.
+        features: { shell_tool: false, unified_exec: false },
       },
     });
     return this.#codex;
   }
 
   #ensureRuntimeDirs(): Promise<Readonly<{ root: string; workingDirectory: string; codexHome: string }>> {
-    this.#runtimeDirs ??= mkdtemp(join(tmpdir(), "shorthand-codex-")).then(async (root) => {
-      const workingDirectory = join(root, "work");
-      const codexHome = join(root, "home");
-      await Promise.all([mkdir(workingDirectory), mkdir(codexHome)]);
-      if (this.#options.apiKey === undefined) {
-        await linkAmbientCodexAuth(resolveAmbientCodexHome(this.#options.ambientCodexHome), codexHome);
-      }
-      this.#resolvedRuntimeRoot = root;
-      this.#registerCleanup();
-      return { root, workingDirectory, codexHome };
-    });
+    this.#runtimeDirs ??= mkdtemp(join(tmpdir(), "shorthand-codex-"))
+      .then(async (root) => {
+        // Recorded and registered the moment the root exists, before any fallible auth work
+        // below: a probe proved that registering cleanup only after a successful auth link
+        // left two compounding failures when the link threw instead — the root was never
+        // handed to the exit handler, so it leaked forever, and the rejected promise stayed
+        // cached in #runtimeDirs (see the .catch below), so every later query() failed the
+        // same way permanently. Neither depends on the auth step succeeding.
+        this.#runtimeRoots.push(root);
+        this.#registerCleanup();
+        const workingDirectory = join(root, "work");
+        const codexHome = join(root, "home");
+        await Promise.all([mkdir(workingDirectory), mkdir(codexHome)]);
+        if (this.#options.apiKey === undefined) {
+          await linkAmbientCodexAuth(resolveAmbientCodexHome(this.#options.ambientCodexHome), codexHome);
+        }
+        return { root, workingDirectory, codexHome };
+      })
+      .catch((error: unknown) => {
+        // A rejected promise cached by the `??=` above would fail every subsequent query()
+        // identically forever, even for a transient failure (a momentary permission error on
+        // the auth link, a full disk on mkdir) that would very plausibly succeed on retry.
+        // Clearing the cache lets the next #ensureRuntimeDirs() build a fresh root instead of
+        // replaying a dead promise. The root already pushed to #runtimeRoots above is
+        // deliberately left there: it may hold partial state (mkdir'd work/home dirs, maybe a
+        // copied auth.json), and #registerCleanup/#runtimeRoots — not this field — are what
+        // will eventually clean it up, whether or not the retry succeeds.
+        this.#runtimeDirs = undefined;
+        throw error;
+      });
     return this.#runtimeDirs;
   }
 
@@ -173,13 +225,42 @@ export class CodexAgentClient implements AgentClient {
     // `exit` handlers must run synchronously, so async `rm` cannot be awaited here — this is
     // best-effort only, matching "reused for the life of the instance" in the design doc. A
     // hard kill (SIGKILL) skips it entirely, same as any other exit-handler cleanup in Node.
-    // This is also what removes a copy-fallback duplicate of auth.json (see
-    // linkAmbientCodexAuth), so a SIGKILL leaves that duplicate on disk.
+    // Registered before the auth step runs (see #ensureRuntimeDirs), so this is also what
+    // removes a copy-fallback duplicate of auth.json on any graceful exit, including one that
+    // races a rejected auth link — only a SIGKILL leaves that duplicate on disk. Reads
+    // #runtimeRoots live at exit time (not a snapshot taken here), so every root the client
+    // accumulated by then — including ones from a failed attempt that was retried — is swept,
+    // not just whichever one was current when this handler was registered.
     process.once("exit", () => {
-      if (this.#resolvedRuntimeRoot !== undefined) {
-        try { rmSync(this.#resolvedRuntimeRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
+      for (const root of this.#runtimeRoots) {
+        try { rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
     });
+  }
+
+  /**
+   * Removes every runtime root this client has ever created (scratch working directories,
+   * isolated CODEX_HOMEs, and any auth.json copies inside them) without waiting for process
+   * exit. The `exit` handler above is a production backstop, not a substitute: it never fires
+   * under bun's test runner, so without this, every test that calls query() leaks a
+   * "shorthand-codex-*" directory under the OS temp dir for the life of the machine, not just
+   * the test run. A no-op if query() was never called (no root was ever created). Clears
+   * #runtimeDirs too, so a query() after dispose() rebuilds rather than reusing handles into
+   * directories this just removed.
+   */
+  async dispose(): Promise<void> {
+    if (this.#runtimeDirs !== undefined) {
+      // Wait out an in-flight or rejected build first: removing a root out from under a
+      // concurrent mkdir/link would race the very directory it is creating.
+      await this.#runtimeDirs.catch(() => undefined);
+      this.#runtimeDirs = undefined;
+    }
+    const roots = this.#runtimeRoots.splice(0);
+    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.dispose();
   }
 }
 
@@ -216,28 +297,51 @@ async function linkAmbientCodexAuth(ambientHome: string, isolatedHome: string): 
   // Codex reads either from, so isolating config necessarily orphans auth and the login has to
   // be brought across deliberately. Bringing across auth.json alone leaves config.toml, skills
   // and MCP servers behind, which is the point of the isolated home.
-  const source = join(ambientHome, "auth.json");
+  const target = join(ambientHome, "auth.json");
   const destination = join(isolatedHome, "auth.json");
+  let source: string;
   try {
-    // A second name for the same file, not a second copy of it. Two consequences, both wanted:
-    // live OAuth credentials are never duplicated on disk, and a token Codex rotates mid-run
-    // is written through to the user's own auth.json instead of dying with the scratch
-    // directory — leaving the user logged out of a CLI they never touched. This depends on
-    // Codex rewriting auth.json in place rather than writing a temp file and renaming over it,
-    // which would break the link. Verified against the real CLI on the `codex login
-    // --with-api-key` write path; the OAuth refresh write path was not exercised directly.
-    await link(source, destination);
-    return;
+    // fs.link operates on the directory entry, not the file it points to: it does not follow
+    // symlinks. A dotfile-managed `auth.json -> ../dotfiles/codex-auth.json` (a relative
+    // target, the ordinary shape for a dotfiles repo) would otherwise get hardlinked as a
+    // second symlink with the same relative target, landing in a different directory
+    // (isolatedHome, not ambientHome) where that relative path does not resolve — Codex then
+    // reports "not logged in" with nothing to explain why. realpath resolves through any such
+    // symlink up front, so link() below always sees a real file. copyFile does not have this
+    // problem (it follows symlinks itself), which is why the same input previously worked
+    // cross-volume and failed same-volume.
+    source = await realpath(target);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     // No ambient auth.json is normal, not a fault: the user may be supplying an API key through
     // the environment, or may never have run `codex login`. The CLI's own unauthenticated
-    // failure says so far better than anything raised from here.
-    if (code === "ENOENT") return;
-    // Hard links need both names on one volume and, on some filesystems and mount options, the
-    // privilege to create them. Those are the only failures worth degrading for; anything else
-    // is a real fault and must not be papered over by silently doing something weaker.
-    if (code !== "EXDEV" && code !== "EPERM" && code !== "EACCES") throw error;
+    // failure says so far better than anything raised from here. ENOTDIR lands here too: an
+    // ambient CODEX_HOME that itself resolves to a file (not a directory) makes `join(ambientHome,
+    // "auth.json")` invalid in the same "nothing to log in with" way, not a fault worth crashing
+    // the backend over.
+    if (code === "ENOENT" || code === "ENOTDIR") return;
+    throw error;
+  }
+  try {
+    // A second name for the same file, not a second copy of it. Two consequences, both wanted
+    // as long as this holds: live OAuth credentials are never duplicated on disk, and a token
+    // Codex rotates mid-run is written through to the user's own auth.json instead of dying
+    // with the scratch directory — leaving the user logged out of a CLI they never touched.
+    // This rests on Codex rewriting auth.json in place rather than writing a temp file and
+    // renaming over it, which would break the link silently. Verified against the real CLI on
+    // the `codex login --with-api-key` write path only; the OAuth refresh write path was not
+    // exercised directly, so treat the write-through property as unconfirmed there until it is.
+    await link(source, destination);
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // Hard links need both names on one volume (EXDEV) and, on some filesystems and mount
+    // options, the privilege to create them (EPERM/EACCES). ENOTSUP/EOPNOTSUPP/EINVAL cover
+    // volumes that cannot hardlink at all regardless of privilege — exFAT, FAT32, and some
+    // SMB/FUSE mounts — where the copy fallback below still works. Anything else is a real
+    // fault and must not be papered over by silently doing something weaker.
+    if (code !== "EXDEV" && code !== "EPERM" && code !== "EACCES"
+      && code !== "ENOTSUP" && code !== "EOPNOTSUPP" && code !== "EINVAL") throw error;
   }
   try {
     // This fallback re-introduces exactly what the link avoids: a duplicate of live credentials
@@ -247,6 +351,9 @@ async function linkAmbientCodexAuth(ambientHome: string, isolatedHome: string): 
     // cleanup in #registerCleanup, which a SIGKILL skips.
     await copyFile(source, destination);
   } catch (error) {
+    // Not dead code: realpath above already proved `source` existed, but a concurrent `codex
+    // login` or `codex logout` can unlink it between that check and this copy. Treated the same
+    // as the ENOENT case above — a benign timing loss, not a fault to crash the backend over.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
@@ -266,4 +373,33 @@ export function detectCodexExecutable(
   const configured = override ?? environment.SHORTHAND_CODEX_EXE;
   if (configured !== undefined && configured.length > 0) return resolve(configured);
   return undefined;
+}
+
+/**
+ * Same override/environment-variable precedence as {@link detectCodexExecutable}, without the
+ * path resolution: a model slug is not a filesystem path. Exists so the CLI can set
+ * `CodexAgentClientOptions.model` — the option was previously reachable only by embedding core
+ * directly, since neither a flag nor an env var wired it through `bin/shorthand-notes.ts`.
+ */
+export function resolveCodexModel(
+  override?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = override ?? environment.SHORTHAND_CODEX_MODEL;
+  return configured !== undefined && configured.length > 0 ? configured : undefined;
+}
+
+/**
+ * Same override/environment-variable precedence as {@link detectCodexExecutable}, for
+ * `CodexAgentClientOptions.baseUrl`. The isolated CODEX_HOME discards the ambient config.toml
+ * entirely, so a compliance-mandated endpoint set there is otherwise lost without any CLI way
+ * to re-supply it — see the `baseUrl` option's own doc comment for why only the endpoint, not
+ * the rest of `model_providers`, can be restored this way.
+ */
+export function resolveCodexBaseUrl(
+  override?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = override ?? environment.SHORTHAND_CODEX_BASE_URL;
+  return configured !== undefined && configured.length > 0 ? configured : undefined;
 }

@@ -1,8 +1,15 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildSectionOutputSchema, type AgentQueryRequest } from "../src/agent/contract.js";
+
+// Captured before any spyOn() below replaces these module exports, so mocked
+// implementations that only need to intercept one specific call can delegate every other
+// call to the real filesystem behaviour instead of reimplementing it.
+const realRealpath = fsPromises.realpath;
+const realMkdtemp = fsPromises.mkdtemp;
 
 type CodexEventLike = Record<string, unknown>;
 type ThreadCall = { options: Record<string, unknown> };
@@ -61,8 +68,9 @@ class FakeCodex {
 
 mock.module("@openai/codex-sdk", () => ({ Codex: FakeCodex }));
 
-const { CodexAgentClient, detectCodexExecutable, resolveAmbientCodexHome } =
+const { CodexAgentClient, detectCodexExecutable, resolveAmbientCodexHome, resolveCodexBaseUrl, resolveCodexModel } =
   await import("../src/agent/codex-client.js");
+type CodexAgentClientOptions = ConstructorParameters<typeof CodexAgentClient>[0];
 
 // Every client built without an apiKey materialises the ambient auth.json into its isolated
 // home. Left to resolve on its own that means the developer's real ~/.codex/auth.json, so the
@@ -72,7 +80,20 @@ const ambientFixtures: string[] = [];
 const originalCodexHome = process.env.CODEX_HOME;
 const emptyAmbientHome = ambientHome();
 
-afterAll(() => {
+// process.once("exit") never fires under bun's test runner (measured: the OS temp dir climbed
+// by dozens of "shorthand-codex-*" runtime roots across one run before this existed), so every
+// client that reaches query() must be disposed explicitly or its runtime root leaks for the
+// life of the machine, not just the test run. Routing every construction through this helper
+// means no test can forget to register for cleanup.
+const clients: InstanceType<typeof CodexAgentClient>[] = [];
+function newClient(options?: CodexAgentClientOptions): InstanceType<typeof CodexAgentClient> {
+  const client = new CodexAgentClient(options);
+  clients.push(client);
+  return client;
+}
+
+afterAll(async () => {
+  await Promise.all(clients.splice(0).map((client) => client.dispose()));
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = originalCodexHome;
   for (const path of ambientFixtures.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -136,34 +157,80 @@ describe("detectCodexExecutable", () => {
   });
 });
 
+describe("resolveCodexModel", () => {
+  test("returns undefined when nothing is configured, inheriting the installed CLI's default", () => {
+    expect(resolveCodexModel(undefined, {})).toBeUndefined();
+  });
+
+  test("resolves an explicit override", () => {
+    expect(resolveCodexModel("gpt-5.6-codex", {})).toBe("gpt-5.6-codex");
+  });
+
+  test("falls back to SHORTHAND_CODEX_MODEL when no override is passed", () => {
+    expect(resolveCodexModel(undefined, { SHORTHAND_CODEX_MODEL: "gpt-5.6-codex" })).toBe("gpt-5.6-codex");
+  });
+
+  test("an explicit override wins over the environment variable", () => {
+    expect(resolveCodexModel("from-flag", { SHORTHAND_CODEX_MODEL: "from-env" })).toBe("from-flag");
+  });
+
+  test("an empty value is treated as unset", () => {
+    expect(resolveCodexModel("", { SHORTHAND_CODEX_MODEL: "" })).toBeUndefined();
+  });
+});
+
+describe("resolveCodexBaseUrl", () => {
+  test("returns undefined when nothing is configured, inheriting the installed CLI's default", () => {
+    expect(resolveCodexBaseUrl(undefined, {})).toBeUndefined();
+  });
+
+  test("resolves an explicit override", () => {
+    expect(resolveCodexBaseUrl("https://compliance.example/v1", {})).toBe("https://compliance.example/v1");
+  });
+
+  test("falls back to SHORTHAND_CODEX_BASE_URL when no override is passed", () => {
+    expect(resolveCodexBaseUrl(undefined, { SHORTHAND_CODEX_BASE_URL: "https://env.example/v1" }))
+      .toBe("https://env.example/v1");
+  });
+
+  test("an explicit override wins over the environment variable", () => {
+    expect(resolveCodexBaseUrl("https://flag.example/v1", { SHORTHAND_CODEX_BASE_URL: "https://env.example/v1" }))
+      .toBe("https://flag.example/v1");
+  });
+
+  test("an empty value is treated as unset", () => {
+    expect(resolveCodexBaseUrl("", { SHORTHAND_CODEX_BASE_URL: "" })).toBeUndefined();
+  });
+});
+
 describe("CodexAgentClient construction", () => {
   test("reports it cannot use vault tools", () => {
-    expect(new CodexAgentClient().supportsVaultTools).toBe(false);
+    expect(newClient().supportsVaultTools).toBe(false);
   });
 
   test("does not construct the underlying Codex client until the first query", () => {
-    new CodexAgentClient();
+    newClient();
     // CodexOptions.config (which carries base_instructions) is constructor-level, not
     // per-thread, so construction must wait for the first request.systemPrompt.
     expect(constructedWith).toHaveLength(0);
   });
 
   test("forwards codexPathOverride and apiKey to the Codex constructor on first query", async () => {
-    const client = new CodexAgentClient({ codexPathOverride: "C:\\tools\\codex.exe", apiKey: "sk-test" });
+    const client = newClient({ codexPathOverride: "C:\\tools\\codex.exe", apiKey: "sk-test" });
     await client.query(baseRequest());
     expect(constructedWith[0]!.codexPathOverride).toBe("C:\\tools\\codex.exe");
     expect(constructedWith[0]!.apiKey).toBe("sk-test");
   });
 
   test("omits both constructor credentials when neither is given", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     expect(constructedWith[0]).not.toHaveProperty("codexPathOverride");
     expect(constructedWith[0]).not.toHaveProperty("apiKey");
   });
 
   test("constructs the underlying Codex client only once, reusing it across repeated calls", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     await client.query(baseRequest());
     expect(constructedWith).toHaveLength(1);
@@ -172,7 +239,7 @@ describe("CodexAgentClient construction", () => {
 
 describe("CodexAgentClient happy path", () => {
   test("starts a fresh thread and returns the structured output and thread id", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     const response = await client.query(baseRequest());
     expect(response.sessionId).toBe("thread-1");
     expect(response.structuredOutput).toEqual({ sections: [] });
@@ -181,7 +248,7 @@ describe("CodexAgentClient happy path", () => {
   });
 
   test("every call is read-only, skips the git-repo check, and never asks for approval", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     const options = startThreadCalls[0]!.options;
     expect(options.sandboxMode).toBe("read-only");
@@ -190,7 +257,7 @@ describe("CodexAgentClient happy path", () => {
   });
 
   test("workingDirectory is a scratch directory, never request.cwd", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest({ cwd: "C:\\some\\vault" }));
     const workingDirectory = startThreadCalls[0]!.options.workingDirectory as string;
     expect(workingDirectory).not.toBe("C:\\some\\vault");
@@ -199,13 +266,13 @@ describe("CodexAgentClient happy path", () => {
 
   test("forwards the output schema on the turn", async () => {
     const outputSchema = buildSectionOutputSchema();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest({ outputSchema }));
     expect(runStreamedCalls[0]!.options.outputSchema).toBe(outputSchema);
   });
 
   test("reuses the same scratch directory across repeated calls on one instance", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     await client.query(baseRequest());
     expect(startThreadCalls).toHaveLength(2);
@@ -213,7 +280,7 @@ describe("CodexAgentClient happy path", () => {
   });
 
   test("passes the system prompt as base_instructions on the underlying Codex client's config, once, reused across calls", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest({ systemPrompt: "SAFE PREAMBLE\n\nGuidance." }));
     await client.query(baseRequest({ systemPrompt: "SAFE PREAMBLE\n\nGuidance." }));
     expect(constructedWith).toHaveLength(1);
@@ -222,32 +289,37 @@ describe("CodexAgentClient happy path", () => {
   });
 
   // Defence in depth, not a boundary: a live probe executed a shell command through an
-  // operator MCP server with this flag set. The isolated CODEX_HOME is what closes that path,
+  // operator MCP server with both flags set. The isolated CODEX_HOME is what closes that path,
   // and the tests below are the ones that cover the boundary.
-  test("pins config.features.shell_tool to false", async () => {
-    const client = new CodexAgentClient();
+  test("pins config.features.shell_tool and unified_exec to false", async () => {
+    const client = newClient();
     await client.query(baseRequest());
-    const config = constructedWith[0]!.config as { features: { shell_tool: boolean } };
-    expect(config.features).toEqual({ shell_tool: false });
+    const config = constructedWith[0]!.config as { features: { shell_tool: boolean; unified_exec: boolean } };
+    expect(config.features).toEqual({ shell_tool: false, unified_exec: false });
   });
 
-  test("pins the model on the Codex config when the caller supplies one", async () => {
-    const client = new CodexAgentClient({ model: "gpt-5.6-codex" });
+  // Model moved to the SDK's typed ThreadOptions.model (per-thread), not
+  // CodexOptions.config (constructor-level): config.base_instructions is the only field that
+  // legitimately belongs there, since it has no per-thread equivalent in the SDK.
+  test("pins the model on ThreadOptions when the caller supplies one", async () => {
+    const client = newClient({ model: "gpt-5.6-codex" });
     await client.query(baseRequest());
-    expect((constructedWith[0]!.config as { model?: string }).model).toBe("gpt-5.6-codex");
+    expect(constructedWith[0]!.config).not.toHaveProperty("model");
+    expect((startThreadCalls[0]!.options as { model?: string }).model).toBe("gpt-5.6-codex");
   });
 
   test("omits the model entirely when the caller supplies none, inheriting the CLI default", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     expect(constructedWith[0]!.config).not.toHaveProperty("model");
+    expect(startThreadCalls[0]!.options).not.toHaveProperty("model");
   });
 
   test("replaces ambient CODEX_HOME with a fresh isolated config root", async () => {
     const previous = process.env.CODEX_HOME;
     process.env.CODEX_HOME = "C:\\operator\\.codex";
     try {
-      const client = new CodexAgentClient({ apiKey: "sk-test" });
+      const client = newClient({ apiKey: "sk-test" });
       await client.query(baseRequest());
       const environment = constructedWith[0]!.env as Record<string, string>;
       expect(environment.CODEX_HOME).not.toBe("C:\\operator\\.codex");
@@ -266,7 +338,7 @@ describe("CodexAgentClient happy path", () => {
       yield agentMessageEvent({ sections: [{ heading: "H", markdown: "m" }] });
       yield { type: "turn.completed", usage: ZERO_USAGE };
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     const response = await client.query(baseRequest());
     expect(response.structuredOutput).toEqual({ sections: [{ heading: "H", markdown: "m" }] });
   });
@@ -278,7 +350,7 @@ describe("CodexAgentClient happy path", () => {
       yield agentMessageEvent({ sections: [] });
       yield { type: "turn.completed", usage: ZERO_USAGE };
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     const response = await client.query(baseRequest());
     expect(response.structuredOutput).toEqual({ sections: [] });
   });
@@ -289,14 +361,14 @@ describe("CodexAgentClient happy path", () => {
       yield { type: "item.completed", item: { id: "item-1", type: "agent_message", text: "not json" } };
       yield { type: "turn.completed", usage: ZERO_USAGE };
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     const response = await client.query(baseRequest());
     expect(response.structuredOutput).toBeUndefined();
     expect(response.diagnostics?.[0]).toMatch(/not valid JSON/);
   });
 
   test("reads request.tools but never forwards it, since Codex has no tool allowlist", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest({ tools: ["Read", "Glob", "Grep"] }));
     expect(startThreadCalls[0]!.options).not.toHaveProperty("tools");
     expect(runStreamedCalls[0]!.options).not.toHaveProperty("tools");
@@ -305,7 +377,7 @@ describe("CodexAgentClient happy path", () => {
   test("refuses to start on an already-aborted signal", async () => {
     const controller = new AbortController();
     controller.abort();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await expect(client.query(baseRequest({ signal: controller.signal }))).rejects.toThrow(/abort/i);
     expect(startThreadCalls).toHaveLength(0);
     expect(constructedWith).toHaveLength(0);
@@ -314,7 +386,7 @@ describe("CodexAgentClient happy path", () => {
 
 describe("CodexAgentClient session resume", () => {
   test("resumes an existing thread when sessionId is present", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     const first = await client.query(baseRequest());
     events = () => (async function* () {
       yield { type: "thread.started", thread_id: first.sessionId };
@@ -329,7 +401,7 @@ describe("CodexAgentClient session resume", () => {
   });
 
   test("an empty sessionId starts a fresh thread rather than resuming", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest({ sessionId: "" }));
     expect(startThreadCalls).toHaveLength(1);
     expect(resumeThreadCalls).toHaveLength(0);
@@ -342,7 +414,7 @@ describe("CodexAgentClient failure mapping", () => {
       yield { type: "thread.started", thread_id: "thread-x" };
       yield { type: "turn.failed", error: { message: "sandbox denied the write" } };
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await expect(client.query(baseRequest())).rejects.toThrow(/sandbox denied the write/);
   });
 
@@ -351,7 +423,7 @@ describe("CodexAgentClient failure mapping", () => {
       yield { type: "thread.started", thread_id: "thread-x" };
       yield { type: "error", message: "connection reset" };
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await expect(client.query(baseRequest())).rejects.toThrow(/connection reset/);
   });
 
@@ -360,7 +432,7 @@ describe("CodexAgentClient failure mapping", () => {
       yield { type: "thread.started", thread_id: "thread-y" };
       yield { type: "turn.completed", usage: ZERO_USAGE };
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await expect(client.query(baseRequest())).rejects.toThrow(/stream ended without an agent message/);
   });
 
@@ -368,7 +440,7 @@ describe("CodexAgentClient failure mapping", () => {
     events = () => (async function* () {
       yield agentMessageEvent({ sections: [] });
     })();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await expect(client.query(baseRequest())).rejects.toThrow(/no thread id/);
   });
 });
@@ -376,13 +448,13 @@ describe("CodexAgentClient failure mapping", () => {
 describe("CodexAgentClient abort forwarding", () => {
   test("forwards the request signal into TurnOptions.signal for real cancellation", async () => {
     const controller = new AbortController();
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest({ signal: controller.signal }));
     expect(runStreamedCalls[0]!.options.signal).toBe(controller.signal);
   });
 
   test("omits signal from TurnOptions when the request has none", async () => {
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     expect(runStreamedCalls[0]!.options).not.toHaveProperty("signal");
   });
@@ -412,15 +484,18 @@ describe("resolveAmbientCodexHome", () => {
 describe("CodexAgentClient ambient auth", () => {
   test("materialises the ambient auth.json into the isolated home, which is not the ambient home", async () => {
     const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
-    const client = new CodexAgentClient({ ambientCodexHome: ambient });
+    const client = newClient({ ambientCodexHome: ambient });
     await client.query(baseRequest());
     const isolated = isolatedHomeOf(constructedWith[0]!);
     expect(isolated).not.toBe(ambient);
     expect(isolated).not.toBe(join(homedir(), ".codex"));
     expect(readFileSync(join(isolated, "auth.json"), "utf8")).toBe(`{"tokens":{"access_token":"fixture"}}`);
-    // Only auth.json crosses: config.toml, skills and MCP servers stay behind, which is the
-    // whole reason the isolated home is the boundary.
-    expect(existsSync(join(isolated, "config.toml"))).toBe(false);
+    // Asserting the isolated home's exact directory listing, not just the absence of
+    // config.toml by name: CODEX_HOME is read for more than config.toml (AGENTS.md, skills/,
+    // plugins/), and a version of this code that additionally wrote e.g. an mcp.json full of
+    // MCP servers into the isolated home would still pass a config.toml-only check. Only
+    // auth.json is meant to cross — that is the whole reason the isolated home is a boundary.
+    expect(readdirSync(isolated).sort()).toEqual(["auth.json"]);
   });
 
   test("a token rotated inside the isolated home writes through to the user's own auth.json", async () => {
@@ -428,36 +503,48 @@ describe("CodexAgentClient ambient auth", () => {
     // a refresh token Codex already spent, i.e. logged out of a tool they never touched. Both
     // paths are under the OS temp directory here, so the cross-volume copy fallback is not in
     // play; if it were, this failing is the correct signal rather than a flake to silence.
+    //
+    // Not proof that OAuth refresh is safe: writeFileSync below opens with O_TRUNC and writes
+    // into the existing inode, which is exactly the "rewrites in place" behaviour the hard
+    // link depends on — verified only for `codex login --with-api-key`, per the comment on
+    // linkAmbientCodexAuth. If Codex's OAuth refresh instead writes a temp file and renames it
+    // over auth.json, that would silently break the link, and this test's use of writeFileSync
+    // would not catch it: it isn't exercising a temp+rename, it's assuming the same in-place
+    // write this test is meant to be evidence for.
     const ambient = ambientHome(`{"tokens":{"refresh_token":"old"}}`);
-    const client = new CodexAgentClient({ ambientCodexHome: ambient });
+    const client = newClient({ ambientCodexHome: ambient });
     await client.query(baseRequest());
     const isolated = isolatedHomeOf(constructedWith[0]!);
     writeFileSync(join(isolated, "auth.json"), `{"tokens":{"refresh_token":"rotated"}}`);
     expect(readFileSync(join(ambient, "auth.json"), "utf8")).toBe(`{"tokens":{"refresh_token":"rotated"}}`);
   });
 
-  test("an absent ambient auth.json is not an error: the query still runs", async () => {
-    const client = new CodexAgentClient({ ambientCodexHome: ambientHome() });
+  test("an absent ambient auth.json is not an error: the query still runs, and the isolated home stays empty", async () => {
+    const client = newClient({ ambientCodexHome: ambientHome() });
     const response = await client.query(baseRequest());
     expect(response.sessionId).toBe("thread-1");
-    expect(existsSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"))).toBe(false);
+    const isolated = isolatedHomeOf(constructedWith[0]!);
+    expect(existsSync(join(isolated, "auth.json"))).toBe(false);
+    // Same exact-contents check as the materialises-auth test above, for the no-login case:
+    // nothing should land in the isolated home when there was nothing to bring across.
+    expect(readdirSync(isolated)).toEqual([]);
   });
 
   test("an ambient home that does not exist at all is not an error either", async () => {
-    const client = new CodexAgentClient({ ambientCodexHome: join(tmpdir(), "shorthand-codex-absent-home") });
+    const client = newClient({ ambientCodexHome: join(tmpdir(), "shorthand-codex-absent-home") });
     await expect(client.query(baseRequest())).resolves.toBeDefined();
   });
 
   test("skips the ambient login entirely when an apiKey is supplied", async () => {
     const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
-    const client = new CodexAgentClient({ apiKey: "sk-test", ambientCodexHome: ambient });
+    const client = newClient({ apiKey: "sk-test", ambientCodexHome: ambient });
     await client.query(baseRequest());
     expect(existsSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"))).toBe(false);
   });
 
   test("the ambientCodexHome option beats an ambient CODEX_HOME", async () => {
     process.env.CODEX_HOME = ambientHome(`{"tokens":{"access_token":"from-env"}}`);
-    const client = new CodexAgentClient({ ambientCodexHome: ambientHome(`{"tokens":{"access_token":"from-option"}}`) });
+    const client = newClient({ ambientCodexHome: ambientHome(`{"tokens":{"access_token":"from-option"}}`) });
     await client.query(baseRequest());
     expect(readFileSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"), "utf8"))
       .toContain("from-option");
@@ -465,10 +552,185 @@ describe("CodexAgentClient ambient auth", () => {
 
   test("falls back to the ambient CODEX_HOME when no option is given", async () => {
     process.env.CODEX_HOME = ambientHome(`{"tokens":{"access_token":"from-env"}}`);
-    const client = new CodexAgentClient();
+    const client = newClient();
     await client.query(baseRequest());
     expect(readFileSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"), "utf8"))
       .toContain("from-env");
+  });
+
+  // realpath is resolved before link()/copyFile() ever see the path (see linkAmbientCodexAuth
+  // in src/agent/codex-client.ts). Mocking realpath's return value stands in for what a real
+  // symlink would do without needing OS symlink-creation privilege, which this Windows
+  // checkout does not have outside Developer Mode (fs.symlinkSync fails with EPERM here) —
+  // the same dereferencing therefore runs whether the redirection comes from a real symlink
+  // or, as here, a mocked realpath.
+  test("dereferences auth.json through realpath before hardlinking, so a relative symlink resolves before crossing into the isolated home", async () => {
+    const ambient = ambientHome();
+    const rawTarget = join(ambient, "auth.json");
+    const realAuthDirectory = mkdtempSync(join(tmpdir(), "shorthand-codex-real-auth-"));
+    ambientFixtures.push(realAuthDirectory);
+    const realAuthPath = join(realAuthDirectory, "codex-auth.json");
+    writeFileSync(realAuthPath, `{"tokens":{"access_token":"through-symlink"}}`);
+    const realpathSpy = spyOn(fsPromises, "realpath").mockImplementation((async (path: string) => {
+      if (path === rawTarget) return realAuthPath;
+      return realRealpath(path);
+    }) as typeof fsPromises.realpath);
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      await client.query(baseRequest());
+      const isolated = isolatedHomeOf(constructedWith[0]!);
+      expect(readFileSync(join(isolated, "auth.json"), "utf8")).toBe(`{"tokens":{"access_token":"through-symlink"}}`);
+      // Write-through still holds after dereferencing: a link() called with `rawTarget` (the
+      // pre-fix behaviour) would either fail outright (no file exists there) or, on a platform
+      // where hardlinking a symlink is possible, land on a name that does not resolve from the
+      // isolated home's directory — either way this mutation would fail here.
+      writeFileSync(join(isolated, "auth.json"), `{"tokens":{"access_token":"rotated"}}`);
+      expect(readFileSync(realAuthPath, "utf8")).toBe(`{"tokens":{"access_token":"rotated"}}`);
+    } finally {
+      realpathSpy.mockRestore();
+    }
+  });
+});
+
+describe("CodexAgentClient auth link fallback", () => {
+  test("falls back to copy when the volume cannot hardlink at all (ENOTSUP), not just when it needs a different one (EXDEV)", async () => {
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const linkSpy = spyOn(fsPromises, "link")
+      .mockImplementation(async () => { throw Object.assign(new Error("not supported"), { code: "ENOTSUP" }); });
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      await client.query(baseRequest());
+      const isolated = isolatedHomeOf(constructedWith[0]!);
+      expect(readFileSync(join(isolated, "auth.json"), "utf8")).toBe(`{"tokens":{"access_token":"fixture"}}`);
+    } finally {
+      linkSpy.mockRestore();
+    }
+  });
+
+  test("a link failure with an unrecognised error code is a real fault and is not silently degraded to a copy", async () => {
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const linkSpy = spyOn(fsPromises, "link")
+      .mockImplementation(async () => { throw Object.assign(new Error("disk on fire"), { code: "EIO" }); });
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      await expect(client.query(baseRequest())).rejects.toThrow(/disk on fire/);
+    } finally {
+      linkSpy.mockRestore();
+    }
+  });
+
+  test("an ambient CODEX_HOME that resolves to a file, not a directory, behaves like no login found rather than crashing", async () => {
+    const ambient = ambientHome();
+    const rawTarget = join(ambient, "auth.json");
+    const realpathSpy = spyOn(fsPromises, "realpath").mockImplementation((async (path: string) => {
+      if (path === rawTarget) throw Object.assign(new Error("not a directory"), { code: "ENOTDIR" });
+      return realRealpath(path);
+    }) as typeof fsPromises.realpath);
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      const response = await client.query(baseRequest());
+      expect(response.sessionId).toBe("thread-1");
+      expect(existsSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"))).toBe(false);
+    } finally {
+      realpathSpy.mockRestore();
+    }
+  });
+
+  test("a copy that loses a TOCTOU race after realpath already proved the file existed is treated as no login found, not a crash", async () => {
+    // Not dead code: realpath proved `source` existed, but a concurrent `codex login`/`logout`
+    // can still unlink it before this copy runs. This is that race, forced deterministically.
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const linkSpy = spyOn(fsPromises, "link")
+      .mockImplementation(async () => { throw Object.assign(new Error("cross-device"), { code: "EXDEV" }); });
+    const copySpy = spyOn(fsPromises, "copyFile")
+      .mockImplementation(async () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }); });
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      const response = await client.query(baseRequest());
+      expect(response.sessionId).toBe("thread-1");
+      expect(existsSync(join(isolatedHomeOf(constructedWith[0]!), "auth.json"))).toBe(false);
+    } finally {
+      linkSpy.mockRestore();
+      copySpy.mockRestore();
+    }
+  });
+});
+
+describe("CodexAgentClient runtime root failure handling", () => {
+  test("registers exit cleanup for the runtime root even when auth linking fails outright, so a failure does not leak it", async () => {
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const createdRoots: string[] = [];
+    const mkdtempSpy = spyOn(fsPromises, "mkdtemp").mockImplementation((async (prefix: string) => {
+      const root = await realMkdtemp(prefix);
+      createdRoots.push(root);
+      return root;
+    }) as typeof fsPromises.mkdtemp);
+    const linkSpy = spyOn(fsPromises, "link")
+      .mockImplementation(async () => { throw Object.assign(new Error("boom"), { code: "EIO" }); });
+    const originalOnce = process.once.bind(process);
+    let exitHandler: (() => void) | undefined;
+    process.once = ((event: string, handler: () => void) => {
+      if (event === "exit") exitHandler = handler;
+      return process;
+    }) as typeof process.once;
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      await expect(client.query(baseRequest())).rejects.toThrow(/boom/);
+      // Reproduces the reviewer's probe directly: before the fix, a failure here left
+      // "exit handlers registered: 0, orphaned dirs: 1" — the root existed on disk with
+      // nothing ever registered to remove it.
+      const root = createdRoots.at(-1)!;
+      expect(existsSync(root)).toBe(true);
+      expect(exitHandler).toBeDefined();
+      exitHandler!();
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      process.once = originalOnce;
+      linkSpy.mockRestore();
+      mkdtempSpy.mockRestore();
+    }
+  });
+
+  test("a rejected runtime-dir build does not stay cached: the next query() gets a fresh root instead of replaying the same failure forever", async () => {
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    let calls = 0;
+    const linkSpy = spyOn(fsPromises, "link").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error("transient"), { code: "EIO" });
+      // Second attempt degrades to a copy instead of repeating the failure, so success here
+      // is not an accident of the mock but proof the client actually retried the auth step.
+      throw Object.assign(new Error("cross-device"), { code: "EXDEV" });
+    });
+    try {
+      const client = newClient({ ambientCodexHome: ambient });
+      // Before the fix, #runtimeDirs cached the rejected promise from `??=`, so this second
+      // call would reject with the same "transient" error instead of building a fresh root.
+      await expect(client.query(baseRequest())).rejects.toThrow(/transient/);
+      const response = await client.query(baseRequest());
+      expect(response.sessionId).toBe("thread-1");
+      expect(calls).toBe(2);
+    } finally {
+      linkSpy.mockRestore();
+    }
+  });
+});
+
+describe("CodexAgentClient dispose", () => {
+  test("removes the runtime root immediately, without waiting for process exit", async () => {
+    // Not newClient(): disposed explicitly within the test rather than by the shared
+    // afterAll, so the assertion below is checking this test's own cleanup call, not the
+    // file-wide safety net.
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    const workingDirectory = startThreadCalls.at(-1)!.options.workingDirectory as string;
+    expect(existsSync(workingDirectory)).toBe(true);
+    await client.dispose();
+    expect(existsSync(workingDirectory)).toBe(false);
+  });
+
+  test("is a safe no-op when query() was never called", async () => {
+    const client = new CodexAgentClient();
+    await expect(client.dispose()).resolves.toBeUndefined();
   });
 });
 
@@ -481,7 +743,7 @@ describe("CodexAgentClient scratch directory cleanup", () => {
       return process;
     }) as typeof process.once;
     try {
-      const client = new CodexAgentClient();
+      const client = newClient();
       await client.query(baseRequest());
       const workingDirectory = startThreadCalls[0]!.options.workingDirectory as string;
       expect(existsSync(workingDirectory)).toBe(true);
@@ -501,7 +763,7 @@ describe("CodexAgentClient scratch directory cleanup", () => {
       return originalOnce(event, handler);
     }) as typeof process.once;
     try {
-      const client = new CodexAgentClient();
+      const client = newClient();
       await client.query(baseRequest());
       await client.query(baseRequest());
       expect(registrations).toBe(1);

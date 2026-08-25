@@ -289,13 +289,25 @@ describe("CodexAgentClient happy path", () => {
   });
 
   // Defence in depth, not a boundary: a live probe executed a shell command through an
-  // operator MCP server with both flags set. The isolated CODEX_HOME is what closes that path,
-  // and the tests below are the ones that cover the boundary.
-  test("pins config.features.shell_tool and unified_exec to false", async () => {
+  // operator MCP server with shell_tool/unified_exec both set. The isolated CODEX_HOME is what
+  // closes that path for direct exec; apps: false is what closes the built-in codex_apps MCP
+  // surface the isolated home does NOT close on its own (verified live A/B — see the comment
+  // on #ensureCodex); browser_use* is pinned as defence-in-depth on a source read, not a live
+  // A/B. Exact-object equality, not a subset match: this suite has already been bitten twice by
+  // a `toMatchObject`-shaped assertion that stayed green after the flag it was meant to protect
+  // was removed, so a new flag silently dropped from the source must fail this test too.
+  test("pins every config.features flag closing a known Codex MCP/browser gap to false", async () => {
     const client = newClient();
     await client.query(baseRequest());
-    const config = constructedWith[0]!.config as { features: { shell_tool: boolean; unified_exec: boolean } };
-    expect(config.features).toEqual({ shell_tool: false, unified_exec: false });
+    const config = constructedWith[0]!.config as { features: Record<string, boolean> };
+    expect(config.features).toEqual({
+      shell_tool: false,
+      unified_exec: false,
+      apps: false,
+      browser_use: false,
+      browser_use_external: false,
+      browser_use_full_cdp_access: false,
+    });
   });
 
   // Model moved to the SDK's typed ThreadOptions.model (per-thread), not

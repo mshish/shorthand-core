@@ -175,11 +175,44 @@ export class CodexAgentClient implements AgentClient {
         // not apply sandboxMode to MCP tools at all. The isolated CODEX_HOME above is the
         // boundary that closes that path; these flags only remove the direct routes.
         //
-        // Both are needed, and both default to enabled: `codex features list` reports
-        // shell_tool and unified_exec as separate stable flags, so pinning shell_tool alone
+        // Both shell_tool and unified_exec are needed, and both default to enabled: `codex
+        // features list` reports them as separate stable flags, so pinning shell_tool alone
         // leaves a second exec tool switched on and makes the probe above describe a stricter
         // configuration than the one this code creates.
-        features: { shell_tool: false, unified_exec: false },
+        //
+        // apps: false closes a gap the isolated CODEX_HOME does NOT close by itself, confirmed
+        // by controlled A/B against this same isolation: with features.apps left at its default
+        // (stable, true), a prompt that asked the agent to actually call the tool (not describe
+        // it) reached `mcp: codex_apps/codex_document_control.list_document_sessions
+        // (completed)` and returned a real structured result; with `-c features.apps=false` the
+        // identical call returned NO_SUCH_TOOL. So the isolated home removes
+        // operator-configured MCP servers but not Codex's own first-party `codex_apps` MCP
+        // surface — an earlier enumeration under that surface found tools reaching site
+        // databases (`sites_read_database_table_rows`), live environment variables
+        // (`sites_get_environment_variables`, `sites_update_environment_variables`), and
+        // deployments (`sites_deploy_site_version`). Do not delete this flag as redundant with
+        // the isolated home: the isolated home was already in place when that surface was
+        // reachable.
+        //
+        // browser_use / browser_use_external / browser_use_full_cdp_access: false is
+        // defence-in-depth pinned on a source read of the installed @openai/codex-sdk typings,
+        // not a live A/B the way apps above is — treat its evidence as weaker until it is
+        // exercised live. A browser tool is outbound network reachable by injected transcript
+        // text, the same class of gap the MCP surface was, and `sandboxMode: "read-only"`
+        // does not cover it. The webSearchMode/networkAccessEnabled thread pins above do not
+        // cover it either: reading node_modules/@openai/codex-sdk/dist/index.js shows they
+        // emit `--config web_search=...` and `--config
+        // sandbox_workspace_write.network_access=...`, two config keys unrelated to
+        // `features.browser_use*`, which `codex features list` reports as separate stable
+        // flags defaulting to enabled.
+        features: {
+          shell_tool: false,
+          unified_exec: false,
+          apps: false,
+          browser_use: false,
+          browser_use_external: false,
+          browser_use_full_cdp_access: false,
+        },
       },
     });
     return this.#codex;

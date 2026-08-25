@@ -132,31 +132,59 @@ closed with `mcpServers: {}` plus `strictMcpConfig: true`; the latter is require
 project `.mcp.json`, plugins, and agent-frontmatter servers rather than relying on the current
 caller's empty `settingSources` alone.
 
-**The Codex backend has a narrower, explicitly different boundary, and it is the isolated
-`CODEX_HOME`.** `CodexAgentClient` wraps `@openai/codex-sdk`, never accepts vault/note
+**The Codex backend has a narrower, explicitly different boundary: layered defence with a
+named residual, not one single boundary the way the isolated `CODEX_HOME` was once described
+here.** `CodexAgentClient` wraps `@openai/codex-sdk`, never accepts vault/note
 filesystem context (`supportsVaultTools = false`), and always runs in a client-owned scratch
 `workingDirectory` with `sandboxMode: "read-only"` and `approvalPolicy: "never"`. None of that
 produces Claude's empty-tool-set guarantee: `apply_patch`, `view_image`, and other Codex
 built-ins remain, and read-only sandboxing does not make every tool's reads stay below the
 working directory.
 
-The one real boundary is that each client instance gives the child a fresh temporary
-`CODEX_HOME`, so no ambient `config.toml` — and therefore no operator MCP server — is
-discovered. Live probes against the bundled CLI showed a configured home attempting the
+The isolated `CODEX_HOME` removes ambient `config.toml` — and therefore **operator-configured**
+MCP servers. Live probes against the bundled CLI showed a configured home attempting the
 sentinel MCP URL while the isolated home reported no MCP servers and made no MCP attempt. An
 empty `--config mcp_servers={}` was not sufficient, because Codex merges that empty parent
 table without deleting its named children.
 
-**`config: { features: { shell_tool: false } }` is defence in depth and explicitly not a
-boundary.** A turn run that way reports it has no shell-command tool, and that report means
-nothing on its own: with `shell_tool` *and* `unified_exec` both disabled under
-`sandboxMode: "read-only"`, a live probe still executed a shell command by calling an
-operator's ambient `node_repl` MCP server, because Codex does not apply `sandboxMode` to MCP
-tools at all. The flag removes the direct route; the isolated home is what removes the
-arbitrary-execution bypass. Anyone weakening the home isolation on the strength of the shell
-pin would be reinstating that bypass. There is no feature flag that disables MCP loading — the
-MCP-named flags govern MCP behaviour, not whether it loads — so the discovery root is the only
-lever available.
+**That isolation is not the whole boundary: it does not remove Codex's own built-in
+`codex_apps` MCP surface.** A controlled A/B against this same isolated home — same prompt,
+asking the agent to actually call the tool rather than describe it — found the surface callable
+under isolation: with `features.apps` left at its default (`stable`, `true`) the call succeeded
+(`mcp: codex_apps/codex_document_control.list_document_sessions (completed)`, returning a real
+result); with `-c features.apps=false` it returned `NO_SUCH_TOOL`. So `features.apps = false`
+(pinned in `#ensureCodex`, `src/agent/codex-client.ts`) is what closes this path, not the
+isolated home by itself. The surface it closes is not trivial: an earlier enumeration under it
+found tools reaching site databases (`sites_read_database_table_rows`), live environment
+variables (`sites_get_environment_variables`, `sites_update_environment_variables`), and
+deployments (`sites_deploy_site_version`).
+
+**`config: { features: { shell_tool: false, unified_exec: false, apps: false, browser_use:
+false, browser_use_external: false, browser_use_full_cdp_access: false } }` is layered defence,
+not one boundary, and its layers have different evidence grades.** A turn run this way reports
+it has no shell-command tool, and that report means nothing on its own: with `shell_tool` *and*
+`unified_exec` both disabled under `sandboxMode: "read-only"`, a live probe still executed a
+shell command by calling an operator's ambient `node_repl` MCP server, because Codex does not
+apply `sandboxMode` to MCP tools at all. `apps: false` is verified by the live A/B above. The
+`browser_use*` flags are pinned as defence-in-depth on a source read of the installed
+`@openai/codex-sdk` typings only, not a live A/B: a browser tool is outbound network reachable
+by injected transcript text, the same class of gap as the MCP one, and reading the SDK's
+`exec.ts` shows the existing `webSearchMode`/`networkAccessEnabled` thread pins emit `--config
+web_search=...` and `--config sandbox_workspace_write.network_access=...` — two config keys
+unrelated to `features.browser_use*`, which `codex features list` reports as separate stable
+flags defaulting to enabled. Anyone weakening the home isolation on the strength of any of these
+flags would be reinstating the exact bypass each flag was added to cover, not removing a
+redundant second control. There is no feature flag that disables MCP loading — the MCP-named
+flags govern MCP behaviour, not whether it loads — so the discovery root remains the lever for
+*operator* MCP servers specifically; `codex_apps` needed its own flag because it is not
+operator-configured.
+
+**Known residual, closed by neither the isolated home nor any pin above.** Live testing (raw
+CLI, isolated home, `shell_tool`/`unified_exec`/`apps` all false, without the SDK-level pins
+this client sets) found sub-agent spawning succeeded, and separately that `collaboration.*`
+tools persisted even with `multi_agent` set to `false`. Screenshot/computer-control and plugin
+install returned `NO_SUCH_TOOL` under the same conditions. This is layered defence with a named
+residual, not a guarantee: do not read the flags above as closing everything Codex can reach.
 
 Isolation is not free, because `CODEX_HOME` is the single discovery root for **both**
 `config.toml` and `auth.json`. Two consequences, both deliberate:

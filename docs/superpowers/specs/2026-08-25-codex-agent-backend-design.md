@@ -43,6 +43,31 @@ Verified against `github.com/openai/codex` source and docs (not assumed):
   (`mcp_2026_07_28`, `non_prefixed_mcp_tool_names`, `tool_call_mcp_elicitation`,
   `enable_mcp_apps`) govern MCP behaviour rather than whether it loads — so the config
   discovery root is the only lever, and the isolated `CODEX_HOME` below is the actual boundary.
+- **Correction: the isolated `CODEX_HOME` is not the actual boundary either — it is one layer,
+  and does not remove Codex's own built-in `codex_apps` MCP surface.** Still later live testing
+  corrected the bullet above in turn. A controlled A/B against the same isolated home — same
+  prompt, asking the agent to actually call the tool rather than describe it — found the
+  surface callable under isolation alone: with `features.apps` left at its default (`stable`,
+  `true`), the call succeeded (`mcp: codex_apps/codex_document_control.list_document_sessions
+  (completed)`, returning a real result); with `-c features.apps=false` it returned
+  `NO_SUCH_TOOL`. So `features.apps = false` — not the discovery-root override — is what closes
+  this path; the discovery root remains what closes *operator-configured* MCP servers, which is
+  a narrower claim than "the actual boundary" above stated. The surface reached tools against
+  site databases (`sites_read_database_table_rows`), live environment variables
+  (`sites_get_environment_variables`, `sites_update_environment_variables`), and deployments
+  (`sites_deploy_site_version`) — not a trivial residual to have left open. Separately, a
+  browser tool (`browser_use`/`browser_use_external`/`browser_use_full_cdp_access`, all
+  `stable`/`true` by default per `codex features list`) is outbound network reachable by
+  injected transcript text under the same isolated home, and neither `webSearchMode:
+  "disabled"` nor `networkAccessEnabled: false` cover it — reading
+  `node_modules/@openai/codex-sdk/dist/index.js` shows those two thread options emit `--config
+  web_search=...` and `--config sandbox_workspace_write.network_access=...`, config keys with
+  no relationship to `features.browser_use*`. That flag is pinned as defence-in-depth on this
+  source read, not on a live A/B the way `apps` is, and is graded accordingly in
+  `docs/DESIGN.md`. Also live-observed and **not** closed by any pin in this codebase: sub-agent
+  spawning succeeded, and `collaboration.*` tools persisted even with `multi_agent` set to
+  `false`. The accurate framing is layered defence with a named residual, not a single boundary
+  — see `docs/DESIGN.md`'s Invariants section, which this correction also updates.
 - **`CODEX_HOME` is the single discovery root for both `config.toml` and `auth.json`.** A scan
   of the binary's `CODEX_*` strings found no separate config-path variable, so isolating config
   necessarily orphans the login: auth has to be brought across deliberately. Isolation also
@@ -87,11 +112,16 @@ contains vault or note content. This limits what the application intentionally e
 not a claim that every remaining built-in is path-confined.
 
 MCP is where execution actually gets in, because Codex does not apply `sandboxMode` to MCP
-tools, so the boundary has to be the config discovery root. Each client creates a second scratch
-subdirectory and supplies it as `CODEX_HOME` through `CodexOptions.env`. The directory has no
-`config.toml`; when no API key override is supplied, the client hard-links only the ambient
-`auth.json` into it, so a CLI login the user already performed keeps working without importing
-MCP servers, skills, or any other operator configuration. A link rather than a copy for two
+tools, so the config discovery root is one lever and `config.features.apps = false` is a
+second, necessary one — the discovery root closes *operator-configured* MCP servers only; it
+does not remove Codex's own built-in `codex_apps` MCP surface, which stayed callable under
+isolation until `features.apps = false` was added (see the correction under "Researched facts"
+above and `docs/DESIGN.md`'s Invariants section for the verifying A/B). Each client creates a
+second scratch subdirectory and supplies it as `CODEX_HOME` through `CodexOptions.env`. The
+directory has no `config.toml`; when no API key override is supplied, the client hard-links
+only the ambient `auth.json` into it, so a CLI login the user already performed keeps working
+without importing MCP servers, skills, or any other operator configuration. A link rather than
+a copy for two
 reasons: live OAuth credentials are not duplicated on disk, and a token Codex rotates during the
 run is written through to the user's real `auth.json` instead of being discarded with the
 scratch directory. Cross-volume (`EXDEV`) and permission (`EPERM`/`EACCES`) failures fall back

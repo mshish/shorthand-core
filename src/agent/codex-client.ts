@@ -1,7 +1,7 @@
-import { rmSync } from "node:fs";
+import { accessSync, constants, rmSync, statSync } from "node:fs";
 import { copyFile, link, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
 import { Codex } from "@openai/codex-sdk";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
 
@@ -399,13 +399,79 @@ function turnFailureMessage(event: CodexEvent): string {
   return typeof event.message === "string" ? event.message : `Codex SDK turn failed (${String(event.type)}).`;
 }
 
+/**
+ * An absolute path to a spawnable Codex executable, or `undefined` when none was found.
+ *
+ * The PATH search here is not a convenience: nothing downstream performs one. The SDK's
+ * `findCodexPath()` is `require.resolve("@openai/codex/package.json")` or throw, and the only
+ * other PATH-aware code in `@openai/codex-sdk` (`prependPathDirs`) *writes* the child's PATH
+ * rather than searching it. So an unconfigured caller with a perfectly good `codex` on PATH
+ * previously got a backend that could not start at all — and the npm lookup that would have
+ * saved it is exactly the one that fails in the Obsidian plugin, whose bundled `main.js` is
+ * deployed away from `node_modules`. `spawn` does search PATH, and the SDK spawns whatever
+ * `executablePath` it is handed, so resolving the path here is what makes the backend work
+ * without configuration.
+ */
 export function detectCodexExecutable(
   override?: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   const configured = override ?? environment.SHORTHAND_CODEX_EXE;
-  if (configured !== undefined && configured.length > 0) return resolve(configured);
+  if (configured !== undefined && configured.length > 0) {
+    // A bare command name is not a path, and `resolve()` destroys it: `resolve("codex")` is
+    // `<cwd>/codex`, a file that does not exist, turning the one input that would have worked
+    // into one that cannot. Only something already shaped like a path gets resolved.
+    if (isAbsolute(configured) || basename(configured) !== configured) return resolve(configured);
+    // Handed back verbatim when the PATH search comes up empty, never downgraded to
+    // `undefined`: undefined sends the SDK to its own npm lookup, which would silently run a
+    // different Codex than the one the operator named — or throw with no mention of the name.
+    return searchPathForExecutable(configured, environment) ?? configured;
+  }
+  return searchPathForExecutable("codex", environment);
+}
+
+/**
+ * First match in PATH order, so the operator's own PATH precedence decides which Codex runs.
+ * Reads PATH out of `environment` rather than `process.env` so the parameter stays honest.
+ */
+function searchPathForExecutable(command: string, environment: NodeJS.ProcessEnv): string | undefined {
+  // Windows environment lookups are case-insensitive and the variable is conventionally spelled
+  // `Path` there, while Node's process.env exposes whatever casing the OS handed over. Same
+  // scan as resolveAmbientCodexHome does for CODEX_HOME, for the same reason.
+  const searchPath = Object.entries(environment)
+    .find(([key, value]) => key.toUpperCase() === "PATH" && value !== undefined && value.length > 0)?.[1];
+  if (searchPath === undefined) return undefined;
+  // Only a real `.exe` is returned on Windows. The npm-generated `codex`, `codex.cmd` and
+  // `codex.ps1` shims also sit on PATH, and none of them is an image CreateProcess can run:
+  // `spawnSync("codex.cmd", ...)` fails with EINVAL, because the SDK spawns without
+  // `shell: true`. Returning a shim would therefore convert a working install into a failure at
+  // the first enhancement pass, hours after the setup that caused it. PATHEXT is deliberately
+  // not consulted for the same reason — every extension it lists other than `.exe` names one of
+  // those wrapper formats.
+  const fileName = process.platform === "win32" && !command.toLowerCase().endsWith(".exe")
+    ? `${command}.exe`
+    : command;
+  for (const directory of searchPath.split(delimiter)) {
+    if (directory.length === 0) continue;
+    const candidate = join(directory, fileName);
+    if (isSpawnableFile(candidate)) return resolve(candidate);
+  }
   return undefined;
+}
+
+function isSpawnableFile(candidate: string): boolean {
+  try {
+    if (!statSync(candidate).isFile()) return false;
+    // On POSIX any file at all can sit in a PATH directory, so the execute bit is the only
+    // thing separating the binary from a stray README; Windows has no such bit, and the `.exe`
+    // requirement above stands in for it.
+    if (process.platform !== "win32") accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    // A missing candidate is the ordinary case — this runs once per PATH directory — and a
+    // permission error on one directory must not abort the walk over the rest.
+    return false;
+  }
 }
 
 /**

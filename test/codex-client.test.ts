@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { buildSectionOutputSchema, type AgentQueryRequest } from "../src/agent/contract.js";
 
 // Captured before any spyOn() below replaces these module exports, so mocked
@@ -133,9 +133,84 @@ function baseRequest(overrides: Partial<AgentQueryRequest> = {}): AgentQueryRequ
   };
 }
 
+// PATH detection reads the real filesystem, so every case below builds its own directory tree
+// and injects it as PATH. A test run must never depend on a Codex actually being installed on
+// the machine running it, and must never assert against the developer's own PATH.
+const pathFixtures: string[] = [];
+const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
+const isWindows = process.platform === "win32";
+
+function pathDirectory(...entries: readonly string[]): string {
+  const directory = mkdtempSync(join(tmpdir(), "shorthand-codex-path-"));
+  pathFixtures.push(directory);
+  // 0o755 because the POSIX branch requires the execute bit; the mode is inert on Windows,
+  // where the `.exe` extension is what stands in for it.
+  for (const entry of entries) writeFileSync(join(directory, entry), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  return directory;
+}
+
+afterAll(() => {
+  for (const path of pathFixtures.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
 describe("detectCodexExecutable", () => {
-  test("returns undefined when nothing is configured, leaving PATH auto-detection to the SDK", () => {
+  test("returns undefined when nothing is configured and PATH is empty", () => {
+    // The SDK cannot cover for this: findCodexPath() only does an npm resolve, never a PATH
+    // search, so undefined here means no Codex at all rather than "let the SDK look".
     expect(detectCodexExecutable(undefined, {})).toBeUndefined();
+    expect(detectCodexExecutable(undefined, { PATH: "" })).toBeUndefined();
+  });
+
+  test("returns undefined when PATH holds nothing that looks like Codex", () => {
+    expect(detectCodexExecutable(undefined, { PATH: pathDirectory("notes.txt") })).toBeUndefined();
+  });
+
+  test("finds a Codex on PATH with no configuration at all", () => {
+    const directory = pathDirectory(codexBinaryName);
+    expect(detectCodexExecutable(undefined, { PATH: directory })).toBe(join(directory, codexBinaryName));
+  });
+
+  test("walks PATH in order so the user's own precedence wins", () => {
+    const first = pathDirectory(codexBinaryName);
+    const second = pathDirectory(codexBinaryName);
+    expect(detectCodexExecutable(undefined, { PATH: [first, second].join(delimiter) }))
+      .toBe(join(first, codexBinaryName));
+  });
+
+  test("skips PATH entries that do not hold Codex rather than giving up at the first miss", () => {
+    const empty = pathDirectory();
+    const real = pathDirectory(codexBinaryName);
+    expect(detectCodexExecutable(undefined, { PATH: [empty, real].join(delimiter) }))
+      .toBe(join(real, codexBinaryName));
+  });
+
+  test("reads PATH whatever case the key was set in, as Windows spells it `Path`", () => {
+    const directory = pathDirectory(codexBinaryName);
+    expect(detectCodexExecutable(undefined, { Path: directory })).toBe(join(directory, codexBinaryName));
+  });
+
+  // Windows-only by nature: on POSIX the npm shim is a shell script with the execute bit and is
+  // perfectly spawnable, so there is nothing to exclude.
+  test.skipIf(!isWindows)("never returns an npm shim, which spawn cannot execute without a shell", () => {
+    // codex/codex.cmd/codex.ps1 with no codex.exe is exactly what an `npm i -g @openai/codex`
+    // install leaves on PATH. spawnSync("codex.cmd") fails EINVAL, so returning one would trade
+    // a clean "no Codex found" for a failure at the first enhancement pass.
+    const shimsOnly = pathDirectory("codex", "codex.cmd", "codex.ps1");
+    expect(detectCodexExecutable(undefined, { PATH: shimsOnly })).toBeUndefined();
+  });
+
+  test.skipIf(!isWindows)("passes over a shim directory to reach a real codex.exe later in PATH", () => {
+    const shimsOnly = pathDirectory("codex", "codex.cmd", "codex.ps1");
+    const real = pathDirectory("codex.exe");
+    expect(detectCodexExecutable(undefined, { PATH: [shimsOnly, real].join(delimiter) }))
+      .toBe(join(real, "codex.exe"));
+  });
+
+  test("ignores a directory that merely shares the executable's name", () => {
+    const directory = mkdtempSync(join(tmpdir(), "shorthand-codex-path-"));
+    pathFixtures.push(directory);
+    mkdirSync(join(directory, codexBinaryName));
+    expect(detectCodexExecutable(undefined, { PATH: directory })).toBeUndefined();
   });
 
   test("resolves an explicit override", () => {
@@ -150,6 +225,25 @@ describe("detectCodexExecutable", () => {
   test("an explicit override wins over the environment variable", () => {
     expect(detectCodexExecutable("/explicit/codex", { SHORTHAND_CODEX_EXE: "/env/codex" }))
       .toBe(resolve("/explicit/codex"));
+  });
+
+  test("SHORTHAND_CODEX_EXE beats whatever is on PATH", () => {
+    const onPath = pathDirectory(codexBinaryName);
+    const configured = join(pathDirectory(codexBinaryName), codexBinaryName);
+    expect(detectCodexExecutable(undefined, { SHORTHAND_CODEX_EXE: configured, PATH: onPath })).toBe(configured);
+  });
+
+  test("a bare command name is looked up on PATH, not mangled into <cwd>/codex by resolve()", () => {
+    const directory = pathDirectory(codexBinaryName);
+    const found = detectCodexExecutable("codex", { PATH: directory });
+    expect(found).toBe(join(directory, codexBinaryName));
+    expect(found).not.toBe(resolve("codex"));
+  });
+
+  test("a bare command name that PATH cannot resolve is handed back verbatim, not discarded", () => {
+    // Returning undefined would send the SDK to its own npm lookup and silently run a different
+    // Codex than the one the operator named; resolve() would invent a <cwd> path that is worse.
+    expect(detectCodexExecutable("codex", {})).toBe("codex");
   });
 
   test("does not fall back to a hardcoded install path the way detectClaudeExecutable does", () => {

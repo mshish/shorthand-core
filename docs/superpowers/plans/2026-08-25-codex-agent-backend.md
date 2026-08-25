@@ -160,7 +160,6 @@ for the Codex CLI's own installer.
 1. Write the failing test — rewrite the top of `test/codex-client.test.ts` to the dynamic-import-after-`mock.module` pattern (required because `mock.module` must register before the module under test is first imported), and add the happy-path suite:
 ```ts
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildSectionOutputSchema, type AgentQueryRequest } from "../src/agent/contract.js";
 
@@ -173,17 +172,35 @@ const runStreamedCalls: { prompt: string; options: Record<string, unknown> }[] =
 const constructedWith: Record<string, unknown>[] = [];
 let events = (): AsyncIterable<CodexEventLike> => defaultEvents();
 
+// Real @openai/codex-sdk (0.149.1) shape, verified against the installed .d.ts, NOT guessed:
+// - Structured output arrives as an `item.completed` event wrapping an `agent_message` item
+//   whose `text` field is a JSON string (TurnCompletedEvent itself carries only token usage).
+// - `runStreamed()` resolves to `{ events: AsyncGenerator<ThreadEvent> }` — the events must be
+//   destructured out of the resolved value, the resolved value is not itself async-iterable.
+const ZERO_USAGE = {
+  input_tokens: 0,
+  cached_input_tokens: 0,
+  cache_write_input_tokens: 0,
+  output_tokens: 0,
+  reasoning_output_tokens: 0,
+};
+
+function agentMessageEvent(payload: unknown): CodexEventLike {
+  return { type: "item.completed", item: { id: "item-1", type: "agent_message", text: JSON.stringify(payload) } };
+}
+
 function defaultEvents(): AsyncIterable<CodexEventLike> {
   return (async function* () {
     yield { type: "thread.started", thread_id: "thread-1" };
-    yield { type: "turn.completed", output: { sections: [] } };
+    yield agentMessageEvent({ sections: [] });
+    yield { type: "turn.completed", usage: ZERO_USAGE };
   })();
 }
 
 class FakeThread {
   runStreamed(prompt: string, options: Record<string, unknown>) {
     runStreamedCalls.push({ prompt, options });
-    return events();
+    return Promise.resolve({ events: events() });
   }
 }
 
@@ -191,11 +208,11 @@ class FakeCodex {
   constructor(options: Record<string, unknown> = {}) {
     constructedWith.push(options);
   }
-  async startThread(options: Record<string, unknown>) {
+  startThread(options: Record<string, unknown>) {
     startThreadCalls.push({ options });
     return new FakeThread();
   }
-  async resumeThread(threadId: string, options: Record<string, unknown>) {
+  resumeThread(threadId: string, options: Record<string, unknown>) {
     resumeThreadCalls.push({ threadId, options });
     return new FakeThread();
   }
@@ -256,14 +273,32 @@ describe("CodexAgentClient construction", () => {
     expect(new CodexAgentClient().supportsVaultTools).toBe(false);
   });
 
-  test("forwards codexPathOverride and apiKey to the Codex constructor", () => {
-    new CodexAgentClient({ codexPathOverride: "C:\\tools\\codex.exe", apiKey: "sk-test" });
-    expect(constructedWith[0]).toEqual({ codexPathOverride: "C:\\tools\\codex.exe", apiKey: "sk-test" });
+  test("does not construct the underlying Codex client until the first query", () => {
+    new CodexAgentClient();
+    // CodexOptions.config (which carries base_instructions) is constructor-level, not
+    // per-thread, so construction must wait for the first request.systemPrompt.
+    expect(constructedWith).toHaveLength(0);
   });
 
-  test("omits both when neither is given, so a locally logged-in codex CLI session is reused", () => {
-    new CodexAgentClient();
-    expect(constructedWith[0]).toEqual({});
+  test("forwards codexPathOverride and apiKey to the Codex constructor on first query", async () => {
+    const client = new CodexAgentClient({ codexPathOverride: "C:\\tools\\codex.exe", apiKey: "sk-test" });
+    await client.query(baseRequest());
+    expect(constructedWith[0]!.codexPathOverride).toBe("C:\\tools\\codex.exe");
+    expect(constructedWith[0]!.apiKey).toBe("sk-test");
+  });
+
+  test("omits both when neither is given, so a locally logged-in codex CLI session is reused", async () => {
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    expect(constructedWith[0]).not.toHaveProperty("codexPathOverride");
+    expect(constructedWith[0]).not.toHaveProperty("apiKey");
+  });
+
+  test("constructs the underlying Codex client only once, reusing it across repeated calls", async () => {
+    const client = new CodexAgentClient();
+    await client.query(baseRequest());
+    await client.query(baseRequest());
+    expect(constructedWith).toHaveLength(1);
   });
 });
 
@@ -309,14 +344,48 @@ describe("CodexAgentClient happy path", () => {
     expect(startThreadCalls[1]!.options.workingDirectory).toBe(startThreadCalls[0]!.options.workingDirectory);
   });
 
-  test("writes the system prompt to an instructions file once and reuses it across calls", async () => {
+  test("passes the system prompt as base_instructions on the underlying Codex client's config, once, reused across calls", async () => {
     const client = new CodexAgentClient();
     await client.query(baseRequest({ systemPrompt: "SAFE PREAMBLE\n\nGuidance." }));
     await client.query(baseRequest({ systemPrompt: "SAFE PREAMBLE\n\nGuidance." }));
-    const firstConfig = startThreadCalls[0]!.options.config as { base_instructions_file: string };
-    const secondConfig = startThreadCalls[1]!.options.config as { base_instructions_file: string };
-    expect(secondConfig.base_instructions_file).toBe(firstConfig.base_instructions_file);
-    expect(await readFile(firstConfig.base_instructions_file, "utf8")).toBe("SAFE PREAMBLE\n\nGuidance.");
+    expect(constructedWith).toHaveLength(1);
+    const config = constructedWith[0]!.config as { base_instructions: string };
+    expect(config.base_instructions).toBe("SAFE PREAMBLE\n\nGuidance.");
+  });
+
+  test("parses the agent_message item's text as the structured output", async () => {
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: "thread-2" };
+      yield agentMessageEvent({ sections: [{ heading: "H", markdown: "m" }] });
+      yield { type: "turn.completed", usage: ZERO_USAGE };
+    })();
+    const client = new CodexAgentClient();
+    const response = await client.query(baseRequest());
+    expect(response.structuredOutput).toEqual({ sections: [{ heading: "H", markdown: "m" }] });
+  });
+
+  test("ignores non-agent_message items (e.g. shell exec) when looking for the output", async () => {
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: "thread-3" };
+      yield { type: "item.completed", item: { id: "cmd-1", type: "command_execution", command: "echo hi", aggregated_output: "hi\n", status: "completed" } };
+      yield agentMessageEvent({ sections: [] });
+      yield { type: "turn.completed", usage: ZERO_USAGE };
+    })();
+    const client = new CodexAgentClient();
+    const response = await client.query(baseRequest());
+    expect(response.structuredOutput).toEqual({ sections: [] });
+  });
+
+  test("treats a non-JSON agent_message as invalid output with a diagnostic, not a thrown error", async () => {
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: "thread-4" };
+      yield { type: "item.completed", item: { id: "item-1", type: "agent_message", text: "not json" } };
+      yield { type: "turn.completed", usage: ZERO_USAGE };
+    })();
+    const client = new CodexAgentClient();
+    const response = await client.query(baseRequest());
+    expect(response.structuredOutput).toBeUndefined();
+    expect(response.diagnostics?.[0]).toMatch(/not valid JSON/);
   });
 
   test("reads request.tools but never forwards it, since Codex has no tool allowlist", async () => {
@@ -332,13 +401,14 @@ describe("CodexAgentClient happy path", () => {
     const client = new CodexAgentClient();
     await expect(client.query(baseRequest({ signal: controller.signal }))).rejects.toThrow(/abort/i);
     expect(startThreadCalls).toHaveLength(0);
+    expect(constructedWith).toHaveLength(0);
   });
 });
 ```
 2. Run `bun test test/codex-client.test.ts`. Verify failure: `CodexAgentClient` is not exported.
 3. Write the minimal implementation — append to `src/agent/codex-client.ts` (the `detectCodexExecutable` function from Task 2 stays; move it to the bottom of the file so the class reads first):
 ```ts
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Codex } from "@openai/codex-sdk";
@@ -359,21 +429,18 @@ export class CodexAgentClient implements AgentClient {
    */
   readonly supportsVaultTools = false;
 
-  readonly #codex: Codex;
+  readonly #options: CodexAgentClientOptions;
+  #codex: Codex | undefined;
   #scratchDir: Promise<string> | undefined;
-  #instructionsPath: Promise<string> | undefined;
 
   constructor(options: CodexAgentClientOptions = {}) {
-    this.#codex = new Codex({
-      ...(options.codexPathOverride === undefined ? {} : { codexPathOverride: options.codexPathOverride }),
-      ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
-    });
+    this.#options = options;
   }
 
   async query(request: AgentQueryRequest): Promise<AgentQueryResponse> {
     if (request.signal?.aborted === true) throw new AgentQueryError("Agent query aborted.");
+    const codex = this.#ensureCodex(request.systemPrompt);
     const workingDirectory = await this.#ensureScratchDir();
-    const instructionsPath = await this.#ensureInstructions(request.systemPrompt);
     const threadOptions = {
       // Always the scratch directory this client owns, never request.cwd: this backend is
       // never handed vault content (supportsVaultTools = false), and this field is not read
@@ -385,41 +452,67 @@ export class CodexAgentClient implements AgentClient {
       // request.tools is deliberately never read into this object: ThreadOptions has no
       // tool-allowlist field, so there is no way to keep shell-exec/apply_patch out of what
       // the model is offered the way Claude's `tools: []` does.
-      config: { base_instructions_file: instructionsPath },
     };
-    const thread = await this.#codex.startThread(threadOptions);
+    const thread = codex.startThread(threadOptions);
     const turnOptions = { outputSchema: request.outputSchema };
-    const stream = thread.runStreamed(request.prompt, turnOptions);
+    // runStreamed() resolves to { events: AsyncGenerator<ThreadEvent> } — the resolved value
+    // is not itself async-iterable, unlike the Claude Agent SDK's query() stream.
+    const { events } = await thread.runStreamed(request.prompt, turnOptions);
     let sessionId: string | undefined;
     let structuredOutput: unknown;
-    for await (const rawEvent of stream) {
+    let diagnostics: string[] = [];
+    for await (const rawEvent of events) {
       const event = rawEvent as CodexEvent;
+      // The session id is stable for the life of the stream: capture it off the first
+      // thread.started message seen and never overwrite it on later messages.
       if (sessionId === undefined && event.type === "thread.started" && typeof event.thread_id === "string") {
         sessionId = event.thread_id;
       }
-      if (event.type === "turn.completed") structuredOutput = event.output;
+      // TurnCompletedEvent carries only token usage, not the answer. The answer is an
+      // item.completed event wrapping an agent_message item; other item types (shell exec,
+      // file changes, MCP tool calls) can appear in the same stream and must be ignored here.
+      if (event.type === "item.completed") {
+        const item = event.item as CodexEvent | undefined;
+        if (item?.type === "agent_message" && typeof item.text === "string") {
+          // outputSchema is meant to be hard-enforced at the API level, so `text` should
+          // always be valid JSON here — but "should always be" is exactly what this
+          // project's own "do not assume, empirically test" principle distrusts. A parse
+          // failure is treated as an invalid pass (structuredOutput left undefined,
+          // diagnostics carried for the corrective retry in queryForSections), the same way
+          // ClaudeAgentClient's schema-exhaustion path is — not thrown, which would skip the
+          // corrective retry entirely.
+          try {
+            structuredOutput = JSON.parse(item.text);
+          } catch {
+            diagnostics = [`Codex agent_message text was not valid JSON: ${item.text.slice(0, 200)}`];
+          }
+        }
+      }
     }
     if (sessionId === undefined) throw new Error("Codex SDK returned no thread id.");
-    return { structuredOutput, sessionId };
+    return { structuredOutput, sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
+  }
+
+  #ensureCodex(systemPrompt: string): Codex {
+    // Lazy: CodexOptions.config (which carries base_instructions, replacing Codex's default
+    // system prompt — see docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md) is
+    // constructor-level, not per-thread, so the Codex instance can't be built until the first
+    // call's systemPrompt is known. Built once and reused after that, which relies on
+    // request.systemPrompt being identical across every call on one client instance — already
+    // true today (EnhanceRunnerOptions.guidance is fixed at construction — see AGENTS.md "the
+    // enhancement prompt is split, deliberately"). If that ever stops being true, this
+    // silently keeps serving the FIRST call's instructions to every later call.
+    this.#codex ??= new Codex({
+      ...(this.#options.codexPathOverride === undefined ? {} : { codexPathOverride: this.#options.codexPathOverride }),
+      ...(this.#options.apiKey === undefined ? {} : { apiKey: this.#options.apiKey }),
+      config: { base_instructions: systemPrompt },
+    });
+    return this.#codex;
   }
 
   #ensureScratchDir(): Promise<string> {
     this.#scratchDir ??= mkdtemp(join(tmpdir(), "shorthand-codex-"));
     return this.#scratchDir;
-  }
-
-  #ensureInstructions(systemPrompt: string): Promise<string> {
-    // Lazy, written once per instance and reused on every later call. This relies on
-    // request.systemPrompt being identical across every call on one client instance, which
-    // already holds today (EnhanceRunnerOptions.guidance is fixed at construction — see
-    // AGENTS.md "the enhancement prompt is split, deliberately"). If that ever stops being
-    // true, this silently keeps serving the FIRST call's instructions to every later call.
-    this.#instructionsPath ??= this.#ensureScratchDir().then(async (dir) => {
-      const path = join(dir, "instructions.md");
-      await writeFile(path, systemPrompt, "utf8");
-      return path;
-    });
-    return this.#instructionsPath;
   }
 }
 
@@ -432,7 +525,6 @@ export function detectCodexExecutable(
   return undefined;
 }
 ```
-   **Substitute here if Task 1 found different names**: the `config: { base_instructions_file: ... }` shape, and the `thread_id`/`output` event field names, are documented guesses — replace them with what Task 1's reading of the installed `.d.ts` actually shows.
 4. Run `bun test test/codex-client.test.ts`. Verify all cases pass.
 
 **Gate**: `bun test`, `bun run typecheck`.
@@ -444,7 +536,9 @@ feat(agent): add CodexAgentClient happy-path query
 Wraps @openai/codex-sdk as a sibling AgentClient to ClaudeAgentClient
 and LlmAgentClient: a scratch working directory this client owns
 (never request.cwd), read-only/no-approval thread options, and a
-lazily-written, reused instructions file standing in for systemPrompt.
+lazily-constructed Codex instance whose config.base_instructions
+carries systemPrompt (config is constructor-level in this SDK, so
+construction waits for the first call's systemPrompt, then is reused).
 ```
 
 ---
@@ -468,7 +562,8 @@ describe("CodexAgentClient session resume", () => {
     const first = await client.query(baseRequest());
     events = () => (async function* () {
       yield { type: "thread.started", thread_id: first.sessionId };
-      yield { type: "turn.completed", output: { sections: [{ heading: "H", markdown: "m" }] } };
+      yield agentMessageEvent({ sections: [{ heading: "H", markdown: "m" }] });
+      yield { type: "turn.completed", usage: ZERO_USAGE };
     })();
     const second = await client.query(baseRequest({ sessionId: first.sessionId }));
     expect(resumeThreadCalls).toHaveLength(1);
@@ -488,14 +583,15 @@ describe("CodexAgentClient session resume", () => {
 2. Run `bun test test/codex-client.test.ts`. Verify failure: both calls hit `startThread`, so `resumeThreadCalls` is empty in the first test.
 3. Write the minimal implementation — in `query()`, replace:
 ```ts
-const thread = await this.#codex.startThread(threadOptions);
+const thread = codex.startThread(threadOptions);
 ```
 with:
 ```ts
 const thread = typeof request.sessionId === "string" && request.sessionId.length > 0
-  ? await this.#codex.resumeThread(request.sessionId, threadOptions)
-  : await this.#codex.startThread(threadOptions);
+  ? codex.resumeThread(request.sessionId, threadOptions)
+  : codex.startThread(threadOptions);
 ```
+(`Codex#startThread`/`#resumeThread` are synchronous in the real SDK, returning a `Thread` directly — no `await` here; the `await` stays on `thread.runStreamed(...)` below, unchanged.)
 4. Run `bun test test/codex-client.test.ts`. Verify all cases pass.
 
 **Gate**: `bun test`, `bun run typecheck`.
@@ -543,17 +639,18 @@ describe("CodexAgentClient failure mapping", () => {
     await expect(client.query(baseRequest())).rejects.toThrow(/connection reset/);
   });
 
-  test("a stream that never completes a turn is a query error, not a silent undefined output", async () => {
+  test("a stream that never emits an agent_message is a query error, not a silent undefined output", async () => {
     events = () => (async function* () {
       yield { type: "thread.started", thread_id: "thread-y" };
+      yield { type: "turn.completed", usage: ZERO_USAGE };
     })();
     const client = new CodexAgentClient();
-    await expect(client.query(baseRequest())).rejects.toThrow(/stream ended without a completed turn/);
+    await expect(client.query(baseRequest())).rejects.toThrow(/stream ended without an agent message/);
   });
 
   test("a stream with no thread.started event fails loudly rather than returning an empty session id", async () => {
     events = () => (async function* () {
-      yield { type: "turn.completed", output: { sections: [] } };
+      yield agentMessageEvent({ sections: [] });
     })();
     const client = new CodexAgentClient();
     await expect(client.query(baseRequest())).rejects.toThrow(/no thread id/);
@@ -561,27 +658,35 @@ describe("CodexAgentClient failure mapping", () => {
 });
 ```
 2. Run `bun test test/codex-client.test.ts`. Verify failure on the first three (nothing throws today; the fourth already passes from Task 3).
-3. Write the minimal implementation — in `query()`'s streaming loop:
+3. Write the minimal implementation — in `query()`'s streaming loop, add a `sawAgentMessage` flag and the `turn.failed`/`error` branch:
 ```ts
 let sessionId: string | undefined;
 let structuredOutput: unknown;
-let sawTurnCompleted = false;
-for await (const rawEvent of stream) {
+let diagnostics: string[] = [];
+let sawAgentMessage = false;
+for await (const rawEvent of events) {
   const event = rawEvent as CodexEvent;
   if (sessionId === undefined && event.type === "thread.started" && typeof event.thread_id === "string") {
     sessionId = event.thread_id;
   }
-  if (event.type === "turn.completed") {
-    sawTurnCompleted = true;
-    structuredOutput = event.output;
+  if (event.type === "item.completed") {
+    const item = event.item as CodexEvent | undefined;
+    if (item?.type === "agent_message" && typeof item.text === "string") {
+      sawAgentMessage = true;
+      try {
+        structuredOutput = JSON.parse(item.text);
+      } catch {
+        diagnostics = [`Codex agent_message text was not valid JSON: ${item.text.slice(0, 200)}`];
+      }
+    }
   }
   if (event.type === "turn.failed" || event.type === "error") {
     throw new AgentQueryError(turnFailureMessage(event));
   }
 }
 if (sessionId === undefined) throw new Error("Codex SDK returned no thread id.");
-if (!sawTurnCompleted) throw new AgentQueryError("Codex SDK stream ended without a completed turn.");
-return { structuredOutput, sessionId };
+if (!sawAgentMessage) throw new AgentQueryError("Codex SDK stream ended without an agent message.");
+return { structuredOutput, sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
 ```
 Add the helper below the class:
 ```ts

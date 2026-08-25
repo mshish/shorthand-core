@@ -65,16 +65,25 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
 - For the default Claude backend, the `claude` CLI must be installed and logged in. On Windows
   the standard `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location
   can be passed with `--claude`.
+- For the `codex` backend, the `codex` CLI must be installed and logged in. There is no
+  hardcoded install-path fallback (unlike the Claude backend's Windows default), so point
+  `--codex-exe <path>` or `SHORTHAND_CODEX_EXE` at it if it is not on `PATH`.
 - Node.js 22 for headless CLI use. The floor follows a dependency's requirement rather than a
   preference: the AI SDK packages (`ai`, `@ai-sdk/*`) declare `engines.node >=22`. Bun is
   required for the development build and test commands.
 
 ## Enhancement backends
 
-The CLI selects a backend with `--backend claude|llm`; omitting the flag selects `claude`.
-The default backend resumes a Claude Agent SDK session and requires the `claude` CLI described
-above. The `llm` backend instead uses the Vercel AI SDK to call OpenAI, Anthropic, Ollama, or
-another OpenAI-compatible endpoint, and does not launch Claude Code.
+The CLI selects a backend with `--backend claude|llm|codex`; omitting the flag selects
+`claude`. The default backend resumes a Claude Agent SDK session and requires the `claude` CLI
+described above. The `llm` backend instead uses the Vercel AI SDK to call OpenAI, Anthropic,
+Ollama, or another OpenAI-compatible endpoint, and does not launch Claude Code. The `codex`
+backend wraps OpenAI's `@openai/codex-sdk` and, by default, reuses a locally logged-in `codex`
+CLI session — no credentials file, no required API key (an `apiKey` constructor override
+exists for the rarer case). It runs every pass in a scratch working directory this client
+owns, with `sandboxMode: "read-only"`, `approvalPolicy: "never"`, and no tools ever forwarded
+to the model in the allowlist sense — see "Invariants" in `docs/DESIGN.md` for the capability
+gap this accepts.
 
 The LLM profile is `llm-credentials.json` under Shorthand's configuration directory: on
 Windows, `%APPDATA%\Shorthand\llm-credentials.json`; on macOS,
@@ -85,9 +94,10 @@ This location is deliberately outside the vault so a plaintext provider key is n
 through vault sync or included in vault backups.
 
 The backends do not have identical lookup capabilities. Claude link-tier passes can use
-`Read`/`Glob`/`Grep` inside the vault. The LLM backend has no tool loop, so every pass runs as
-a tick pass, including the closing pass: its notes will not reference people, projects or
-prior meetings discovered elsewhere in the vault.
+`Read`/`Glob`/`Grep` inside the vault. The LLM and Codex backends have no vault-confined tool
+loop (`supportsVaultTools` is `false` for both), so every pass runs as a tick pass, including
+the closing pass: its notes will not reference people, projects or prior meetings discovered
+elsewhere in the vault.
 
 ## Headless CLI
 

@@ -198,14 +198,20 @@ here comes from asking it to actually perform an action and report the literal r
 choose.** `codex features list -c features.totally_bogus_flag_xyz=false` exits 0 with no error
 and no warning, so a future Codex build that renames or retires `apps`, `browser_use`,
 `shell_tool` or `unified_exec` turns the matching pin into a no-op that nothing here detects —
-no exception, no failing test, no log line. That matters more downstream than it does here: the
+no exception, no failing test, no log line. **The CLI version enforcing them is now the user's by
+default, for every caller, not just downstream ones.** It began as a plugin-only problem — the
 Obsidian plugin cannot use the SDK's vendored binary, because its bundled `main.js` is deployed
-away from `node_modules`, so it spawns whatever Codex the user installed globally. The version
-actually enforcing these pins is therefore the user's, not the one pinned in this repo's
-`package.json` — verified live at 0.149.0 against a repo pinned to 0.149.1, where all four flags
-still existed and still held. Re-run a behavioural probe against the CLI version in play before
-trusting these pins on an unfamiliar install; a green test suite here is evidence about the
-vendored binary only.
+away from `node_modules`, so it spawns whatever Codex the user installed globally — but
+`detectCodexExecutable` now searches `PATH` itself (it has to: the SDK's `findCodexPath()` is an
+npm resolve or a throw, and never looks at `PATH`), so an unconfigured run here takes the first
+`codex` on `PATH` too. On this machine that is 0.147.0 while `package.json` pins SDK 0.149.1,
+and the two do not agree on defaults: `unified_exec` defaults to `false` in 0.147.0 and `true`
+in 0.149.x. That particular gap is closed by the pins being explicit either way — which is the
+argument for pinning every flag rather than only the ones that default the wrong way today.
+Verified live at 0.149.0 against a repo pinned to 0.149.1, where all four flags still existed
+and still held. Re-run a behavioural probe against the CLI version in play before trusting these
+pins on an unfamiliar install; a green test suite here is evidence about neither, since the
+suite never spawns a Codex at all.
 
 Anyone weakening the home isolation on the strength of any of these
 flags would be reinstating the exact bypass each flag was added to cover, not removing a

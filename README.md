@@ -65,13 +65,18 @@ Core's tags exist **only** as dependency pins. There is no release workflow here
 - For the default Claude backend, the `claude` CLI must be installed and logged in. On Windows
   the standard `C:\Users\<you>\.local\bin\claude.exe` location is detected; another location
   can be passed with `--claude`.
-- For the `codex` backend you do **not** need a separately installed `codex` CLI: the
-  `@openai/codex-sdk` dependency vendors its own binary, and its `findCodexPath()` resolves it
-  from the platform package rather than consulting `PATH` — with no fallback, so the version
-  that runs is the one pinned in `package.json`, not whatever `codex --version` reports
-  globally. `--codex-exe <path>` / `SHORTHAND_CODEX_EXE` is an override for pointing at a
-  different build, not a requirement. You do still need to be logged in (`codex login`), because
-  the backend reuses that login rather than asking for a key — see the credential note below.
+- For the `codex` backend, an installed `codex` CLI is **found on `PATH` automatically** — no
+  configuration. Core does that search itself because nothing downstream does one:
+  `@openai/codex-sdk`'s `findCodexPath()` resolves its vendored binary out of `node_modules` and
+  throws if it is not there, and never consults `PATH` at all. The consequence is that the
+  version actually running is whatever the first `codex` on your `PATH` is, not the SDK version
+  pinned in `package.json`. On Windows only a real `codex.exe` is accepted: the npm-generated
+  `codex`, `codex.cmd` and `codex.ps1` shims cannot be spawned without a shell, so they are
+  skipped in favour of a later `PATH` entry holding the real binary.
+  `--codex-exe <path>` / `SHORTHAND_CODEX_EXE` overrides the search and takes either a full path
+  or a bare command name to look up on `PATH`. You do still need to be logged in
+  (`codex login`), because the backend reuses that login rather than asking for a key — see the
+  credential note below.
   The isolated `CODEX_HOME` this backend runs under discards your `config.toml`, including your
   selected model and any custom endpoint; re-supply those with `--codex-model <model>` /
   `SHORTHAND_CODEX_MODEL` and `--codex-base-url <url>` / `SHORTHAND_CODEX_BASE_URL`.

@@ -132,20 +132,53 @@ closed with `mcpServers: {}` plus `strictMcpConfig: true`; the latter is require
 project `.mcp.json`, plugins, and agent-frontmatter servers rather than relying on the current
 caller's empty `settingSources` alone.
 
-**The Codex backend has a narrower, explicitly different boundary.** `CodexAgentClient` wraps
-`@openai/codex-sdk`, never accepts vault/note filesystem context (`supportsVaultTools = false`),
-and always runs in a client-owned scratch `workingDirectory` with `sandboxMode: "read-only"`
-and `approvalPolicy: "never"`. It also pins
-`config: { features: { shell_tool: false } }`, which removes the shell-command tool. That does
-**not** produce Claude's empty-tool-set guarantee: `apply_patch`, `view_image`, and other Codex
+**The Codex backend has a narrower, explicitly different boundary, and it is the isolated
+`CODEX_HOME`.** `CodexAgentClient` wraps `@openai/codex-sdk`, never accepts vault/note
+filesystem context (`supportsVaultTools = false`), and always runs in a client-owned scratch
+`workingDirectory` with `sandboxMode: "read-only"` and `approvalPolicy: "never"`. None of that
+produces Claude's empty-tool-set guarantee: `apply_patch`, `view_image`, and other Codex
 built-ins remain, and read-only sandboxing does not make every tool's reads stay below the
-working directory. Ambient MCP is a separate unsandboxed capability, so each client instance
-uses a fresh temporary `CODEX_HOME`; only `auth.json` is copied for local-login reuse, never
-`config.toml`, skills, or MCP configuration. Live probes against the bundled CLI showed a
-configured home attempting the sentinel MCP URL while the isolated home reported no MCP
-servers and made no MCP attempt. An empty `--config mcp_servers={}` was not sufficient because
-Codex merges that empty parent table without deleting its named children. See
-`docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the fuller history,
+working directory.
+
+The one real boundary is that each client instance gives the child a fresh temporary
+`CODEX_HOME`, so no ambient `config.toml` — and therefore no operator MCP server — is
+discovered. Live probes against the bundled CLI showed a configured home attempting the
+sentinel MCP URL while the isolated home reported no MCP servers and made no MCP attempt. An
+empty `--config mcp_servers={}` was not sufficient, because Codex merges that empty parent
+table without deleting its named children.
+
+**`config: { features: { shell_tool: false } }` is defence in depth and explicitly not a
+boundary.** A turn run that way reports it has no shell-command tool, and that report means
+nothing on its own: with `shell_tool` *and* `unified_exec` both disabled under
+`sandboxMode: "read-only"`, a live probe still executed a shell command by calling an
+operator's ambient `node_repl` MCP server, because Codex does not apply `sandboxMode` to MCP
+tools at all. The flag removes the direct route; the isolated home is what removes the
+arbitrary-execution bypass. Anyone weakening the home isolation on the strength of the shell
+pin would be reinstating that bypass. There is no feature flag that disables MCP loading — the
+MCP-named flags govern MCP behaviour, not whether it loads — so the discovery root is the only
+lever available.
+
+Isolation is not free, because `CODEX_HOME` is the single discovery root for **both**
+`config.toml` and `auth.json`. Two consequences, both deliberate:
+
+- *Auth is carried across, by hard link rather than copy.* Shorthand's model is that the user
+  installs and authenticates Codex themselves, so no API key is required and no credential is
+  duplicated: the isolated home gets a second name for the user's own `auth.json`, and a token
+  Codex rotates mid-run is written through to the user's real file instead of dying with the
+  scratch directory and leaving them logged out of a CLI they never touched. This rests on
+  Codex rewriting `auth.json` in place rather than writing a temp file and renaming over it,
+  verified against the real CLI on the `codex login --with-api-key` write path. Hard links
+  require one volume, so a temp directory on another volume (ordinary on Windows, and on Linux
+  with a tmpfs `/tmp`) falls back to a copy — which does duplicate live credentials on disk and
+  does discard the rotated token, cleaned up only best-effort at process exit.
+- *Everything else in `config.toml` is discarded, not just the MCP table.* An isolated run was
+  observed silently switching model and reasoning effort because the user's config never
+  loaded. `sandboxMode` and `approvalPolicy` are unaffected — the client pins both per thread —
+  but model selection falls back to the installed CLI's default unless a caller supplies
+  `CodexAgentClientOptions.model`, which is passed through only when set rather than guessed at
+  with a hardcoded slug that would rot against the CLI.
+
+See `docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the fuller history,
 including the earlier (weaker) design this replaces.
 
 **Vault lookup requires a capability on both sides of the seam.** A sink's `agentContext`

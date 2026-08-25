@@ -27,13 +27,33 @@ Verified against `github.com/openai/codex` source and docs (not assumed):
   and its `Default` impl directly; this makes it a true equivalent of Claude's `systemPrompt`,
   reachable from the TypeScript SDK via a `base_instructions_file`-style config override.
 - **No complete tool allowlist, no per-call approval callback.** `ThreadOptions` has no `tools`
-  field. `config.features.shell_tool = false` removes shell execution, but `apply_patch`,
-  `view_image`, and other built-ins remain. There is no
+  field. `config.features.shell_tool = false` removes the built-in shell tool, but
+  `apply_patch`, `view_image`, and other built-ins remain. There is no
   event in `ThreadEvent` for "approval requested" the caller can answer, and no code path to
   reduce the backend to Claude's literal empty tool set. `sandboxMode` (`read-only` /
   `workspace-write` / `danger-full-access`) governs only what an *attempted* tool call may
   actually do at the OS sandbox layer (Seatbelt / bubblewrap / Windows restricted tokens) —
   it does not stop the model from seeing and attempting the call.
+- **`features.shell_tool = false` is not a boundary.** Later live testing corrected this
+  document: with `shell_tool` and `unified_exec` both disabled under `--sandbox read-only`,
+  Codex still executed a shell command by routing through an ambient `node_repl` MCP server
+  (`mcp: node_repl/js started`), because MCP tools are not subject to `sandboxMode` at all. The
+  flag is worth keeping as defence in depth and worth nothing as a guarantee. No feature flag
+  disables MCP loading — of the 76 flags `codex features list` reports, the MCP-named ones
+  (`mcp_2026_07_28`, `non_prefixed_mcp_tool_names`, `tool_call_mcp_elicitation`,
+  `enable_mcp_apps`) govern MCP behaviour rather than whether it loads — so the config
+  discovery root is the only lever, and the isolated `CODEX_HOME` below is the actual boundary.
+- **`CODEX_HOME` is the single discovery root for both `config.toml` and `auth.json`.** A scan
+  of the binary's `CODEX_*` strings found no separate config-path variable, so isolating config
+  necessarily orphans the login: auth has to be brought across deliberately. Isolation also
+  discards every other setting the user's `config.toml` carried — an isolated run was observed
+  silently switching to `model: gpt-5.6-sol`, `reasoning effort: none`, `approval: never`.
+- **Codex rewrites `auth.json` in place**, not via temp file and rename. Verified by hard-linking
+  two files and forcing a write with `codex login --with-api-key`: both links survived and both
+  showed the new content. A hard link into the isolated home therefore writes a rotated token
+  through to the user's real `~/.codex/auth.json`. This exercised the login write path, not the
+  OAuth refresh write path specifically. Windows hard links need no administrator privilege but
+  do need one volume, which is not guaranteed between the OS temp directory and a user's home.
 - Omitting `workingDirectory` makes the CLI silently default to the host Node process's
   `process.cwd()` (README: "Codex runs in the current working directory by default") and
   additionally requires that directory be a git repo unless `skipGitRepoCheck: true`.
@@ -53,8 +73,10 @@ Verified against `github.com/openai/codex` source and docs (not assumed):
 
 For `ClaudeAgentClient`, `tools: []` plus a `canUseTool` deny-all callback literally removes
 Write/Edit/Bash. Codex cannot make that same guarantee. Disabling `features.shell_tool`
-removes shell execution, but other built-ins remain; `sandboxMode: "read-only"` is therefore
-still an after-the-fact OS boundary for attempted writes, not a tool-availability boundary.
+removes the built-in shell tool but not the ability to execute — see the correction above, where
+an ambient MCP server supplied one anyway — and other built-ins remain; `sandboxMode:
+"read-only"` is an after-the-fact OS boundary for attempted writes, not a tool-availability
+boundary, and it does not reach MCP tools at all.
 
 Decision (confirmed): `CodexAgentClient` never receives vault or note content as filesystem
 context. `supportsVaultTools = false`, matching `LlmAgentClient` — `EnhanceRunner` already
@@ -64,13 +86,28 @@ sandboxed-but-attempted working directory is a scratch directory this client own
 contains vault or note content. This limits what the application intentionally exposes; it is
 not a claim that every remaining built-in is path-confined.
 
-MCP needs its own boundary because Codex does not apply `sandboxMode` to MCP tools. Each client
-therefore creates a second scratch subdirectory and supplies it as `CODEX_HOME` through
-`CodexOptions.env`. The directory has no `config.toml`; when no API key override is supplied,
-the client copies only the ambient `auth.json` into it so CLI login can still work without
-copying MCP servers, skills, or other operator configuration. The isolated home is reused for
-the client lifetime so session resume still works, then removed with the same best-effort exit
-cleanup as the working directory.
+MCP is where execution actually gets in, because Codex does not apply `sandboxMode` to MCP
+tools, so the boundary has to be the config discovery root. Each client creates a second scratch
+subdirectory and supplies it as `CODEX_HOME` through `CodexOptions.env`. The directory has no
+`config.toml`; when no API key override is supplied, the client hard-links only the ambient
+`auth.json` into it, so a CLI login the user already performed keeps working without importing
+MCP servers, skills, or any other operator configuration. A link rather than a copy for two
+reasons: live OAuth credentials are not duplicated on disk, and a token Codex rotates during the
+run is written through to the user's real `auth.json` instead of being discarded with the
+scratch directory. Cross-volume (`EXDEV`) and permission (`EPERM`/`EACCES`) failures fall back
+to a copy, which reinstates both problems and is why the fallback is narrow; any other error
+propagates, and a missing source stays non-fatal because "not logged in" is the CLI's message to
+give, not ours. The isolated home is reused for the client lifetime so session resume still
+works, then removed with the same best-effort exit cleanup as the working directory.
+
+Isolation also discards the rest of `config.toml`. Model selection is therefore exposed as
+`CodexAgentClientOptions.model` and pinned in `CodexOptions.config` only when a caller supplies
+it; unset inherits the installed CLI's default, which is honest about the fact that no default
+slug written here would stay correct. `sandboxMode` and `approvalPolicy` need no equivalent —
+both are already pinned per thread. `CodexAgentClientOptions.ambientCodexHome` exists so tests
+can resolve the ambient login to a fixture; without that seam the auth path could only be
+covered by reading and linking the developer's real credentials on every run, so it would not
+have been covered at all.
 
 `docs/DESIGN.md`'s Invariants section must be updated in the same change to scope the "no
 write tool" claim per backend, rather than leaving it reading as a codebase-wide guarantee it
@@ -81,7 +118,12 @@ no longer is.
 ```ts
 export class CodexAgentClient implements AgentClient {
   readonly supportsVaultTools = false;
-  constructor(options?: Readonly<{ codexPathOverride?: string; apiKey?: string }>);
+  constructor(options?: Readonly<{
+    codexPathOverride?: string;
+    apiKey?: string;
+    ambientCodexHome?: string;
+    model?: string;
+  }>);
   query(request: AgentQueryRequest): Promise<AgentQueryResponse>;
 }
 ```
@@ -119,10 +161,12 @@ export class CodexAgentClient implements AgentClient {
   output, `turn.failed`/`error` events map to `AgentQueryError`, mirroring
   `ClaudeAgentClient.query`'s `is_error` / exhaustion-diagnostics handling so the two
   implementations read as siblings, not divergent styles.
-- **Auth**: `apiKey` remains an optional constructor override. Without it, the isolated home
-  receives a copy of the ambient home's `auth.json` and nothing else. This preserves the
-  locally logged-in posture without inheriting `config.toml`; if no auth file exists, the CLI
-  reports its normal unauthenticated failure.
+- **Auth**: `apiKey` remains an optional constructor override, and is deliberately not required
+  — the product model is that the user installs and authenticates Codex themselves. Without it,
+  the isolated home receives a hard link to the ambient home's `auth.json` and nothing else
+  (copy fallback as described above). This preserves the locally logged-in posture without
+  inheriting `config.toml`; if no auth file exists, the CLI reports its normal unauthenticated
+  failure.
 - **Executable path**: `codexPathOverride` constructor option only. No new field on the
   shared `AgentQueryRequest`/`EnhanceRunnerOptions` contract — `pathToClaudeCodeExecutable`
   is already Claude-specific by name, and generalizing it is an unrelated breaking rename this
@@ -176,7 +220,10 @@ part of this task.
   resume vs. fresh thread, abort forwarding, `turn.failed` → `AgentQueryError`, structured
   output pass-through, scratch-dir reuse across repeated calls, that `workingDirectory` is
   never derived from `request.cwd`, the exact `features.shell_tool = false` pin, and replacement
-  of an ambient `CODEX_HOME` with the isolated home.
+  of an ambient `CODEX_HOME` with the isolated home. The auth path is covered through
+  `ambientCodexHome` fixtures, including a write-through assertion that fails if the hard link
+  is ever weakened back into a copy; the whole file points `CODEX_HOME` at an empty fixture so
+  no test run can touch a developer's real `~/.codex`.
 - `selectAgent()` gets a `--backend codex` case in its existing test coverage
   (`test/shorthand-notes` or wherever `selectAgent` is currently tested — confirm exact file
   at implementation time).

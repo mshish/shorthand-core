@@ -83,7 +83,10 @@ CLI session — no credentials file, no required API key (an `apiKey` constructo
 exists for the rarer case). It runs every pass in a scratch working directory this client
 owns, with `sandboxMode: "read-only"`, `approvalPolicy: "never"`, and no tools ever forwarded
 to the model in the allowlist sense — see "Invariants" in `docs/DESIGN.md` for the capability
-gap this accepts.
+gap this accepts. It also runs the child against an isolated `CODEX_HOME`, which is what keeps
+your MCP servers out of a transcript-facing process. The visible cost is that your own
+`config.toml` does not apply: the model is the installed CLI's default unless the caller sets
+`CodexAgentClientOptions.model`, so a model you selected in `config.toml` is not the one used.
 
 The LLM profile is `llm-credentials.json` under Shorthand's configuration directory: on
 Windows, `%APPDATA%\Shorthand\llm-credentials.json`; on macOS,

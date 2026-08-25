@@ -267,3 +267,40 @@ describe("CodexAgentClient session resume", () => {
     expect(resumeThreadCalls).toHaveLength(0);
   });
 });
+
+describe("CodexAgentClient failure mapping", () => {
+  test("turn.failed maps to AgentQueryError carrying the failure message", async () => {
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: "thread-x" };
+      yield { type: "turn.failed", error: { message: "sandbox denied the write" } };
+    })();
+    const client = new CodexAgentClient();
+    await expect(client.query(baseRequest())).rejects.toThrow(/sandbox denied the write/);
+  });
+
+  test("a bare error event maps to AgentQueryError too", async () => {
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: "thread-x" };
+      yield { type: "error", message: "connection reset" };
+    })();
+    const client = new CodexAgentClient();
+    await expect(client.query(baseRequest())).rejects.toThrow(/connection reset/);
+  });
+
+  test("a stream that never emits an agent_message is a query error, not a silent undefined output", async () => {
+    events = () => (async function* () {
+      yield { type: "thread.started", thread_id: "thread-y" };
+      yield { type: "turn.completed", usage: ZERO_USAGE };
+    })();
+    const client = new CodexAgentClient();
+    await expect(client.query(baseRequest())).rejects.toThrow(/stream ended without an agent message/);
+  });
+
+  test("a stream with no thread.started event fails loudly rather than returning an empty session id", async () => {
+    events = () => (async function* () {
+      yield agentMessageEvent({ sections: [] });
+    })();
+    const client = new CodexAgentClient();
+    await expect(client.query(baseRequest())).rejects.toThrow(/no thread id/);
+  });
+});

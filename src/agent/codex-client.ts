@@ -53,26 +53,16 @@ export class CodexAgentClient implements AgentClient {
     let sessionId: string | undefined;
     let structuredOutput: unknown;
     let diagnostics: string[] = [];
+    let sawAgentMessage = false;
     for await (const rawEvent of events) {
       const event = rawEvent as CodexEvent;
-      // The session id is stable for the life of the stream: capture it off the first
-      // thread.started message seen and never overwrite it on later messages.
       if (sessionId === undefined && event.type === "thread.started" && typeof event.thread_id === "string") {
         sessionId = event.thread_id;
       }
-      // TurnCompletedEvent carries only token usage, not the answer. The answer is an
-      // item.completed event wrapping an agent_message item; other item types (shell exec,
-      // file changes, MCP tool calls) can appear in the same stream and must be ignored here.
       if (event.type === "item.completed") {
         const item = event.item as CodexEvent | undefined;
         if (item?.type === "agent_message" && typeof item.text === "string") {
-          // outputSchema is meant to be hard-enforced at the API level, so `text` should
-          // always be valid JSON here — but "should always be" is exactly what this
-          // project's own "do not assume, empirically test" principle distrusts. A parse
-          // failure is treated as an invalid pass (structuredOutput left undefined,
-          // diagnostics carried for the corrective retry in queryForSections), the same way
-          // ClaudeAgentClient's schema-exhaustion path is — not thrown, which would skip the
-          // corrective retry entirely.
+          sawAgentMessage = true;
           try {
             structuredOutput = JSON.parse(item.text);
           } catch {
@@ -80,8 +70,12 @@ export class CodexAgentClient implements AgentClient {
           }
         }
       }
+      if (event.type === "turn.failed" || event.type === "error") {
+        throw new AgentQueryError(turnFailureMessage(event));
+      }
     }
     if (sessionId === undefined) throw new Error("Codex SDK returned no thread id.");
+    if (!sawAgentMessage) throw new AgentQueryError("Codex SDK stream ended without an agent message.");
     return { structuredOutput, sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
   }
 
@@ -106,6 +100,14 @@ export class CodexAgentClient implements AgentClient {
     this.#scratchDir ??= mkdtemp(join(tmpdir(), "shorthand-codex-"));
     return this.#scratchDir;
   }
+}
+
+function turnFailureMessage(event: CodexEvent): string {
+  const error = event.error;
+  if (error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") {
+    return (error as { message: string }).message;
+  }
+  return typeof event.message === "string" ? event.message : `Codex SDK turn failed (${String(event.type)}).`;
 }
 
 export function detectCodexExecutable(

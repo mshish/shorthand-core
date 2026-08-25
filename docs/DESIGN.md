@@ -147,6 +147,20 @@ sentinel MCP URL while the isolated home reported no MCP servers and made no MCP
 empty `--config mcp_servers={}` was not sufficient, because Codex merges that empty parent
 table without deleting its named children.
 
+**The isolated home is the one piece of this backend that is not a documented Codex knob, and
+it was kept deliberately over the simpler alternative.** Everything else here — the feature
+pins, `sandboxMode`, `approvalPolicy`, `model`, `baseUrl`, the web-search and network pins — is
+a first-class SDK option or a documented `--config` key. Running instead on the user's own
+`CODEX_HOME`, as Codex intends, would delete this mechanism and all the credential handling
+below it. That option was weighed and rejected, because a live probe against a real developer
+configuration executed `echo SHELL_EXEC_WORKED` with `shell_tool` *and* `unified_exec` both
+disabled, by calling that machine's ambient `node_repl` MCP server, and contacted an Obsidian
+vault MCP server on every run. This backend's input is untrusted meeting-transcript text, so
+inheriting whatever MCP servers a user happens to have configured hands injected text a working
+path to arbitrary code execution and to the very vault `supportsVaultTools = false` exists to
+keep it away from. The cost of keeping isolation is the credential handling documented below;
+the cost of removing it is that bypass, and it is not hypothetical — it was observed.
+
 **That isolation is not the whole boundary: it does not remove Codex's own built-in
 `codex_apps` MCP surface.** A controlled A/B against this same isolated home — same prompt,
 asking the agent to actually call the tool rather than describe it — found the surface callable
@@ -166,13 +180,21 @@ it has no shell-command tool, and that report means nothing on its own: with `sh
 `unified_exec` both disabled under `sandboxMode: "read-only"`, a live probe still executed a
 shell command by calling an operator's ambient `node_repl` MCP server, because Codex does not
 apply `sandboxMode` to MCP tools at all. `apps: false` is verified by the live A/B above. The
-`browser_use*` flags are pinned as defence-in-depth on a source read of the installed
-`@openai/codex-sdk` typings only, not a live A/B: a browser tool is outbound network reachable
-by injected transcript text, the same class of gap as the MCP one, and reading the SDK's
-`exec.ts` shows the existing `webSearchMode`/`networkAccessEnabled` thread pins emit `--config
-web_search=...` and `--config sandbox_workspace_write.network_access=...` — two config keys
-unrelated to `features.browser_use*`, which `codex features list` reports as separate stable
-flags defaulting to enabled. Anyone weakening the home isolation on the strength of any of these
+`browser_use*` flags were first pinned as defence-in-depth on a source read alone — a browser
+tool is outbound network reachable by injected transcript text, the same class of gap as the MCP
+one, and the SDK shows the existing `webSearchMode`/`networkAccessEnabled` thread pins emit
+`--config web_search=...` and `--config sandbox_workspace_write.network_access=...`, two config
+keys unrelated to `features.browser_use*`, which `codex features list` reports as separate
+stable flags defaulting to enabled. That source-only grade has since been raised: a behavioural
+probe through the real `CodexAgentClient` with every pin in place reported `NO_SUCH_TOOL` for
+browser-open, web search, `codex_apps`, shell and file read alike.
+
+Trust behaviour, not the model's self-report, when re-verifying any of this. Asking Codex to
+*list* its tools produced confabulation — two runs disagreed with each other, and one listed
+`functions.exec` while simultaneously reporting it had no tool able to run commands. Every claim
+here comes from asking it to actually perform an action and report the literal result.
+
+Anyone weakening the home isolation on the strength of any of these
 flags would be reinstating the exact bypass each flag was added to cover, not removing a
 redundant second control. There is no feature flag that disables MCP loading — the MCP-named
 flags govern MCP behaviour, not whether it loads — so the discovery root remains the lever for

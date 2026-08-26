@@ -10,7 +10,7 @@ type Speaker = "me" | "them";
 type Stamp = { emitted_at?: string; session_elapsed_ms?: number; unstamped?: true };
 
 export type WireEvent =
-  | { t: "hello"; protocol: number; version?: string; emitted_at?: string }
+  | { t: "hello"; protocol: number; version?: string; emitted_at?: string; capabilities?: string[] }
   | ({ t: "begin"; session: number; streaming: boolean } & Stamp)
   | ({ t: "partial"; session: number; speaker: Speaker; committed: string; tentative: string } & Stamp)
   | ({ t: "final"; session: number; speaker?: Speaker; text: string } & Stamp)
@@ -48,6 +48,20 @@ function stringField(value: Record<string, unknown>, name: string): string | und
   return typeof value[name] === "string" ? value[name] : undefined;
 }
 
+/**
+ * A missing `capabilities` field is a valid, common case — every protocol-1 app
+ * that predates capability negotiation omits it, and that must parse as "no
+ * advertised optional capability", not as malformed input. A present-but-wrong-shaped
+ * field (not an array, or an array with a non-string member) is dropped rather than
+ * trusted or coerced: a consumer that gates a control signal on a capability string
+ * must never see a value it did not really advertise.
+ */
+function stringArrayField(value: Record<string, unknown>, name: string): string[] | undefined {
+  const field = value[name];
+  if (!Array.isArray(field) || !field.every((item): item is string => typeof item === "string")) return undefined;
+  return field;
+}
+
 function stamp(value: Record<string, unknown>): Stamp {
   const emittedAt = stringField(value, "emitted_at");
   const elapsed = numberField(value, "session_elapsed_ms");
@@ -72,11 +86,13 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
     }
     const version = stringField(input, "version");
     const emittedAt = stringField(input, "emitted_at");
+    const capabilities = stringArrayField(input, "capabilities");
     return {
       t: "hello",
       protocol,
       ...(version === undefined ? {} : { version }),
       ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }),
+      ...(capabilities === undefined ? {} : { capabilities }),
     };
   }
 

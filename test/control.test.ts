@@ -84,7 +84,12 @@ function harness(): {
 }
 
 describe("ShorthandControl argv", () => {
-  const signals: ControlSignal[] = ["toggle-transcription", "toggle-post-process", "cancel"];
+  const signals: ControlSignal[] = [
+    "toggle-transcription",
+    "toggle-post-process",
+    "toggle-assisted-notes",
+    "cancel",
+  ];
 
   for (const signal of signals) {
     test(`spawns --${signal} as its own short-lived process`, async () => {

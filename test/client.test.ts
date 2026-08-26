@@ -66,6 +66,29 @@ describe("wire compatibility", () => {
     expect(() => parseWireRecord({ t: "hello" })).toThrow("numeric protocol");
   });
 
+  test("preserves advertised hello capabilities", () => {
+    expect(parseWireRecord({ t: "hello", protocol: 1, capabilities: ["toggle-assisted-notes"] })).toEqual({
+      t: "hello",
+      protocol: 1,
+      capabilities: ["toggle-assisted-notes"],
+    });
+  });
+
+  test("a hello with no capabilities still parses, for apps that predate capability negotiation", () => {
+    expect(parseWireRecord({ t: "hello", protocol: 1 })).toEqual({ t: "hello", protocol: 1 });
+  });
+
+  test("a malformed capabilities value is dropped, not treated as support", () => {
+    expect(parseWireRecord({ t: "hello", protocol: 1, capabilities: "toggle-assisted-notes" })).toEqual({
+      t: "hello",
+      protocol: 1,
+    });
+    expect(parseWireRecord({ t: "hello", protocol: 1, capabilities: ["toggle-assisted-notes", 7] })).toEqual({
+      t: "hello",
+      protocol: 1,
+    });
+  });
+
   test("surfaces connection-level error records distinctly", () => {
     expect(parseWireRecord({
       t: "error",

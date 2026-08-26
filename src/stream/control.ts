@@ -13,10 +13,19 @@ import type { SpawnFn } from "./client.js";
  *
  * Control must be its own short-lived spawn, never an extra argument on the
  * follower: Shorthand's parser declares `--follow-stream` as
- * `conflicts_with_all = ["toggle_transcription", "toggle_post_process", "cancel"]`,
+ * `conflicts_with_all = ["toggle_transcription", "toggle_post_process", "cancel", "toggle_assisted_notes"]`,
  * so a combined invocation fails to parse.
+ *
+ * `toggle-assisted-notes` selects an app-owned capture mode by name. It carries
+ * no settings values, deliberately: the app's own settings pane has to remain
+ * the only description of how a running capture behaves, so this surface stays
+ * a fixed list of mode selectors rather than an override channel.
  */
-export type ControlSignal = "toggle-transcription" | "toggle-post-process" | "cancel";
+export type ControlSignal =
+  | "toggle-transcription"
+  | "toggle-post-process"
+  | "toggle-assisted-notes"
+  | "cancel";
 
 export type ControlResult =
   | { status: "sent" }

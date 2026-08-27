@@ -19,11 +19,26 @@ type SidecarFileSystem = {
   unlink: typeof unlink;
 };
 
-export type SidecarWriterOptions = {
+/**
+ * Transactional storage for a transcript sidecar.
+ *
+ * `transform` is synchronous because a store may call it again after losing an
+ * optimistic-concurrency race. It must therefore be pure: the only result that
+ * escapes is the value paired with the content the store actually commits.
+ */
+export interface SidecarStore {
+  readonly describe: string;
+  process<T>(
+    transform: (current: string | undefined) => Readonly<{ content: string; value: T }>,
+  ): Promise<T>;
+}
+
+export type SidecarWriterOptions = Readonly<{
   flushIntervalMs?: number;
   now?: () => Date;
+  store?: SidecarStore;
   fileSystem?: Partial<SidecarFileSystem>;
-};
+}>;
 
 type TimelineEntry =
   | { type: "session"; key: string }
@@ -31,28 +46,80 @@ type TimelineEntry =
 
 const DEFAULT_FILE_SYSTEM: SidecarFileSystem = { mkdir, open, readFile, rename, unlink };
 
+class FileSystemSidecarStore implements SidecarStore {
+  readonly #fs: SidecarFileSystem;
+  #temporaryId = 0;
+
+  constructor(readonly describe: string, fileSystem: Partial<SidecarFileSystem> = {}) {
+    this.#fs = { ...DEFAULT_FILE_SYSTEM, ...fileSystem };
+  }
+
+  async process<T>(
+    transform: (current: string | undefined) => Readonly<{ content: string; value: T }>,
+  ): Promise<T> {
+    await this.#fs.mkdir(dirname(this.describe), { recursive: true });
+    const current = await this.#readCurrent();
+    // This filesystem adapter is deliberately only the headless Markdown
+    // transport. It preserves the existing temp-write/rename behavior but
+    // cannot turn ordinary filesystem primitives into cross-process CAS.
+    const candidate = transform(current);
+    if (candidate.content === current) return candidate.value;
+
+    const temporaryPath = join(
+      dirname(this.describe),
+      `.${basename(this.describe)}.${process.pid}.${this.#temporaryId++}.tmp`,
+    );
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      handle = await this.#fs.open(temporaryPath, "wx");
+      await handle.writeFile(candidate.content, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      await this.#fs.rename(temporaryPath, this.describe);
+      return candidate.value;
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      await this.#fs.unlink(temporaryPath).catch(() => {});
+      throw error;
+    }
+  }
+
+  async #readCurrent(): Promise<string | undefined> {
+    try {
+      return await this.#fs.readFile(this.describe, "utf8");
+    } catch (error) {
+      if (errno(error) === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+}
+
 export class SidecarWriter extends EventEmitter {
   readonly #sessions = new Map<string, SessionSnapshot>();
   #timeline: TimelineEntry[] = [];
   readonly #flushIntervalMs: number;
-  readonly #now: () => Date;
-  readonly #fs: SidecarFileSystem;
+  readonly #resumeTimestamp: string;
+  readonly #store: SidecarStore;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #persisted = "";
   #base = HEADER.trimEnd();
-  #ready: Promise<void>;
-  #readyError: unknown;
   #writeChain: Promise<void> = Promise.resolve();
   #targetEstablished = false;
   #gapId = 0;
-  #temporaryId = 0;
 
-  constructor(readonly path: string, options: SidecarWriterOptions = {}) {
+  constructor(path: string, options: SidecarWriterOptions = {}) {
     super();
+    if (options.store !== undefined && options.fileSystem !== undefined) {
+      throw new Error("SidecarWriter options.store and options.fileSystem are mutually exclusive.");
+    }
     this.#flushIntervalMs = options.flushIntervalMs ?? 250;
-    this.#now = options.now ?? (() => new Date());
-    this.#fs = { ...DEFAULT_FILE_SYSTEM, ...options.fileSystem };
-    this.#ready = this.#startInitialization();
+    this.#resumeTimestamp = (options.now ?? (() => new Date()))().toISOString();
+    this.#store = options.store ?? new FileSystemSidecarStore(path, options.fileSystem);
+  }
+
+  get path(): string {
+    return this.#store.describe;
   }
 
   apply(update: TranscriptUpdate): void {
@@ -100,12 +167,16 @@ export class SidecarWriter extends EventEmitter {
   }
 
   render(): string {
+    return this.#renderWithBase(this.#base);
+  }
+
+  #renderWithBase(base: string): string {
     const sections = this.#timeline.flatMap((entry) => {
       if (entry.type === "gap") return [entry.text];
       const snapshot = this.#sessions.get(entry.key);
       return snapshot === undefined ? [] : [renderSession(snapshot)];
     });
-    return [this.#base, ...sections].join("\n\n");
+    return [base, ...sections].join("\n\n");
   }
 
   #schedule(): void {
@@ -116,88 +187,47 @@ export class SidecarWriter extends EventEmitter {
     }, this.#flushIntervalMs);
   }
 
-  async #ensureReady(): Promise<void> {
-    await this.#ready;
-    if (this.#readyError !== undefined) {
-      const error = this.#readyError;
-      this.#readyError = undefined;
-      this.#ready = this.#startInitialization();
-      throw error;
-    }
-  }
-
-  #startInitialization(): Promise<void> {
-    return this.#initialize().catch((error: unknown) => {
-      this.#readyError = error;
-    });
-  }
-
-  async #initialize(): Promise<void> {
-    await this.#fs.mkdir(dirname(this.path), { recursive: true });
-    try {
-      const existing = await this.#fs.readFile(this.path, "utf8");
-      this.#adoptExisting(existing);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-
   async #flushOnce(): Promise<void> {
-    await this.#ensureReady();
-    if (!this.#targetEstablished) {
-      try {
-        this.#adoptExisting(await this.#fs.readFile(this.path, "utf8"));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    } else {
-      let current: string;
-      try {
-        current = await this.#fs.readFile(this.path, "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          throw new Error(`Sidecar disappeared during capture: ${this.path}`);
-        }
-        throw error;
-      }
+    const committed = await this.#store.process((current) => {
+      const state = this.#candidateState(current);
+      const content = this.#renderWithBase(state.base);
+      return {
+        content,
+        value: { ...state, persisted: content },
+      };
+    });
+    // A store may retry the callback. Mutating writer state inside it would make
+    // the second invocation observe a commit that never happened.
+    this.#base = committed.base;
+    this.#persisted = committed.persisted;
+    this.#targetEstablished = committed.targetEstablished;
+  }
+
+  #candidateState(current: string | undefined): Readonly<{ base: string; targetEstablished: boolean }> {
+    if (this.#targetEstablished) {
+      if (current === undefined) throw new Error(`Sidecar disappeared during capture: ${this.path}`);
       if (current !== this.#persisted) {
         throw new Error(`Sidecar changed outside Shorthand during capture: ${this.path}`);
       }
+      return { base: this.#base, targetEstablished: true };
     }
+    if (current === undefined) return { base: this.#base, targetEstablished: true };
 
-    const rendered = this.render();
-    if (rendered === this.#persisted) return;
-    const temporaryPath = join(
-      dirname(this.path),
-      `.${basename(this.path)}.${process.pid}.${this.#temporaryId++}.tmp`,
-    );
-    let handle: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      handle = await this.#fs.open(temporaryPath, "wx");
-      await handle.writeFile(rendered, "utf8");
-      await handle.sync();
-      await handle.close();
-      handle = undefined;
-      await this.#fs.rename(temporaryPath, this.path);
-    } catch (error) {
-      await handle?.close().catch(() => {});
-      await this.#fs.unlink(temporaryPath).catch(() => {});
-      throw error;
-    }
-    this.#persisted = rendered;
-    this.#targetEstablished = true;
-  }
-
-  #adoptExisting(existing: string): void {
+    const existing = current;
     const firstLine = existing.split(/\r?\n/, 1)[0];
     if (firstLine !== SIDECAR_SENTINEL) {
       throw new Error(`Refusing to overwrite ${this.path}: first line must be "${SIDECAR_SENTINEL}".`);
     }
-    this.#targetEstablished = true;
-    this.#persisted = existing;
     const separator = existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
-    this.#base = `${existing}${separator}## Resumed ${this.#now().toISOString()}`;
+    return {
+      base: `${existing}${separator}## Resumed ${this.#resumeTimestamp}`,
+      targetEstablished: true,
+    };
   }
+}
+
+function errno(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
 }
 
 function renderSession(snapshot: SessionSnapshot): string {

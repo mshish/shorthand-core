@@ -285,9 +285,22 @@ asserts the composed prompt over the custom-guidance path, not just the default 
 caller's business. `MAX_GUIDANCE_CHARACTERS` is hygiene against a pasted-in novel, enforced by
 the surface that accepts the text rather than by the runner.
 
-**Writes are read-splice-write.** Every write re-reads from disk, locates markers in *that*
-content, replaces only the block body, fsyncs a temp file, and renames over the target.
-Offsets are never carried across an `await`.
+**Markdown transformation is transport-free.** `readMarkdownDocument`,
+`updateMarkdownDocument`, and `scaffoldMarkdownDocument` are the single parser, revision, and
+splice policy for both files and live editor buffers. Updates return the complete next document
+and the exact UTF-16 `{from,to,replacement}` edit, so an editor changes only the AI-owned range.
+The filesystem writer re-reads, runs that codec synchronously, fsyncs a temp file, and renames
+over the target. Offsets are never carried across an `await`.
+
+**Sidecar persistence has a store-owned transaction boundary.** `SidecarStore.process` receives
+a synchronous pure transform so a store with an atomic retry primitive can safely invoke it more
+than once. `SidecarWriter` changes its adopted base and persisted revision only after the store
+returns the value paired with the committed invocation; a discarded callback can therefore
+neither duplicate a resumed heading nor advance writer state. Concurrency and serialization are
+store-specific. Obsidian's adapter can provide them with `Vault.process`; the default filesystem
+adapter is only the generic/headless Markdown transport and preserves the earlier best-effort
+temp-write/rename behavior. It does not claim cross-process compare-and-swap, and the residual
+external-write window below applies to it.
 
 **Optimistic concurrency.** The block hash observed at pass start is re-checked at write
 time; a mismatch discards the agent result and re-queues rather than overwriting.
@@ -378,9 +391,10 @@ recorded because the fix is easy to undo by accident.
 - **Unsaved-buffer race.** If the note is open in Obsidian with unsaved keystrokes, Obsidian's
   buffer wins on its next save and an AI update can be lost. The failure direction is the safe
   one — an AI update is lost, never user text — and the hash check re-queues.
-- **Residual external-write window.** Between the verify-read and the rename, a foreign writer
-  cannot be excluded with plain filesystem primitives. Our own processes serialise with a lock
-  file.
+- **Residual external-write window.** Between a filesystem adapter's last observation and its
+  rename, a foreign writer cannot be excluded with plain filesystem primitives. The Markdown
+  note writer narrows that window with a verify-read and serialises Shorthand processes with a
+  lock file; the generic/headless sidecar adapter retains only best-effort temp-write/rename.
 - **No enhancement pass or USD budget.** Both were tried and removed. Under Claude
   subscription authentication `total_cost_usd` is commonly `0`, so a USD cap never trips —
   and a raw pass count can't tell a long meeting from a runaway loop, so it punished

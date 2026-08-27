@@ -32,13 +32,14 @@ esbuild and Node alike, so a deep path fails to resolve rather than merely being
 
 | Specifier | Entry point | Contains |
 | --- | --- | --- |
-| `shorthand-core` | `src/index.ts` | The engine and the `NoteSink` port |
-| `shorthand-core/markdown` | `src/markdown.ts` | `MarkdownNoteSink` — the reference sink — and note scaffolding |
+| `shorthand-core` | `src/index.ts` | The engine plus the `NoteSink` and `SidecarStore` ports |
+| `shorthand-core/markdown` | `src/markdown.ts` | `MarkdownNoteSink`, the transport-free Markdown document codec, and note scaffolding |
 | `shorthand-core/google` | `src/google.ts` | The Google Docs sink, credentials reader, and capture resolver |
 | `shorthand-core/testing` | `src/testing/index.ts` | Runner-independent executable contracts for sinks and credentials writers |
 
-Entry points use explicit named re-exports, never `export *`. Block-format internals and test
-seams are deliberately not exported; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and says
+Entry points use explicit named re-exports, never `export *`. The Markdown codec exposes complete
+document results and exact UTF-16 text edits, while hashes, parsers, marker tokens, filesystem
+writers, and test seams remain private; [`docs/CONTRACT.md`](docs/CONTRACT.md) lists them and says
 why. `bin/` is internal to core rather than a consumer, so its direct use of the block writer is
 legitimate.
 

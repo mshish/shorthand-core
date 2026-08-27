@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NdjsonDecoder, StreamClient, type WireEvent } from "../src/stream/client.js";
-import { SidecarWriter } from "../src/note/sidecar.js";
+import { SidecarWriter, type SidecarStore } from "shorthand-core";
 import { TranscriptStore } from "../src/stream/transcript.js";
 
 const scratchDirectories: string[] = [];
@@ -41,6 +41,43 @@ describe("documented protocol contract", () => {
 });
 
 describe("SidecarWriter", () => {
+  test("uses a retry-safe store transaction without leaking discarded callback state", async () => {
+    const existing = "# Shorthand Transcript\n\nExisting capture.\n";
+    const store = new RetryingMemoryStore("memory://transcript", existing);
+    const writer = new SidecarWriter("ignored.md", {
+      store,
+      now: () => new Date("2026-08-15T18:00:00.000Z"),
+    });
+    expect(writer.path).toBe("memory://transcript");
+    await writer.close();
+    expect(store.calls).toBe(2);
+    expect((store.content ?? "").match(/## Resumed 2026-08-15T18:00:00.000Z/g)).toHaveLength(1);
+    expect(store.content).toContain("Concurrent append.");
+  });
+
+  test("rejects ambiguous custom-store and filesystem configuration", () => {
+    const store: SidecarStore = {
+      describe: "memory://transcript",
+      process: async (transform) => transform(undefined).value,
+    };
+    expect(() => new SidecarWriter("ignored.md", { store, fileSystem: {} }))
+      .toThrow("mutually exclusive");
+  });
+
+  test("detects deletion and outside mutation through a custom store", async () => {
+    const store = new MemoryStore("memory://transcript");
+    const writer = new SidecarWriter("ignored.md", { store, flushIntervalMs: 10_000 });
+    await writer.flush();
+    store.content = undefined;
+    await expect(writer.flush()).rejects.toThrow("disappeared during capture");
+
+    const secondStore = new MemoryStore("memory://second");
+    const second = new SidecarWriter("ignored.md", { store: secondStore, flushIntervalMs: 10_000 });
+    await second.flush();
+    secondStore.content += "\noutside";
+    await expect(second.flush()).rejects.toThrow("changed outside Shorthand");
+  });
+
   test("coalesces partials, rewrites a resynced tail, reconciles final, and labels commit time", async () => {
     const directory = await mkdtemp(join(tmpdir(), ".sidecar-test-"));
     scratchDirectories.push(directory);
@@ -211,3 +248,29 @@ describe("SidecarWriter", () => {
     expect(content).toContain("After gap.");
   }, 10_000);
 });
+
+class MemoryStore implements SidecarStore {
+  constructor(readonly describe: string, public content?: string) {}
+
+  async process<T>(
+    transform: (current: string | undefined) => Readonly<{ content: string; value: T }>,
+  ): Promise<T> {
+    const candidate = transform(this.content);
+    this.content = candidate.content;
+    return candidate.value;
+  }
+}
+
+class RetryingMemoryStore extends MemoryStore {
+  calls = 0;
+
+  override async process<T>(
+    transform: (current: string | undefined) => Readonly<{ content: string; value: T }>,
+  ): Promise<T> {
+    this.calls += 1;
+    transform(this.content);
+    this.content = `${this.content}\nConcurrent append.`;
+    this.calls += 1;
+    return super.process(transform);
+  }
+}

@@ -43,7 +43,7 @@ export { enhancementDelta, TranscriptStore } from "./stream/transcript.js";
 export type { TranscriptUpdate } from "./stream/transcript.js";
 
 export { SidecarWriter } from "./note/sidecar.js";
-export type { SidecarWriterOptions } from "./note/sidecar.js";
+export type { SidecarStore, SidecarWriterOptions } from "./note/sidecar.js";
 
 export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
 

@@ -24,8 +24,8 @@ frowned upon. There are four entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `shorthand-core` | The port and the engine: `EnhanceRunner`, `NoteSink` and its result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, the default `ClaudeAgentClient` and the ordinary-provider `LlmAgentClient`/`LlmAgentClientOptions`, `AgentClient`/`AgentTier`, `readLlmCredentials`/`llmCredentialsPath` and `LlmCredentials`/`LlmCredentialsReadResult`/`LlmProviderId`, `ENHANCEMENT_SAFETY_PREAMBLE`/`DEFAULT_EDITORIAL_GUIDANCE`/`MAX_GUIDANCE_CHARACTERS`, `parseTemplateSections`, `DEFAULT_CONFIG`, the executable detectors | Every consumer |
-| `shorthand-core/markdown` | The reference sink: `MarkdownNoteSink`, plus the note-scaffolding helpers a Markdown app needs (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
+| `shorthand-core` | The ports and the engine: `EnhanceRunner`, `NoteSink`, `SidecarStore` and their result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, the agent clients and configuration helpers | Every consumer |
+| `shorthand-core/markdown` | The reference `MarkdownNoteSink`; the transport-free document codec (`readMarkdownDocument`, `updateMarkdownDocument`, `scaffoldMarkdownDocument` and result/edit types); and note-scaffolding helpers (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
 | `shorthand-core/google` | The Google Docs sink and the pieces it needs: `GoogleDocsNoteSink`, `GOOGLE_DOCS_SCOPE`, `GoogleApiDocsClient` and its API types, the credentials reader — `FileTokenProvider`, `credentialsPath`, `readCredentials`, `GoogleCredentials`, `CredentialsReadResult`, `FileTokenProviderOptions` — and `resolveGoogleDocsSink`/`ResolveGoogleSinkOptions`/`ResolveGoogleSinkResult`, which mints or reuses a per-capture tab and constructs the sink | Google Docs consumers only. **A Markdown or other API sink must not import this.** Core reads the credentials file and never writes it; see §5.4 |
 | `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkHarnessFactory`, `SinkConformanceScenario`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For Google credentials: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsHarnessFactory`, `CredentialsFixture`, `CredentialsGoldenFixture`, `CredentialsConformanceScenario`, and `CredentialsConformanceSupport`. For LLM credentials: `LLM_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeLlmCredentialsConformance`, `LLM_CREDENTIALS_FIXTURES`, `LlmCredentialsWriterHarness`, `LlmCredentialsHarnessFactory`, `LlmCredentialsFixture`, `LlmCredentialsGoldenFixture`, `LlmCredentialsConformanceScenario`, and `LlmCredentialsConformanceSupport` | Any sink's test suite; any writer of either credentials file |
 
@@ -49,7 +49,7 @@ and exporting it would re-create precisely the coupling the sink port was built 
 | --- | --- |
 | `readCurrentBlock`, `writeSections` | The pre-port coupling itself. Their signatures leak filesystem paths *and* the Markdown block-hash model. A consumer reaching for these is a consumer bypassing `NoteSink`. |
 | `hashBlock` | Revision is opaque (§2.3). An exported hash function invites a sink to derive "the" revision the Markdown way, and invites core to grow an assumption it can. |
-| `parseSections`, `extractUserNotes` | Markdown text → `Section[]`. An API sink's blocks are already structured; there is nothing to parse. |
+| `parseSections`, `extractUserNotes` | Low-level pieces of the public Markdown document codec. Consumers use `readMarkdownDocument` so parsing, user notes, and revision come from the same observation. |
 | `AI_BLOCK_START` / `AI_BLOCK_END`, `detectLineEnding` | Marker comments and CRLF are file-format concerns. A Notion page has neither. |
 | `NdjsonDecoder` | An internal of `StreamClient`'s transport. |
 | `buildClaudeAgentOptions`, `createVaultToolGuard`, `ExecutableAgentStub` | Test seams and agent-wiring internals. `ExecutableAgentStub` in particular exists so tests can run without a `claude` binary; shipping it would make it API. |
@@ -57,6 +57,32 @@ and exporting it would re-create precisely the coupling the sink port was built 
 If you find yourself wanting one of these, the answer is almost always that a **capability is
 missing from `NoteSink`** and should be added to the port — not that the internal should be
 exported.
+
+### Transactional sidecar stores
+
+`SidecarWriter` accepts a storage port when the transcript does not live on the ordinary
+filesystem:
+
+```ts
+interface SidecarStore {
+  readonly describe: string;
+  process<T>(
+    transform: (current: string | undefined) => Readonly<{ content: string; value: T }>,
+  ): Promise<T>;
+}
+```
+
+`undefined` means the target is missing. The callback is synchronous and pure because a store
+*may* invoke it again when that store provides optimistic concurrency. If it throws, the store
+must leave the target unchanged. On success, `process` returns the `value` from the invocation
+whose `content` it committed, never from a discarded attempt. Serialization, retry, and
+cross-process concurrency guarantees are store-specific; the interface does not manufacture
+them. The default filesystem adapter is the generic/headless Markdown transport and retains
+best-effort temp-write/rename behavior, including the residual external-write window documented
+in `DESIGN.md`. An Obsidian adapter should implement this port with `Vault.process`, whose atomic
+callback supplies the stronger boundary. `describe` is the human-readable target used by status
+and errors. Supplying both `store` and the legacy filesystem test seam is rejected because it
+would make persistence ownership ambiguous.
 
 A second hole the `exports` map cannot see: a **relative** import that escapes a consumer's
 own root (`../../src/note/writer.js`) bypasses bare-specifier resolution entirely. **Nothing

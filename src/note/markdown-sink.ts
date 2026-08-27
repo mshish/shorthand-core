@@ -1,15 +1,7 @@
 import { readFile } from "node:fs/promises";
+import type { Section } from "./markers.js";
+import { readMarkdownDocument } from "./markdown-document.js";
 import {
-  AI_BLOCK_START,
-  USER_NOTES_MARKER,
-  locateAiBlock,
-  parseSections,
-  type MarkerError,
-  type Section,
-  type SectionError,
-} from "./markers.js";
-import {
-  hashBlock,
   writeSections,
   type BlockWriterError,
   type BlockWriterOptions,
@@ -86,18 +78,7 @@ export class MarkdownNoteSink implements NoteSink {
     } catch (error) {
       return { ok: false, error: fileSinkError(this.#notePath, errno(error) === "ENOENT" ? "note-missing" : "read-failed", error) };
     }
-    const located = locateAiBlock(content);
-    if (!located.ok) return { ok: false, error: markerSinkError(located.error) };
-    const parsed = parseSections(located.value.body);
-    if (!parsed.ok) return { ok: false, error: sectionSinkError(parsed.error) };
-    return {
-      ok: true,
-      value: {
-        sections: parsed.value,
-        userNotes: extractUserNotes(content),
-        revision: hashBlock(located.value.body),
-      },
-    };
+    return readMarkdownDocument(content);
   }
 
   async write(sections: readonly Section[], expectedRevision: string): Promise<SinkWriteResult> {
@@ -111,13 +92,8 @@ export class MarkdownNoteSink implements NoteSink {
   }
 }
 
-/** The user-owned prose between the notes marker and the AI block. */
-export function extractUserNotes(noteContent: string): string {
-  const notesStart = noteContent.indexOf(USER_NOTES_MARKER);
-  const aiStart = noteContent.indexOf(AI_BLOCK_START);
-  if (notesStart < 0 || aiStart < notesStart) return "";
-  return noteContent.slice(notesStart + USER_NOTES_MARKER.length, aiStart).replace(/^\s+|\s+$/g, "");
-}
+// Kept as an internal compatibility seam for this package's existing tests.
+export { extractUserNotes } from "./markdown-document.js";
 
 function writerSinkError(error: BlockWriterError): SinkError {
   if (error.kind === "marker-error") return markerSinkError(error);
@@ -125,11 +101,11 @@ function writerSinkError(error: BlockWriterError): SinkError {
   return sinkError(fileErrorCode(error.code), error.message, error);
 }
 
-function markerSinkError(error: MarkerError): SinkError {
+function markerSinkError(error: Extract<BlockWriterError, { kind: "marker-error" }>): SinkError {
   return sinkError("invalid-target", error.message, error);
 }
 
-function sectionSinkError(error: SectionError): SinkError {
+function sectionSinkError(error: Extract<BlockWriterError, { kind: "section-error" }>): SinkError {
   return sinkError("invalid-content", error.message, error);
 }
 

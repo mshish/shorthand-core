@@ -1,16 +1,20 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
-  appendNoteScaffold,
   detectLineEnding,
   locateAiBlock,
-  renderSections,
   type MarkerError,
   type Section,
   type SectionError,
 } from "./markers.js";
+import {
+  scaffoldMarkdownDocument,
+  updateMarkdownDocument,
+} from "./markdown-document.js";
+import { hashBlock } from "./markdown-revision.js";
+import type { SinkError } from "./sink.js";
 
 type WriterFileSystem = {
   access: typeof access;
@@ -83,9 +87,7 @@ type BlockWriterInternalOptions = Readonly<{
  * The block revision used for optimistic concurrency. Exported so an adapter can
  * derive the same value from a single note read without a second `readCurrentBlock`.
  */
-export function hashBlock(body: string): string {
-  return createHash("sha256").update(body, "utf8").digest("hex");
-}
+export { hashBlock } from "./markdown-revision.js";
 
 export async function readCurrentBlock(path: string, options: BlockWriterOptions = {}): Promise<ReadBlockResult> {
   const fileSystem = { ...DEFAULT_FILE_SYSTEM, ...options.fileSystem };
@@ -109,13 +111,15 @@ export async function writeSections(
   expectedBlockHash: string,
   options: BlockWriterOptions & BlockWriterInternalOptions = {},
 ): Promise<WriteSectionsResult> {
-  let initialRender: ReturnType<typeof renderSections>;
-  try {
-    initialRender = renderSections(sections);
-  } catch (error) {
-    return { status: "error", error: invalidSectionError(error) };
-  }
-  if (!initialRender.ok) return { status: "error", error: initialRender.error };
+  // Validate before touching the filesystem. The codec owns section validation;
+  // this synthetic document only supplies it with a valid ownership boundary.
+  const validationBody = "\n";
+  const validation = updateMarkdownDocument(
+    `<!-- shorthand:ai:start -->${validationBody}<!-- shorthand:ai:end -->`,
+    sections,
+    hashBlock(validationBody),
+  );
+  if (validation.status === "error") return { status: "error", error: codecError(validation.error) };
 
   const fileSystem = { ...DEFAULT_FILE_SYSTEM, ...options.fileSystem };
   const writable = await checkWritable(path, fileSystem);
@@ -136,22 +140,18 @@ export async function writeSections(
     try {
       const source = await readNote(path, fileSystem);
       if (!source.ok) return { status: "error", error: source.error };
-      const located = locateAiBlock(source.value);
-      if (!located.ok) return { status: "error", error: located.error };
-      const actualHash = hashBlock(located.value.body);
-      if (actualHash !== expectedBlockHash) return { status: "stale", expectedHash: expectedBlockHash, actualHash };
-
-      const lineEnding = detectLineEnding(source.value);
-      const rendered = lineEnding === "\n" ? initialRender.value : initialRender.value.replaceAll("\n", lineEnding);
-      const replacementBody = rendered.length === 0 ? lineEnding : `${lineEnding}${rendered}${lineEnding}`;
-      const updated = source.value.slice(0, located.value.bodyStartOffset) + replacementBody + source.value.slice(located.value.bodyEndOffset);
-      if (updated === source.value) return { status: "unchanged", hash: actualHash };
+      const update = updateMarkdownDocument(source.value, sections, expectedBlockHash);
+      if (update.status === "error") return { status: "error", error: codecError(update.error) };
+      if (update.status === "stale") {
+        return { status: "stale", expectedHash: expectedBlockHash, actualHash: update.actualRevision };
+      }
+      if (update.status === "unchanged") return { status: "unchanged", hash: update.revision };
 
       temporaryPath = temporaryName(path);
       if (options.beforeTemporaryWrite !== undefined) await options.beforeTemporaryWrite();
-      await writeSyncedTemporaryFile(temporaryPath, updated, path, fileSystem);
+      await writeSyncedTemporaryFile(temporaryPath, update.content, path, fileSystem);
       const renameResult = await verifyAndRename(temporaryPath, path, source.value, fileSystem);
-      if (renameResult === "renamed") return { status: "written", hash: hashBlock(replacementBody) };
+      if (renameResult === "renamed") return { status: "written", hash: update.revision };
       if (renameResult === "locked") {
         return { status: "note-locked", path, attempts: RENAME_RETRY_DELAYS_MS.length + 1 };
       }
@@ -234,11 +234,11 @@ export async function ensureNoteScaffold(
     try {
       const source = await readNote(path, fileSystem);
       if (!source.ok) return { status: "error", error: source.error };
-      const updated = appendNoteScaffold(source.value, sections);
-      if (!updated.ok) return { status: "error", error: updated.error };
-      if (updated.value === source.value) return { status: "unchanged" };
+      const updated = scaffoldMarkdownDocument(source.value, sections);
+      if (updated.status === "error") return { status: "error", error: codecError(updated.error) };
+      if (updated.status === "unchanged") return { status: "unchanged" };
       temporaryPath = temporaryName(path);
-      await writeSyncedTemporaryFile(temporaryPath, updated.value, path, fileSystem);
+      await writeSyncedTemporaryFile(temporaryPath, updated.content, path, fileSystem);
       const renameResult = await verifyAndRename(temporaryPath, path, source.value, fileSystem);
       if (renameResult === "renamed") return { status: "written" };
       if (renameResult === "locked") return { status: "note-locked", path, attempts: RENAME_RETRY_DELAYS_MS.length + 1 };
@@ -374,9 +374,22 @@ function fileError(path: string, code: NoteFileErrorCode, cause?: unknown): Note
   return { kind: "file-error", code, path, message: `${code} for ${path}${detail}`, ...(cause === undefined ? {} : { cause }) };
 }
 
-function invalidSectionError(cause: unknown): SectionError {
-  const detail = cause instanceof Error ? `: ${cause.message}` : "";
-  return { kind: "section-error", code: "invalid-section", sectionIndex: -1, message: `Invalid sections input${detail}` };
+function codecError(error: SinkError): MarkerError | SectionError {
+  const cause = error.cause;
+  if (isBlockWriterCodecError(cause)) return cause;
+  return {
+    kind: "section-error",
+    code: "invalid-section",
+    sectionIndex: -1,
+    message: error.message,
+  };
+}
+
+function isBlockWriterCodecError(error: unknown): error is MarkerError | SectionError {
+  return typeof error === "object"
+    && error !== null
+    && ((error as { kind?: unknown }).kind === "marker-error"
+      || (error as { kind?: unknown }).kind === "section-error");
 }
 
 function delay(milliseconds: number): Promise<void> {

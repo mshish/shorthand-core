@@ -33,10 +33,10 @@ bun run test:e2e      # node test/e2e-smoke.mjs, exercises the CLI end to end
 All four are the gate. Run them before every push — `bun test` transpiles
 without typechecking, so a green suite is not evidence that `tsc` is happy.
 
-## This repo is private, and pushing needs no permission
+## This repository is public, and you can push your work
 
-It is a single-user private repo. Commit, push and tag as part of finishing the
-work; do not stop to ask. A bad tag can be moved.
+The repository is public. Commit, push, and tag your own work without stopping
+to ask. Contributions from outside go through a pull request.
 
 Still confirm before force-pushing, rewriting published history, or deleting a
 tag another checkout may already have fetched.

@@ -45,10 +45,10 @@ legitimate.
 
 ## Consuming core
 
-The package is private and unpublished, so consumers install it from git, pinned to a tag:
+Because the package is not on npm, you install it from GitHub and pin it to a tag:
 
 ```json
-"shorthand-core": "git+https://github.com/mshish/shorthand-core.git#0.1.0"
+"shorthand-core": "github:mshish/shorthand-core#<tag>"
 ```
 
 Use **npm**, not bun: npm resolves that URL by cloning through the `gh` credential helper, while

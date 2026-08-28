@@ -43,7 +43,7 @@ tag another checkout may already have fetched.
 
 ## Releasing, and why the timing matters
 
-`obsidian-shorthand` consumes this package as
+`shorthand-obsidian-plugin` consumes this package as
 `"shorthand-core": "github:mshish/shorthand-core#<tag>"` — a pinned GitHub tag,
 not a path dependency or workspace link. **A local change here is invisible to
 the plugin until it is pushed and tagged.**
@@ -70,7 +70,7 @@ exported symbol is a minor bump, not a patch.
 
 ## A change here is not done when it is tagged
 
-The tag is the middle of the work. `obsidian-shorthand` pins this package by
+The tag is the middle of the work. `shorthand-obsidian-plugin` pins this package by
 tag, so every breaking change lands in two halves: the retype here, and the
 consumer that has to survive it. Stopping at the tag leaves a repo that builds
 from a clean checkout and a consumer that does not — and nothing in either

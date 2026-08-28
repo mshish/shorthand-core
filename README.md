@@ -1,6 +1,6 @@
 # shorthand-core
 
-The headless engine behind Shorthand: it captures [Shorthand](https://github.com/cjpais/Shorthand)'s
+The headless engine behind Shorthand: it captures [Shorthand](https://github.com/mshish/shorthand)'s
 live microphone and system-audio transcript into a linked sidecar note, and runs enhancement
 passes through either the default Claude Agent SDK backend or ordinary LLM provider APIs. Those
 passes use the new transcript plus your own notes to maintain a structured summary in the meeting
@@ -12,7 +12,7 @@ payoffs — the whole pipeline is testable end to end without launching Obsidian
 MCP server, no plugin install) stands between the agent and the note.
 
 **Consumers.** The Obsidian plugin lives in its own repository,
-[`mshish/obsidian-shorthand-notes`](https://github.com/mshish/obsidian-shorthand-notes), and depends on
+[`mshish/shorthand-obsidian-plugin`](https://github.com/mshish/shorthand-obsidian-plugin), and depends on
 this package by name and a pinned tag. A `bin/shorthand-notes` CLI in this repo drives the same
 pipeline headlessly.
 

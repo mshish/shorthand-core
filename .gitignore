@@ -13,5 +13,9 @@ dist/
 # Local git worktrees (SDD scratch)
 .worktrees/
 
-# Subagent-driven-development scratch (ledgers, briefs, review packages)
+# Agent scratch: session state, worktrees, ledgers, briefs, review packages.
+# These carry local absolute paths and pasted tool output. The repo is public,
+# so a stray `git add -A` would publish them.
 .superpowers/
+.claude/
+.serena/

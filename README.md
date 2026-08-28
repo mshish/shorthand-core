@@ -51,9 +51,11 @@ Because the package is not on npm, you install it from GitHub and pin it to a ta
 "shorthand-core": "github:mshish/shorthand-core#<tag>"
 ```
 
-Use **npm**, not bun: npm resolves that URL by cloning through the `gh` credential helper, while
-bun rewrites GitHub dependencies to the API tarball endpoint and 404s on a private repository
-regardless of the token supplied. Core itself develops with bun.
+Use **npm**, not bun. Both resolve this package — bun's old failure was that it 404s on a
+private repository, and that stopped applying when core went public on 2026-08-28. npm stays
+the documented tool for consumers because bun writes `.exe`/`.bunx` shims into
+`node_modules/.bin`, so `npx <tool>` fails against a bun-installed tree. Core itself develops
+with bun.
 
 Core's tags exist **only** as dependency pins. There is no release workflow here and no
 `main.js`; the Obsidian plugin's releases are cut from the plugin repository.

@@ -1,6 +1,6 @@
-import { StringDecoder } from "node:string_decoder";
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
+import { Utf8LineReader } from "../ndjson.js";
 
 export const SUPPORTED_PROTOCOL = 1;
 export const NOT_RUNNING_MESSAGE =
@@ -140,33 +140,25 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
 }
 
 export class NdjsonDecoder {
-  readonly #decoder = new StringDecoder("utf8");
-  #tail = "";
+  // Byte-and-line framing (the multi-byte-safe chunk buffering) lives in Utf8LineReader, shared
+  // with agent/codex-app-server.ts's JSON-RPC reader — see that module's doc comment for why the
+  // two must not diverge. This class owns only what is specific to the transcript wire protocol:
+  // turning a line into a WireEvent via parseWireRecord.
+  readonly #reader: Utf8LineReader;
 
   constructor(
     private readonly onRecord: (record: WireEvent | ConnectionErrorRecord) => void,
     private readonly onError: (error: Error, line: string) => void = () => {},
-  ) {}
+  ) {
+    this.#reader = new Utf8LineReader((line) => this.#parse(line));
+  }
 
   push(chunk: Buffer): void {
-    this.#consume(this.#decoder.write(chunk));
+    this.#reader.push(chunk);
   }
 
   end(chunk?: Buffer): void {
-    this.#consume((chunk === undefined ? "" : this.#decoder.write(chunk)) + this.#decoder.end());
-    if (this.#tail.length > 0) this.#parse(this.#tail);
-    this.#tail = "";
-  }
-
-  #consume(text: string): void {
-    this.#tail += text;
-    let newline = this.#tail.indexOf("\n");
-    while (newline >= 0) {
-      const line = this.#tail.slice(0, newline).replace(/\r$/, "");
-      this.#tail = this.#tail.slice(newline + 1);
-      if (line.length > 0) this.#parse(line);
-      newline = this.#tail.indexOf("\n");
-    }
+    this.#reader.end(chunk);
   }
 
   #parse(line: string): void {

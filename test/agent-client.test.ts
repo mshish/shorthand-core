@@ -72,6 +72,17 @@ describe("Claude Agent vault tool confinement", () => {
     expect(options.outputFormat).toEqual({ type: "json_schema", schema: buildSectionOutputSchema() });
   });
 
+  test("model and effort are optional client-level query settings", () => {
+    const request = {
+      prompt: "prompt", systemPrompt: "system", tools: [], settingSources: [], maxTurns: 2,
+      outputSchema: buildSectionOutputSchema(),
+    } as const;
+    expect(buildClaudeAgentOptions(request)).not.toHaveProperty("model");
+    expect(buildClaudeAgentOptions(request)).not.toHaveProperty("effort");
+    expect(buildClaudeAgentOptions(request, { model: "claude-opus-4-6", effort: "high" }))
+      .toMatchObject({ model: "claude-opus-4-6", effort: "high" });
+  });
+
   test("sessionId threads through as resume; its absence leaves resume unset", async () => {
     // buildClaudeAgentOptions eagerly begins resolving the guard root. A disposable vault
     // can be removed by afterEach before that unobserved promise settles because these

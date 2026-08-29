@@ -58,6 +58,12 @@ If you find yourself wanting one of these, the answer is almost always that a **
 missing from `NoteSink`** and should be added to the port — not that the internal should be
 exported.
 
+`AgentClient.dispose()` is optional so existing transport adapters remain source-compatible.
+`EnhanceRunner.dispose()` is the terminal lifecycle operation: it stops new work, waits for an
+active provider query to settle, and delegates provider session cleanup. Consumers that create
+a runner own that call. The privacy and retention semantics are specified in
+[`AGENT-SESSION-PRIVACY.md`](AGENT-SESSION-PRIVACY.md).
+
 ### Transactional sidecar stores
 
 `SidecarWriter` accepts a storage port when the transcript does not live on the ordinary

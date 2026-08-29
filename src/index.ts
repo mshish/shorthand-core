@@ -45,9 +45,17 @@ export type { TranscriptUpdate } from "./stream/transcript.js";
 export { SidecarWriter } from "./note/sidecar.js";
 export type { SidecarStore, SidecarWriterOptions } from "./note/sidecar.js";
 
-export { ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
+export { CLAUDE_EFFORT_LEVELS, ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
+export type { ClaudeAgentClientOptions, ClaudeEffort } from "./agent/client.js";
 
-export { CodexAgentClient, detectCodexExecutable, resolveCodexBaseUrl, resolveCodexModel } from "./agent/codex-client.js";
+export {
+  CODEX_REASONING_EFFORTS,
+  CodexAgentClient,
+  detectCodexExecutable,
+  resolveCodexBaseUrl,
+  resolveCodexModel,
+} from "./agent/codex-client.js";
+export type { CodexAgentClientOptions, CodexReasoningEffort } from "./agent/codex-client.js";
 
 export { LlmAgentClient } from "./agent/llm-client.js";
 export type { LlmAgentClientOptions } from "./agent/llm-client.js";

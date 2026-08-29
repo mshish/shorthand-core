@@ -383,6 +383,33 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     await runner.waitForIdle();
   });
 
+  test("dispose waits for the aborted query before disposing the agent and is idempotent", async () => {
+    const events: string[] = [];
+    let queries = 0;
+    const agent: AgentClient = {
+      query: (request) => {
+        queries += 1;
+        return new Promise<AgentQueryResponse>((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => {
+            events.push("query-ended");
+            reject(new Error("aborted"));
+          }, { once: true });
+        });
+      },
+      dispose: async () => { events.push("agent-disposed"); },
+    };
+    const runner = makeRunner({ agent });
+    runner.appendTranscript("active");
+    const pass = runner.tick();
+    await until(() => queries === 1);
+
+    await runner.dispose();
+    await runner.dispose();
+
+    expect(await pass).toEqual({ status: "failed", error: "Enhancement runner stopped." });
+    expect(events).toEqual(["query-ended", "agent-disposed"]);
+  });
+
   test("timeout covers a hung sink read and releases the in-flight state", async () => {
     const runner = makeRunner({
       agent: new FakeAgent([]),

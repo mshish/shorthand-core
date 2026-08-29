@@ -136,6 +136,8 @@ export interface AgentClient {
    */
   readonly supportsVaultTools?: boolean;
   query(request: AgentQueryRequest): Promise<AgentQueryResponse>;
+  /** Release provider-owned session state after the runner has stopped all queries. */
+  dispose?(): Promise<void>;
 }
 
 export class AgentQueryError extends Error {

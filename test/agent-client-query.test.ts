@@ -2,10 +2,14 @@ import { describe, expect, mock, test } from "bun:test";
 import type { AgentQueryRequest } from "../src/agent/contract.js";
 
 let messages: readonly Record<string, unknown>[] = [];
+const deletedSessions: Array<{ sessionId: string; dir?: string }> = [];
 
 // The SDK module is replaced process-wide, which is safe here: `src/agent/client.ts` is the
 // only file in the repo that imports it, and no other suite drives a real query.
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+  deleteSession: async (sessionId: string, options?: { dir?: string }) => {
+    deletedSessions.push({ sessionId, ...(options?.dir === undefined ? {} : { dir: options.dir }) });
+  },
   query: () => ({
     async *[Symbol.asyncIterator]() { for (const message of messages) yield message; },
     interrupt: async () => {},
@@ -131,6 +135,46 @@ describe("ClaudeAgentClient result harvesting", () => {
     ];
     await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow(AgentQueryError);
     await expect(new ClaudeAgentClient().query(agentRequest())).rejects.toThrow("without a result message");
+  });
+});
+
+describe("ClaudeAgentClient session cleanup", () => {
+  test("deletes an observed session with the same project directory on dispose", async () => {
+    deletedSessions.length = 0;
+    messages = [
+      { type: "system", session_id: "session-cleanup" },
+      { type: "result", subtype: "success", is_error: false, session_id: "session-cleanup", structured_output: {} },
+    ];
+    const client = new ClaudeAgentClient();
+    await client.query({ ...agentRequest(), cwd: process.cwd() });
+    await client.dispose();
+    expect(deletedSessions).toEqual([{ sessionId: "session-cleanup", dir: process.cwd() }]);
+    await client.dispose();
+    expect(deletedSessions).toHaveLength(1);
+  });
+
+  test("tracks a session even when its turn later fails", async () => {
+    deletedSessions.length = 0;
+    messages = [{
+      type: "result", subtype: "error_during_execution", is_error: true,
+      session_id: "session-failed", errors: ["upstream failed"],
+    }];
+    const client = new ClaudeAgentClient();
+    await expect(client.query(agentRequest())).rejects.toThrow("upstream failed");
+    await client.dispose();
+    expect(deletedSessions).toEqual([{ sessionId: "session-failed" }]);
+  });
+
+  test("retention leaves the SDK transcript in place", async () => {
+    deletedSessions.length = 0;
+    messages = [
+      { type: "system", session_id: "session-retained" },
+      { type: "result", subtype: "success", is_error: false, session_id: "session-retained", structured_output: {} },
+    ];
+    const client = new ClaudeAgentClient({ retainSessionHistory: true });
+    await client.query(agentRequest());
+    await client.dispose();
+    expect(deletedSessions).toEqual([]);
   });
 });
 

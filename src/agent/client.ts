@@ -3,18 +3,36 @@ import { existsSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, EffortLevel } from "@anthropic-ai/claude-agent-sdk";
+import { deleteSession, query } from "@anthropic-ai/claude-agent-sdk";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
 
 type SdkMessage = Record<string, unknown>;
 
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const satisfies readonly EffortLevel[];
+export type ClaudeEffort = typeof CLAUDE_EFFORT_LEVELS[number];
+
+export type ClaudeAgentClientOptions = Readonly<{
+  model?: string;
+  effort?: ClaudeEffort;
+  /** Keep the SDK's local transcript after disposal. Defaults to false. */
+  retainSessionHistory?: boolean;
+}>;
+
 export class ClaudeAgentClient implements AgentClient {
+  readonly #options: ClaudeAgentClientOptions;
+  readonly #sessions = new Map<string, string | undefined>();
+  #disposePromise: Promise<void> | undefined;
+
+  constructor(options: ClaudeAgentClientOptions = {}) {
+    this.#options = options;
+  }
+
   async query(request: AgentQueryRequest): Promise<AgentQueryResponse> {
     if (request.signal?.aborted === true) throw new Error("Agent query aborted.");
     // Transcript and vault content are untrusted. The structural boundary is deliberate:
     // read-only/no tools here, schema validation in contract.ts, and no agent-owned writes.
-    const options = buildClaudeAgentOptions(request);
+    const options = buildClaudeAgentOptions(request, this.#options);
     const stream = query({ prompt: request.prompt, options });
     const interrupt = () => { void stream.interrupt().catch(() => {}); };
     request.signal?.addEventListener("abort", interrupt, { once: true });
@@ -27,7 +45,12 @@ export class ClaudeAgentClient implements AgentClient {
         const message = rawMessage as unknown as SdkMessage;
         // The session id is stable for the life of the stream: capture it off the first
         // message seen and never overwrite it on later messages.
-        if (sessionId === undefined && typeof message.session_id === "string") sessionId = message.session_id;
+        if (sessionId === undefined && typeof message.session_id === "string") {
+          sessionId = message.session_id;
+          // Capture this before the turn can fail or abort. The runner may never adopt a late
+          // first-turn id, but the SDK has already persisted that transcript and still owns it.
+          this.#sessions.set(sessionId, request.cwd);
+        }
         if (message.type !== "result") continue;
         // Only the result message carries the structured output. Under an output format a
         // completed turn ends on a tool_result carrier with no trailing assistant message,
@@ -58,9 +81,32 @@ export class ClaudeAgentClient implements AgentClient {
     if (!sawResult) throw new AgentQueryError("Claude Agent SDK stream ended without a result message.");
     return { structuredOutput, sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
   }
+
+  dispose(): Promise<void> {
+    this.#disposePromise ??= this.#disposeSessions().finally(() => { this.#disposePromise = undefined; });
+    return this.#disposePromise;
+  }
+
+  async #disposeSessions(): Promise<void> {
+    if (this.#options.retainSessionHistory === true) return;
+    const sessions = [...this.#sessions];
+    const outcomes = await Promise.allSettled(sessions.map(async ([sessionId, cwd]) => {
+      await deleteSession(sessionId, cwd === undefined ? undefined : { dir: cwd });
+      this.#sessions.delete(sessionId);
+    }));
+    const failures = outcomes
+      .filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected")
+      .map((outcome) => outcome.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Failed to delete ${failures.length} Claude session transcript(s).`);
+    }
+  }
 }
 
-export function buildClaudeAgentOptions(request: AgentQueryRequest) {
+export function buildClaudeAgentOptions(
+  request: AgentQueryRequest,
+  clientOptions: Pick<ClaudeAgentClientOptions, "model" | "effort"> = {},
+) {
   const { cwd } = request;
   return {
     // No cwd means no filesystem context was offered. Inheriting process.cwd() here
@@ -85,6 +131,8 @@ export function buildClaudeAgentOptions(request: AgentQueryRequest) {
     mcpServers: {},
     strictMcpConfig: true,
     maxTurns: request.maxTurns,
+    ...(clientOptions.model === undefined ? {} : { model: clientOptions.model }),
+    ...(clientOptions.effort === undefined ? {} : { effort: clientOptions.effort }),
     ...(request.pathToClaudeCodeExecutable === undefined
       ? {}
       : { pathToClaudeCodeExecutable: request.pathToClaudeCodeExecutable }),

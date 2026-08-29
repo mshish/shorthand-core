@@ -431,6 +431,19 @@ describe("CodexAgentClient happy path", () => {
     expect(startThreadCalls[1]!.options).not.toHaveProperty("modelReasoningEffort");
   });
 
+  // CodexAgentClientOptions.modelReasoningEffort is `string`, not the static
+  // CodexReasoningEffort union, precisely so a value catalog.ts's AgentModel.efforts reported
+  // from the live Codex app-server reaches the SDK even when the pinned npm SDK's
+  // ModelReasoningEffort union has not caught up to that CLI version yet. An effort string
+  // outside CODEX_REASONING_EFFORTS must still compile and flow through to the ThreadOptions
+  // boundary unchanged — a static union here would make this exact case a type error.
+  test("a reasoning effort outside the static CODEX_REASONING_EFFORTS union still reaches ThreadOptions", async () => {
+    const futureEffort = "extreme";
+    const client = newClient({ modelReasoningEffort: futureEffort });
+    await client.query(baseRequest());
+    expect(startThreadCalls[0]!.options.modelReasoningEffort).toBe(futureEffort);
+  });
+
   test("replaces ambient CODEX_HOME with a fresh isolated config root", async () => {
     const previous = process.env.CODEX_HOME;
     process.env.CODEX_HOME = "C:\\operator\\.codex";

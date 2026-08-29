@@ -9,6 +9,12 @@ import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQu
 
 type CodexEvent = Record<string, unknown>;
 
+/**
+ * The known-good reasoning efforts for the npm SDK version this package is built against.
+ * Kept as the synchronous type-guard for validating a stored setting when no catalog can be
+ * awaited; it is not the type of `CodexAgentClientOptions.modelReasoningEffort` (see that
+ * field's comment and catalog.ts's `AgentModel.efforts` for why).
+ */
 export const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const satisfies readonly ModelReasoningEffort[];
 export type CodexReasoningEffort = typeof CODEX_REASONING_EFFORTS[number];
 
@@ -27,7 +33,16 @@ export type CodexAgentClientOptions = Readonly<{
    * here; see the pinning comment in #threadOptions for what an unset value inherits.
    */
   model?: string;
-  modelReasoningEffort?: CodexReasoningEffort;
+  /**
+   * Plain `string`, not `CodexReasoningEffort`: the value offered to a caller comes from
+   * `AgentModel.efforts` in catalog.ts, read from the live Codex app-server at runtime, which
+   * can list an effort the pinned npm SDK's `ModelReasoningEffort` union does not yet know
+   * about. Narrowing this to `CodexReasoningEffort` would make a runtime-valid,
+   * catalog-offered choice a type error. See the cast onto the SDK's own
+   * `modelReasoningEffort?: ModelReasoningEffort` in `#threadOptions` for where that gap is
+   * closed instead.
+   */
+  modelReasoningEffort?: string;
   /** Preserve a credential-free local transcript archive after disposal. Defaults to false. */
   retainSessionHistory?: boolean;
   /** Destination root for retained transcript archives. Primarily injectable for tests. */
@@ -101,9 +116,19 @@ export class CodexAgentClient implements AgentClient {
       // unset model inherits whatever the installed Codex CLI defaults to, which is
       // version-dependent and can change under a user who never changed anything.
       ...(this.#options.model === undefined ? {} : { model: this.#options.model }),
+      // Cast, not a narrowed type on CodexAgentClientOptions.modelReasoningEffort: the SDK's
+      // own field is typed `ModelReasoningEffort`, a snapshot of what the pinned npm SDK
+      // version knew about when it was published. `this.#options.modelReasoningEffort` can be
+      // a value the live Codex app-server reported through catalog.ts's AgentModel.efforts
+      // that this snapshot has not caught up to yet — the CLI is a separately-versioned binary
+      // resolved from PATH (docs/DESIGN.md). Rejecting it here (by keeping the field typed
+      // `ModelReasoningEffort`) would make a value the CLI just told the caller it accepts
+      // unusable; passing it through and letting the CLI itself reject an actually-bad value
+      // trades a compile-time refusal for a runtime one the existing turn.failed/error path
+      // already surfaces, which is the smaller failure mode.
       ...(this.#options.modelReasoningEffort === undefined
         ? {}
-        : { modelReasoningEffort: this.#options.modelReasoningEffort }),
+        : { modelReasoningEffort: this.#options.modelReasoningEffort as ModelReasoningEffort }),
       // request.tools is deliberately never read into this object: Codex has no per-thread
       // allowlist. The isolated CODEX_HOME is what actually narrows the tool surface; neither
       // it nor the exec pins turn the remaining built-ins into Claude's tools: [] shape.

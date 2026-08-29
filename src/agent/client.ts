@@ -16,12 +16,26 @@ import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQu
 
 type SdkMessage = Record<string, unknown>;
 
+/**
+ * The known-good effort levels for the npm SDK version this package is built against. Kept
+ * as the synchronous type-guard for validating a stored setting when no catalog can be
+ * awaited; it is not the type of `ClaudeAgentClientOptions.effort` (see that field's comment
+ * and catalog.ts's `AgentModel.efforts` for why).
+ */
 export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const satisfies readonly EffortLevel[];
 export type ClaudeEffort = typeof CLAUDE_EFFORT_LEVELS[number];
 
 export type ClaudeAgentClientOptions = Readonly<{
   model?: string;
-  effort?: ClaudeEffort;
+  /**
+   * Plain `string`, not `ClaudeEffort`: the value offered to a caller comes from
+   * `AgentModel.efforts` in catalog.ts, read from the live CLI at runtime, which can list an
+   * effort the pinned npm SDK's `EffortLevel` union does not yet know about. Narrowing this to
+   * `ClaudeEffort` would make a runtime-valid, catalog-offered choice a type error. See the
+   * cast onto the SDK's own `effort?: EffortLevel` in `buildClaudeAgentOptions` for where that
+   * gap is closed instead.
+   */
+  effort?: string;
   /** Keep the SDK's local transcript after disposal. Defaults to false. */
   retainSessionHistory?: boolean;
 }>;
@@ -139,7 +153,16 @@ export function buildClaudeAgentOptions(
     strictMcpConfig: true,
     maxTurns: request.maxTurns,
     ...(clientOptions.model === undefined ? {} : { model: clientOptions.model }),
-    ...(clientOptions.effort === undefined ? {} : { effort: clientOptions.effort }),
+    // Cast, not a narrowed type on ClaudeAgentClientOptions.effort: the SDK's own `effort`
+    // parameter is typed `EffortLevel`, a snapshot of what the pinned npm SDK version knew
+    // about when it was published. `clientOptions.effort` can be a value the live CLI reported
+    // through catalog.ts's AgentModel.efforts that this snapshot has not caught up to yet — the
+    // CLI is a separately-versioned binary resolved from PATH (docs/DESIGN.md). Rejecting it
+    // here (by keeping the field typed `EffortLevel`) would make a value the CLI just told the
+    // caller it accepts unusable; passing it through and letting the CLI itself reject an
+    // actually-bad value trades a compile-time refusal for a runtime one the existing
+    // is_error/AgentQueryError path already surfaces, which is the smaller failure mode.
+    ...(clientOptions.effort === undefined ? {} : { effort: clientOptions.effort as EffortLevel }),
     ...(request.pathToClaudeCodeExecutable === undefined
       ? {}
       : { pathToClaudeCodeExecutable: request.pathToClaudeCodeExecutable }),

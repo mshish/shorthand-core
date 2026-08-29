@@ -8,6 +8,14 @@
  * Claude's Haiku accepts no effort at all, and Codex's `gpt-5.4` rejects the `max` and
  * `ultra` that `gpt-5.6-sol` accepts. Those unions stay as the synchronous type-guard for
  * stored settings; this is what a picker is built from.
+ *
+ * This catalog is the authority on what a given model accepts, because it is read from the
+ * live CLI at runtime; `CLAUDE_EFFORT_LEVELS` and `CODEX_REASONING_EFFORTS` are a known-good
+ * set frozen at the installed npm SDK's version, not the CLI's. The two can disagree — the
+ * CLI is a separately-versioned binary resolved from the user's PATH (see docs/DESIGN.md) —
+ * so `ClaudeAgentClientOptions.effort` and `CodexAgentClientOptions.modelReasoningEffort` are
+ * typed as plain `string`, accepting whatever this catalog reported, rather than narrowed to
+ * those unions.
  */
 
 export type AgentModel = Readonly<{
@@ -24,6 +32,12 @@ export type AgentModel = Readonly<{
    * takes no effort setting at all, which is a real state rather than a missing answer —
    * Claude's Haiku reports no `supportedEffortLevels`, and sending one is a mistake the
    * caller should be prevented from making rather than told about afterwards.
+   *
+   * Deliberately `readonly string[]`, not `readonly ClaudeEffort[]` / `readonly
+   * CodexReasoningEffort[]`: this is discovered from the live CLI at runtime, and the CLI can
+   * ship an effort level before the pinned npm SDK's static union knows about it. This array
+   * is authoritative for what THIS model accepts; the unions are only the synchronous
+   * known-good set used to validate a stored setting when no catalog is available to ask.
    */
   efforts: readonly string[];
   /** The backend's own default, when it names one. Not a fallback this module invents. */

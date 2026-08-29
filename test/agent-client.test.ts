@@ -83,6 +83,21 @@ describe("Claude Agent vault tool confinement", () => {
       .toMatchObject({ model: "claude-opus-4-6", effort: "high" });
   });
 
+  // ClaudeAgentClientOptions.effort is `string`, not the static ClaudeEffort union, precisely
+  // so a value catalog.ts's AgentModel.efforts reported from the live CLI reaches the SDK even
+  // when the pinned npm SDK's EffortLevel union has not caught up to that CLI version yet. An
+  // effort string outside CLAUDE_EFFORT_LEVELS must still compile and flow through to the SDK
+  // boundary unchanged — a static union here would make this exact case a type error.
+  test("an effort level outside the static CLAUDE_EFFORT_LEVELS union still reaches the SDK options", () => {
+    const request = {
+      prompt: "prompt", systemPrompt: "system", tools: [], settingSources: [], maxTurns: 2,
+      outputSchema: buildSectionOutputSchema(),
+    } as const;
+    const futureEffort = "ultrahigh";
+    expect(buildClaudeAgentOptions(request, { effort: futureEffort }))
+      .toMatchObject({ effort: futureEffort });
+  });
+
   test("sessionId threads through as resume; its absence leaves resume unset", async () => {
     // buildClaudeAgentOptions eagerly begins resolving the guard root. A disposable vault
     // can be removed by afterEach before that unobserved promise settles because these

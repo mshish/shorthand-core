@@ -33,6 +33,18 @@ bun run test:e2e      # node test/e2e-smoke.mjs, exercises the CLI end to end
 All four are the gate. Run them before every push — `bun test` transpiles
 without typechecking, so a green suite is not evidence that `tsc` is happy.
 
+To exercise the workflow itself rather than the scripts it calls, run CI locally
+with [`act`](https://github.com/nektos/act) instead of pushing to find out:
+
+```bash
+act push -W .github/workflows/ci.yml
+```
+
+`ci.yml` is a single `ubuntu-latest` job, so act reproduces it in full. **On
+Windows run act from inside WSL**, not from PowerShell or Git Bash — NTFS has no
+executable bit to copy into the container, so composite actions fail with
+`Permission denied` on their own scripts and it reads as a broken workflow.
+
 ## This repository is public, and you can push your work
 
 The repository is public. Commit, push, and tag your own work without stopping

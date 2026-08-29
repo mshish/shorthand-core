@@ -341,7 +341,7 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     }
     return outcome.status === "requeued" ? 3 : 1;
   } finally {
-    runner.stop();
+    await runner.dispose();
   }
 }
 

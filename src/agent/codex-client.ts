@@ -1,11 +1,16 @@
 import { accessSync, constants, rmSync, statSync } from "node:fs";
-import { copyFile, link, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { copyFile, cp, link, mkdir, mkdtemp, realpath, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
-import { Codex } from "@openai/codex-sdk";
+import { Codex, type ModelReasoningEffort } from "@openai/codex-sdk";
+import { shorthandConfigDirectory } from "../config.js";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
 
 type CodexEvent = Record<string, unknown>;
+
+export const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const satisfies readonly ModelReasoningEffort[];
+export type CodexReasoningEffort = typeof CODEX_REASONING_EFFORTS[number];
 
 export type CodexAgentClientOptions = Readonly<{
   codexPathOverride?: string;
@@ -22,6 +27,11 @@ export type CodexAgentClientOptions = Readonly<{
    * here; see the pinning comment in #threadOptions for what an unset value inherits.
    */
   model?: string;
+  modelReasoningEffort?: CodexReasoningEffort;
+  /** Preserve a credential-free local transcript archive after disposal. Defaults to false. */
+  retainSessionHistory?: boolean;
+  /** Destination root for retained transcript archives. Primarily injectable for tests. */
+  retainedSessionsDirectory?: string;
   /**
    * API endpoint for the child, re-supplying what the isolated CODEX_HOME threw away.
    * `openai_base_url` lives in the discarded `config.toml` like everything else, so a user
@@ -53,6 +63,7 @@ export class CodexAgentClient implements AgentClient {
   // and dispose() the moment the retry's root replaced it, orphaning it — caught by the
   // temp-dir count still not reaching zero after adding dispose() and its own test coverage.
   #runtimeRoots: string[] = [];
+  readonly #sessionRoots = new Set<string>();
 
   constructor(options: CodexAgentClientOptions = {}) {
     this.#options = options;
@@ -60,7 +71,7 @@ export class CodexAgentClient implements AgentClient {
 
   async query(request: AgentQueryRequest): Promise<AgentQueryResponse> {
     if (request.signal?.aborted === true) throw new AgentQueryError("Agent query aborted.");
-    const { workingDirectory, codexHome } = await this.#ensureRuntimeDirs();
+    const { root, workingDirectory, codexHome } = await this.#ensureRuntimeDirs();
     const codex = this.#ensureCodex(request.systemPrompt, codexHome);
     const threadOptions = {
       // Always the scratch directory this client owns, never request.cwd: this backend is
@@ -90,6 +101,9 @@ export class CodexAgentClient implements AgentClient {
       // unset model inherits whatever the installed Codex CLI defaults to, which is
       // version-dependent and can change under a user who never changed anything.
       ...(this.#options.model === undefined ? {} : { model: this.#options.model }),
+      ...(this.#options.modelReasoningEffort === undefined
+        ? {}
+        : { modelReasoningEffort: this.#options.modelReasoningEffort }),
       // request.tools is deliberately never read into this object: Codex has no per-thread
       // allowlist. The isolated CODEX_HOME is what actually narrows the tool surface; neither
       // it nor the exec pins turn the remaining built-ins into Claude's tools: [] shape.
@@ -117,6 +131,7 @@ export class CodexAgentClient implements AgentClient {
       // thread.started message seen and never overwrite it on later messages.
       if (sessionId === undefined && event.type === "thread.started" && typeof event.thread_id === "string") {
         sessionId = event.thread_id;
+        this.#sessionRoots.add(root);
       }
       // TurnCompletedEvent carries only token usage, not the answer. The answer is an
       // item.completed event wrapping an agent_message item; other item types (shell exec,
@@ -288,13 +303,51 @@ export class CodexAgentClient implements AgentClient {
       await this.#runtimeDirs.catch(() => undefined);
       this.#runtimeDirs = undefined;
     }
+    this.#codex = undefined;
     const roots = this.#runtimeRoots.splice(0);
-    await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+    await Promise.all(roots.map(async (root) => {
+      if (this.#options.retainSessionHistory === true && this.#sessionRoots.has(root)) {
+        await archiveCodexSession(
+          root,
+          this.#options.retainedSessionsDirectory
+            ?? join(shorthandConfigDirectory(), "agent-sessions", "codex"),
+        );
+      } else {
+        await rm(root, { recursive: true, force: true });
+      }
+      this.#sessionRoots.delete(root);
+    }));
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.dispose();
   }
+}
+
+async function archiveCodexSession(root: string, archiveRoot: string): Promise<void> {
+  const codexHome = join(root, "home");
+  // auth.json may be a second name for the user's ambient credential or a cross-volume copy.
+  // Unlink it before anything becomes durable; neither form belongs in session history.
+  await rm(join(codexHome, "auth.json"), { force: true });
+  await rm(join(root, "work"), { recursive: true, force: true });
+  await mkdir(archiveRoot, { recursive: true, mode: 0o700 });
+  const destination = join(archiveRoot, `session-${randomUUID()}`);
+  try {
+    await rename(codexHome, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    // OS temp and the user's config directory are commonly on different volumes on Windows.
+    // Node's rename cannot cross that boundary, so copy the already-sanitized home and remove
+    // the source only after the copy completes.
+    try {
+      await cp(codexHome, destination, { recursive: true, errorOnExist: true, force: false });
+      await rm(codexHome, { recursive: true, force: true });
+    } catch (copyError) {
+      await rm(destination, { recursive: true, force: true });
+      throw copyError;
+    }
+  }
+  await rm(root, { recursive: true, force: true });
 }
 
 function isolatedCodexEnvironment(codexHome: string): Record<string, string> {

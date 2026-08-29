@@ -1,6 +1,6 @@
 {
   "name": "shorthand-core",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "private": true,
   "license": "MIT",
   "author": "Michael Sciscenti",
@@ -28,7 +28,7 @@
     "@ai-sdk/anthropic": "^4.0.40",
     "@ai-sdk/openai": "^4.0.45",
     "@ai-sdk/openai-compatible": "^3.0.34",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.190",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.233",
     "@openai/codex-sdk": "^0.149.1",
     "ai": "^7.0.74",
     "google-auth-library": "10.5.0",

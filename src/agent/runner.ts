@@ -8,6 +8,7 @@ import {
   ENHANCEMENT_SAFETY_PREAMBLE,
   queryForSections,
   type AgentClient,
+  type AgentQueryResponse,
   type AgentTier,
   type ContractLogger,
 } from "./contract.js";
@@ -124,6 +125,8 @@ export class EnhanceRunner {
   readonly #startedAt: number;
   readonly #actor;
   #stopped = false;
+  readonly #activeQueries = new Set<Promise<AgentQueryResponse>>();
+  #disposePromise: Promise<void> | undefined;
 
   constructor(options: EnhanceRunnerOptions) {
     this.#options = {
@@ -403,6 +406,18 @@ export class EnhanceRunner {
     this.#actor.stop();
   }
 
+  /** Stop new work, await aborted provider calls, then release provider session state. */
+  dispose(): Promise<void> {
+    this.#disposePromise ??= this.#dispose();
+    return this.#disposePromise;
+  }
+
+  async #dispose(): Promise<void> {
+    this.stop();
+    await Promise.allSettled([...this.#activeQueries]);
+    await this.#options.agent.dispose?.();
+  }
+
   #syncExpiry(): void {
     if (this.#stopped) return;
     if (this.#now() - this.#startedAt >= this.#options.maxDurationMs) this.#actor.send({ type: "EXPIRE" });
@@ -637,7 +652,10 @@ export class EnhanceRunner {
     const countedAgent: AgentClient = {
       query: (attemptRequest) => {
         request.metrics.attempts += 1;
-        return this.#options.agent.query(attemptRequest);
+        const query = this.#options.agent.query(attemptRequest);
+        this.#activeQueries.add(query);
+        void query.finally(() => this.#activeQueries.delete(query)).catch(() => {});
+        return query;
       },
     };
     const result = await queryForSections(countedAgent, queryRequest, observed.sections, { error: () => {} });

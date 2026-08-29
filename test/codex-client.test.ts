@@ -421,6 +421,16 @@ describe("CodexAgentClient happy path", () => {
     expect(startThreadCalls[0]!.options).not.toHaveProperty("model");
   });
 
+  test("pins reasoning effort on ThreadOptions only when supplied", async () => {
+    const configured = newClient({ modelReasoningEffort: "xhigh" });
+    await configured.query(baseRequest());
+    expect(startThreadCalls[0]!.options.modelReasoningEffort).toBe("xhigh");
+
+    const inherited = newClient();
+    await inherited.query(baseRequest());
+    expect(startThreadCalls[1]!.options).not.toHaveProperty("modelReasoningEffort");
+  });
+
   test("replaces ambient CODEX_HOME with a fresh isolated config root", async () => {
     const previous = process.env.CODEX_HOME;
     process.env.CODEX_HOME = "C:\\operator\\.codex";
@@ -837,6 +847,31 @@ describe("CodexAgentClient dispose", () => {
   test("is a safe no-op when query() was never called", async () => {
     const client = new CodexAgentClient();
     await expect(client.dispose()).resolves.toBeUndefined();
+  });
+
+  test("retention archives session state without auth or the scratch workspace", async () => {
+    const archiveRoot = mkdtempSync(join(tmpdir(), "shorthand-codex-retained-test-"));
+    ambientFixtures.push(archiveRoot);
+    const ambient = ambientHome(`{"tokens":{"access_token":"fixture"}}`);
+    const client = new CodexAgentClient({
+      ambientCodexHome: ambient,
+      retainSessionHistory: true,
+      retainedSessionsDirectory: archiveRoot,
+    });
+    await client.query(baseRequest());
+    const isolatedHome = isolatedHomeOf(constructedWith.at(-1)!);
+    mkdirSync(join(isolatedHome, "sessions"));
+    writeFileSync(join(isolatedHome, "sessions", "thread.jsonl"), "retained");
+    const workingDirectory = startThreadCalls.at(-1)!.options.workingDirectory as string;
+
+    await client.dispose();
+
+    const archives = readdirSync(archiveRoot);
+    expect(archives).toHaveLength(1);
+    const archive = join(archiveRoot, archives[0]!);
+    expect(readFileSync(join(archive, "sessions", "thread.jsonl"), "utf8")).toBe("retained");
+    expect(existsSync(join(archive, "auth.json"))).toBe(false);
+    expect(existsSync(workingDirectory)).toBe(false);
   });
 });
 

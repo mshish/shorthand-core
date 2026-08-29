@@ -90,6 +90,10 @@ busy) is expressible without core learning anything about it. Revision is opaque
 `read()` returns sections, user notes, and revision from one observation so they cannot skew.
 The full contract is [`CONTRACT.md`](CONTRACT.md).
 
+Agent-session ownership, default deletion, credential-free Codex retention, and the exact
+consumer disposal obligation are specified in
+[`AGENT-SESSION-PRIVACY.md`](AGENT-SESSION-PRIVACY.md).
+
 **The agent is a port too, and the second implementation proved it.** `AgentClient` was
 already public and transport-neutral: it accepts a prompt, system prompt, output schema and
 optional session id, then returns structured output and a session id. `LlmAgentClient` plugs
@@ -246,9 +250,9 @@ Isolation is not free, because `CODEX_HOME` is the single discovery root for **b
 - *Everything else in `config.toml` is discarded, not just the MCP table.* An isolated run was
   observed silently switching model and reasoning effort because the user's config never
   loaded. `sandboxMode` and `approvalPolicy` are unaffected — the client pins both per thread —
-  but model selection falls back to the installed CLI's default unless a caller supplies
-  `CodexAgentClientOptions.model`, which is passed through only when set rather than guessed at
-  with a hardcoded slug that would rot against the CLI.
+  but model and reasoning effort fall back to the installed CLI's defaults unless a caller
+  supplies `CodexAgentClientOptions.model` and/or `modelReasoningEffort`. Each is passed through
+  only when set rather than guessed at with a hardcoded value that would rot against the CLI.
 
 See `docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md` for the fuller history,
 including the earlier (weaker) design this replaces.
@@ -313,6 +317,9 @@ array and only the transcript delta since the last pass are still resent on ever
 regardless of what the session remembers, and `ENHANCEMENT_SAFETY_PREAMBLE` explicitly tells the
 model that the sections it was given are authoritative when they disagree with its memory of
 earlier passes — the note stays authoritative, the session is memory, not state.
+The session ends with the runner: local provider history is deleted by default, and the
+advanced retention opt-in is archival only. Shorthand never resumes an archived session; see
+[`AGENT-SESSION-PRIVACY.md`](AGENT-SESSION-PRIVACY.md).
 
 The AI SDK backend is stateless at the provider boundary — there is no resume — so
 `LlmAgentClient` owns a `ModelMessage[]` per instance and resends that history instead. The

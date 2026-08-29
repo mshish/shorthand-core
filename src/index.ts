@@ -45,8 +45,18 @@ export type { TranscriptUpdate } from "./stream/transcript.js";
 export { SidecarWriter } from "./note/sidecar.js";
 export type { SidecarStore, SidecarWriterOptions } from "./note/sidecar.js";
 
-export { CLAUDE_EFFORT_LEVELS, ClaudeAgentClient, detectClaudeExecutable } from "./agent/client.js";
-export type { ClaudeAgentClientOptions, ClaudeEffort } from "./agent/client.js";
+export { CLAUDE_EFFORT_LEVELS, ClaudeAgentClient, detectClaudeExecutable, listClaudeModels } from "./agent/client.js";
+export type { ClaudeAgentClientOptions, ClaudeEffort, ListClaudeModelsOptions } from "./agent/client.js";
+
+// The catalog a picker is built from. `CLAUDE_EFFORT_LEVELS` and `CODEX_REASONING_EFFORTS`
+// above stay exported alongside it and are not superseded: they are the synchronous guard a
+// consumer needs when validating a stored setting at load, where no catalog can be awaited.
+// `AgentCatalog` is what a consumer offers a user; the unions are what it validates against.
+export { AgentCatalogError, CATALOG_TIMEOUT_MS } from "./agent/catalog.js";
+export type { AgentCatalog, AgentModel, CatalogFailureReason } from "./agent/catalog.js";
+
+export { listCodexModels } from "./agent/codex-app-server.js";
+export type { ListCodexModelsOptions } from "./agent/codex-app-server.js";
 
 export {
   CODEX_REASONING_EFFORTS,

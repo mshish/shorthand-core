@@ -224,6 +224,17 @@ flags govern MCP behaviour, not whether it loads — so the discovery root remai
 *operator* MCP servers specifically; `codex_apps` needed its own flag because it is not
 operator-configured.
 
+**One deliberate exception, and the reason it is not a weakening.** `listCodexModels()` spawns
+`codex app-server` against the operator's *ambient* `CODEX_HOME`. The catalog is account-scoped,
+so an isolated home — which has no credentials — answers a different question: five models with
+`gpt-5.2` substituted, rather than the six the signed-in user actually has. The isolation above
+exists to keep operator configuration away from an agent reading untrusted meeting text; that
+agent is absent here. The probe starts no thread, sends no prompt, and receives no transcript,
+section, note, or vault path. It issues `model/list` and `account/read` and kills the child.
+This carve-out is scoped to a catalog read and must not be cited to justify an ambient home for
+anything that runs a turn. `docs/AGENT-SESSION-PRIVACY.md` § "Reading the model catalog" is the
+authority.
+
 **Known residual, closed by neither the isolated home nor any pin above.** Live testing (raw
 CLI, isolated home, `shell_tool`/`unified_exec`/`apps` all false, without the SDK-level pins
 this client sets) found sub-agent spawning succeeded, and separately that `collaboration.*`

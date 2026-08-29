@@ -73,6 +73,34 @@ The archive is deliberately opaque and credential-free. Shorthand never points C
 it, so preserving the complete home avoids depending on Codex's undocumented internal session
 file layout without turning that layout into a public contract.
 
+## Reading the model catalog
+
+`listClaudeModels()` and `listCodexModels()` exist so a consumer can offer the models and
+per-model efforts a backend actually accepts, instead of a hand-maintained list that goes stale
+and offers combinations the provider rejects.
+
+**The Codex catalog probe is the one Codex spawn that deliberately uses the operator's ambient
+`CODEX_HOME`.** It has to: the catalog is account-scoped. A signed-in home returns six models
+including the `gpt-5.4` family; an isolated home has no credentials and returns five, with
+`gpt-5.2` substituted. Probing the isolated home would therefore answer a different question
+than the one asked and present the user a list that is not theirs.
+
+This does not weaken the isolation described in `DESIGN.md`, because the isolation defends
+against a specific thing that is absent here: an agent *reading untrusted meeting text* with
+the operator's MCP servers, skills, and apps restored around it. The catalog probe starts no
+thread and sends no prompt. No transcript, section, user note, or vault path reaches it. It
+issues `model/list` and `account/read` and kills the child. The Claude probe is the same shape —
+it constructs a query solely to read the cached `initialize` response and never iterates the
+stream, so no turn runs and no tokens are spent.
+
+The one personal value either probe returns is the signed-in account's email, which exists so a
+consumer can show *which* login is in use rather than asserting that some login is.
+
+**Neither backend fails when signed out.** Both return a shorter catalog and no error. Sign-in
+is therefore reported separately, as `AgentCatalog.signedIn`, and must never be inferred from a
+thrown error — a consumer that conflated the two would silently present a signed-out user a
+degraded catalog as if it were their own.
+
 ## Cross-platform boundary
 
 The supported host set is Obsidian desktop on Windows, macOS, and Linux. Paths use Node's OS

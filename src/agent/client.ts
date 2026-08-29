@@ -3,8 +3,15 @@ import { existsSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { CanUseTool, EffortLevel } from "@anthropic-ai/claude-agent-sdk";
+import type { AccountInfo, CanUseTool, EffortLevel, ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import { deleteSession, query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  AgentCatalogError,
+  CATALOG_TIMEOUT_MS,
+  type AgentCatalog,
+  type AgentModel,
+  type CatalogFailureReason,
+} from "./catalog.js";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
 
 type SdkMessage = Record<string, unknown>;
@@ -261,6 +268,178 @@ export function detectClaudeExecutable(override?: string, environment: NodeJS.Pr
   }
   // Leaving this undefined delegates PATH/platform auto-detection to the Agent SDK.
   return undefined;
+}
+
+export type ListClaudeModelsOptions = Readonly<{
+  /** Same override precedence as {@link detectClaudeExecutable}: wins over SHORTHAND_CLAUDE_EXE and the platform default. */
+  executableOverride?: string;
+}>;
+
+/**
+ * Reads the Claude Agent SDK's model catalog without running a turn. `supportedModels()` and
+ * `accountInfo()` both read the cached `initialize` response the handshake already produced
+ * (measured ~1.5s, zero tokens spent) — nothing here iterates the prompt stream or sends one.
+ * See docs/AGENT-SESSION-PRIVACY.md § "Reading the model catalog" for why this is the one Claude
+ * probe allowed to run outside a real query.
+ */
+export async function listClaudeModels(options: ListClaudeModelsOptions = {}): Promise<AgentCatalog> {
+  const executable = detectClaudeExecutable(options.executableOverride);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Declared outside the try so the `finally` below can still reach it, but left unassigned
+  // until query() actually runs inside the try: query() itself can throw (a construction
+  // failure, not a stream failure), and that throw must go through the same catch/classify
+  // path below rather than escaping the function before `finally` ever runs.
+  let stream: ReturnType<typeof query> | undefined;
+  try {
+    stream = query({
+      prompt: "",
+      options: {
+        settingSources: [],
+        mcpServers: {},
+        strictMcpConfig: true,
+        ...(executable === undefined ? {} : { pathToClaudeCodeExecutable: executable }),
+      },
+    });
+    // The timeout itself is an AgentCatalogError so the catch block below can pass it straight
+    // through: only a raw SDK failure (a spawn that never reached the handshake) still needs
+    // reclassifying there.
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new AgentCatalogError("timeout", `Claude model catalog fetch exceeded ${CATALOG_TIMEOUT_MS}ms.`)),
+        CATALOG_TIMEOUT_MS,
+      );
+    });
+    const [models, account] = await Promise.race([fetchClaudeCatalogData(stream), timeout]);
+    return toClaudeCatalog(models, account);
+  } catch (error) {
+    if (error instanceof AgentCatalogError) throw error;
+    throw classifyClaudeCatalogFailure(error);
+  } finally {
+    clearTimeout(timer);
+    // Closed on every path that produced a stream, including the timeout race: `close()`
+    // terminates the child process, and a catalog probe that leaked a subprocess on a slow
+    // machine would trade a cosmetic "still loading" row for a real resource leak nobody
+    // notices until later. `stream` can still be undefined here if query() itself threw.
+    //
+    // Guarded rather than bare: a throw from close() would replace whatever the try/catch
+    // above already decided to return or raise, trading the real outcome for a cleanup
+    // failure the caller could not act on. sdk.d.ts makes no promise close() cannot throw, so
+    // this is not assumed away even though no such path is known in this SDK build.
+    try {
+      stream?.close();
+    } catch {
+      // Deliberately swallowed — see comment above.
+    }
+  }
+}
+
+/**
+ * Sequential, not `Promise.all`: this is the exact shape given as already verified against the
+ * running SDK, and both calls are cheap cache reads rather than round trips worth parallelizing.
+ */
+async function fetchClaudeCatalogData(
+  stream: ReturnType<typeof query>,
+): Promise<readonly [ModelInfo[], AccountInfo]> {
+  const models = await stream.supportedModels();
+  const account = await stream.accountInfo();
+  return [models, account];
+}
+
+/**
+ * Pure mapping from what the SDK returned to the shape catalog.ts defines, split out from
+ * listClaudeModels() so it can be exercised against test/fixtures/claude-model-catalog.json
+ * without spawning a subprocess.
+ */
+export function toClaudeCatalog(models: readonly ModelInfo[], account: AccountInfo): AgentCatalog {
+  // Malformed, not merely empty-by-policy: a real signed-out account still returns Sonnet and
+  // Haiku (see catalog.ts's AgentCatalog.signedIn doc), so an empty or non-array response here
+  // means the SDK's contract broke, not that nobody is signed in.
+  if (!Array.isArray(models) || models.length === 0) {
+    throw new AgentCatalogError("protocol", "Claude Agent SDK returned no models.");
+  }
+  const mapped = models.map((model, index) => toAgentModel(model, index));
+  const rawEmail = typeof account === "object" && account !== null ? account.email : undefined;
+  // "" is falsy but !== undefined: treating it as a named account would show the user a blank
+  // identity instead of reporting them signed out. sdk.d.ts types `email` as a plain optional
+  // string with no stated guarantee it is non-empty when present, so this is not assumed away.
+  const email = typeof rawEmail === "string" && rawEmail.length > 0 ? rawEmail : undefined;
+  return {
+    models: mapped,
+    // Neither backend fails when signed out; the only reliable signal is whether the SDK
+    // named an account at all (see catalog.ts's AgentCatalog.signedIn comment).
+    signedIn: email !== undefined,
+    ...(email === undefined ? {} : { account: email }),
+  };
+}
+
+function toAgentModel(model: ModelInfo, index: number): AgentModel {
+  // `value` is checked on its own, before displayName/description, so a failure on those two
+  // can name the model in its message rather than just its index — value is what a human
+  // debugging a malformed catalog row would otherwise have to go fetch the raw response for.
+  if (typeof model !== "object" || model === null || typeof model.value !== "string" || model.value.length === 0) {
+    throw new AgentCatalogError("protocol", `Claude Agent SDK model at index ${index} is missing a valid value.`);
+  }
+  if (typeof model.displayName !== "string" || typeof model.description !== "string") {
+    throw new AgentCatalogError(
+      "protocol",
+      `Claude Agent SDK model "${model.value}" at index ${index} is missing a required field.`,
+    );
+  }
+  // supportsEffort and supportedEffortLevels are two independent optional fields on ModelInfo
+  // (sdk.d.ts documents no invariant linking them). A row with supportsEffort: true but no
+  // supportedEffortLevels would otherwise map silently to efforts: [], which AgentModel.efforts
+  // defines as "this model takes no effort setting at all" — the opposite of what the row just
+  // asserted. Treated as a protocol error rather than a silent default, consistent with how
+  // strict this function already is about displayName/description.
+  if (model.supportsEffort === true && !Array.isArray(model.supportedEffortLevels)) {
+    throw new AgentCatalogError(
+      "protocol",
+      `Claude Agent SDK model "${model.value}" at index ${index} supports effort levels but reported none.`,
+    );
+  }
+  return {
+    id: model.value,
+    displayName: model.displayName,
+    description: model.description,
+    // Absent, not defaulted to empty-and-forgotten: Haiku reports neither `supportsEffort` nor
+    // `supportedEffortLevels` at all, and that silence is the real "this model takes no effort
+    // setting" answer a caller must act on (see catalog.ts's AgentModel.efforts doc) — not a
+    // gap to paper over. The contradictory case (supportsEffort: true, no levels) is rejected
+    // above rather than reaching this line.
+    efforts: Array.isArray(model.supportedEffortLevels) ? [...model.supportedEffortLevels] : [],
+    // ModelInfo carries no per-model default-effort field, so there is nothing here to report;
+    // defaultEffort is left unset rather than invented.
+  };
+}
+
+/**
+ * Classifies an SDK failure that happened before any catalog data arrived: the subprocess could
+ * not be spawned, or died before the handshake completed. Reading ProcessTransport's own error
+ * handling in the installed `@anthropic-ai/claude-agent-sdk/sdk.mjs` shows the SDK forwards the
+ * child_process `"error"` event's `code` onto whichever Error it ultimately throws or rejects
+ * with, so a bare `ENOENT` here means exactly what it means for any spawn: no file at the
+ * resolved executable path.
+ *
+ * That is undocumented SDK behavior — `sdk.d.ts` promises nothing about `.code` surviving onto
+ * the rejection — so this function is exported and the tests in
+ * test/agent-catalog-claude.test.ts pin the `{code:"ENOENT"} -> executable-not-found` mapping
+ * down explicitly. Without that test, an SDK bump that stopped forwarding `.code` would degrade
+ * every "executable not found" case to the more generic "spawn-failed" instruction silently:
+ * no type error, no failing test, just a wrong message next time someone hits it.
+ *
+ * The SDK's own internal classifier treats a broader errno set (ENOENT, EACCES, EPERM, ENOTDIR,
+ * ELOOP, ENAMETOOLONG, EROFS) as launch-path failures, but `catalog.ts` exposes only two reasons
+ * at this stage and is not this file's to extend. Collapsing everything but ENOENT — including
+ * EACCES — into "spawn-failed" is therefore a deliberate simplification stated here, not an
+ * oversight: those cases still get a reason, just the less specific one.
+ */
+export function classifyClaudeCatalogFailure(error: unknown): AgentCatalogError {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
+  const reason: CatalogFailureReason = code === "ENOENT" ? "executable-not-found" : "spawn-failed";
+  const message = error instanceof Error ? error.message : String(error);
+  return new AgentCatalogError(reason, `Failed to fetch the Claude model catalog: ${message}`, { cause: error });
 }
 
 /**

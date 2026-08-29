@@ -1,4 +1,5 @@
-import type { docs_v1 } from "googleapis";
+// See src/google/docs-client.ts for why this is the per-API package, not "googleapis".
+import type { docs_v1 } from "@googleapis/docs";
 import type { StyleSpan } from "./renderer.js";
 
 export type BuildWriteRequestsOptions = Readonly<{

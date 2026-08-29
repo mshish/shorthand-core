@@ -1,4 +1,13 @@
-import { docs_v1, google } from "googleapis";
+// Imported from the per-API `@googleapis/docs` package, not the `googleapis` metapackage:
+// `googleapis`'s root entry eagerly requires all ~330 generated API clients (Drive, Sheets,
+// Compute, ...) to build the `google.<api>()` shortcut object, so loading it just to reach
+// Docs costs several real seconds even on a fast machine — see the googleapis README's own
+// "reduce startup times" section, which names this exact package as the fix. That load
+// happens on the failure path too (a missing/invalid credentials file is still `--sink
+// google`), so it was eating most of the 10s budget the CLI integration tests give a
+// spawned process before the sink resolves anything, leaving near-zero margin for normal
+// machine load.
+import { docs, type docs_v1 } from "@googleapis/docs";
 import { OAuth2Client } from "google-auth-library";
 import type { TokenProvider } from "../auth/token-provider.js";
 
@@ -78,7 +87,7 @@ export class GoogleApiDocsClient implements GoogleDocsApi {
       // above auth.refreshHandler.
       return { access_token: result.token, expiry_date: 0 };
     };
-    this.#documents = google.docs({ version: "v1", auth }).documents;
+    this.#documents = docs({ version: "v1", auth }).documents;
   }
 
   async getDocument(documentId: string): Promise<DocsApiResult<GetDocumentValue>> {

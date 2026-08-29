@@ -9,10 +9,10 @@
         "@ai-sdk/openai": "^4.0.45",
         "@ai-sdk/openai-compatible": "^3.0.34",
         "@anthropic-ai/claude-agent-sdk": "^0.3.233",
+        "@googleapis/docs": "^10.0.0",
         "@openai/codex-sdk": "^0.149.1",
         "ai": "^7.0.74",
         "google-auth-library": "10.5.0",
-        "googleapis": "^175.0.0",
         "marked": "^18.0.10",
         "xstate": "5.32.5",
         "zod": "^4.1.8",
@@ -111,6 +111,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.9", "", { "os": "win32", "cpu": "ia32" }, "sha512-b33gLVU2k11nVx1OhX3C8QQP6UHQK4ZtN56oFWvVXvz2VkDoe6fbG8TOgHFxEvqeqohmRnIHe5A1+HADk4OQww=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.9", "", { "os": "win32", "cpu": "x64" }, "sha512-PPOl1mi6lpLNQxnGoyAfschAodRFYXJ+9fs6WHXz7CSWKbOqiMZsubC+BQsVKuul+3vKLuwTHsS2c2y9EoKwxQ=="],
+
+    "@googleapis/docs": ["@googleapis/docs@10.0.0", "", { "dependencies": { "googleapis-common": "^8.0.0" } }, "sha512-5ioOb5THY9McFIYBPUNG3T/jVsx+1XIdmox5D+2irPRU7nphzfzU/DUfMWDeVcXRP2eNBCq7tRj8Yk5hSVOP4g=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 
@@ -271,8 +273,6 @@
     "google-auth-library": ["google-auth-library@10.5.0", "", { "dependencies": { "base64-js": "^1.3.0", "ecdsa-sig-formatter": "^1.0.11", "gaxios": "^7.0.0", "gcp-metadata": "^8.0.0", "google-logging-utils": "^1.0.0", "gtoken": "^8.0.0", "jws": "^4.0.0" } }, "sha512-7ABviyMOlX5hIVD60YOfHw4/CxOfBhyduaYB+wbFWCWoni4N7SLcV46hrVRktuBbZjFC9ONyqamZITN7q3n32w=="],
 
     "google-logging-utils": ["google-logging-utils@1.1.3", "", {}, "sha512-eAmLkjDjAFCVXg7A1unxHsLf961m6y17QFqXqAXGj/gVkKFrEICfStRfwUlGNfeCEjNRa32JEWOUTlYXPyyKvA=="],
-
-    "googleapis": ["googleapis@175.0.0", "", { "dependencies": { "google-auth-library": "10.5.0", "googleapis-common": "^8.0.0" } }, "sha512-7lZeP5w6lfoX/0AxFMH5J4FdxrQXEzjeKUtcVbrRBqo1T5raQsNaPhCjp7AI1lxu03f8o08p8JrM9oG6ns1hmg=="],
 
     "googleapis-common": ["googleapis-common@8.0.3", "", { "dependencies": { "extend": "^3.0.2", "gaxios": "7.1.3", "google-auth-library": "10.5.0", "google-logging-utils": "1.1.3", "qs": "^6.7.0", "url-template": "^2.0.8" } }, "sha512-7g1yzQKx0mmNTjiK0H9dJ8eqKqDBveES9vLHeg5neb3BMQy/d1oQefIMhIpOVT8a+f+LOcixMEdRbFIW/cQUJw=="],
 

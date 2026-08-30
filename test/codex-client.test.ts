@@ -213,8 +213,15 @@ describe("detectCodexExecutable", () => {
     expect(detectCodexExecutable(undefined, { PATH: directory })).toBeUndefined();
   });
 
+  // Spelled per platform because a drive letter is only a path on one of them. On POSIX
+  // `isAbsolute("C:\\tools\\codex.exe")` is false and a backslash is an ordinary filename
+  // character, so `basename()` hands back the whole string and detectCodexExecutable correctly
+  // reads it as a bare command name rather than a path — the verbatim-fallback case, not this
+  // one. Hardcoding the Windows spelling asserted the platform instead of the function.
+  const absoluteOverride = isWindows ? "C:\\tools\\codex.exe" : "/tools/codex";
+
   test("resolves an explicit override", () => {
-    expect(detectCodexExecutable("C:\\tools\\codex.exe", {})).toBe(resolve("C:\\tools\\codex.exe"));
+    expect(detectCodexExecutable(absoluteOverride, {})).toBe(resolve(absoluteOverride));
   });
 
   test("falls back to SHORTHAND_CODEX_EXE when no override is passed", () => {

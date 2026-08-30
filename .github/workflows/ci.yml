@@ -7,6 +7,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual runs. Without this there is no way to exercise the gate on a branch
+  # without opening a pull request, which is exactly what made an Actions outage
+  # on this repo hard to tell apart from a workflow that simply never matched.
+  workflow_dispatch:
 
 jobs:
   verify:

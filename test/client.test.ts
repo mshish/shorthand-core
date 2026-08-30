@@ -120,6 +120,47 @@ describe("wire compatibility", () => {
       tentative: "",
     })).toMatchObject({ t: "partial", committed: "legacy", unstamped: true });
   });
+
+  test("reads a begin record's capture mode", () => {
+    expect(parseWireRecord({ t: "begin", session: 1, streaming: true, mode: "assisted-notes" })).toEqual({
+      t: "begin",
+      session: 1,
+      streaming: true,
+      mode: "assisted-notes",
+      unstamped: true,
+    });
+  });
+
+  test("accepts a begin record with no mode, because every app before the field omits it", () => {
+    expect(parseWireRecord({ t: "begin", session: 1, streaming: true })).toEqual({
+      t: "begin",
+      session: 1,
+      streaming: true,
+      unstamped: true,
+    });
+  });
+
+  // Dropped rather than passed through: the plugin decides whether to attach a
+  // capture to a user's note from this value, so it must never see one the app
+  // did not really send. Same rule as `capabilities`.
+  test("drops a mode it does not recognize instead of passing it through", () => {
+    expect(parseWireRecord({ t: "begin", session: 1, streaming: true, mode: "karaoke" })).toEqual({
+      t: "begin",
+      session: 1,
+      streaming: true,
+      unstamped: true,
+    });
+    expect(parseWireRecord({ t: "begin", session: 1, streaming: true, mode: 7 })).toEqual({
+      t: "begin",
+      session: 1,
+      streaming: true,
+      unstamped: true,
+    });
+  });
+
+  test("keeps rejecting a begin record with no streaming flag", () => {
+    expect(parseWireRecord({ t: "begin", session: 1, mode: "meeting" })).toBeNull();
+  });
 });
 
 describe("process lifecycle", () => {

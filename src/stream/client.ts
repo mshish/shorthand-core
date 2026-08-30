@@ -11,7 +11,7 @@ type Stamp = { emitted_at?: string; session_elapsed_ms?: number; unstamped?: tru
 
 export type WireEvent =
   | { t: "hello"; protocol: number; version?: string; emitted_at?: string; capabilities?: string[] }
-  | ({ t: "begin"; session: number; streaming: boolean } & Stamp)
+  | ({ t: "begin"; session: number; streaming: boolean; mode?: BeginMode } & Stamp)
   | ({ t: "partial"; session: number; speaker: Speaker; committed: string; tentative: string } & Stamp)
   | ({ t: "final"; session: number; speaker?: Speaker; text: string } & Stamp)
   | ({ t: "no_speech" | "cancel"; session: number } & Stamp)
@@ -60,6 +60,35 @@ function stringArrayField(value: Record<string, unknown>, name: string): string[
   const field = value[name];
   if (!Array.isArray(field) || !field.every((item): item is string => typeof item === "string")) return undefined;
   return field;
+}
+
+/**
+ * Every capture mode `shorthand-app` names on a `begin` record. The spellings are
+ * the wire contract and must match its `FollowMode` serialization exactly.
+ */
+export const BEGIN_MODES = ["meeting", "assisted-notes", "dictation"] as const;
+
+export type BeginMode = (typeof BEGIN_MODES)[number];
+
+/**
+ * Absent and unrecognized are the same answer — `undefined` — and deliberately so.
+ *
+ * Absent is the common, permanent case: every app that predates the field omits it.
+ * Unrecognized is dropped for the reason `stringArrayField` gives above: a consumer
+ * gates behaviour on this, and the plugin's gate decides whether to start writing
+ * into someone's note. A mode invented by a newer app must read as "not one of the
+ * modes I know", never as one of them.
+ *
+ * Nothing on `hello` lets a follower tell those two cases apart today: "this app
+ * predates the field" and "this app sent a mode this build does not recognize" both
+ * arrive here as the same `undefined`. A follower that needs the distinction must
+ * treat `undefined` as "not my business" rather than infer a default from it — a
+ * `begin-mode` capability on `hello` would resolve the ambiguity if `shorthand-app`
+ * ever emits one, but as of this writing it does not.
+ */
+function beginModeField(value: Record<string, unknown>): BeginMode | undefined {
+  const field = value.mode;
+  return (BEGIN_MODES as readonly unknown[]).includes(field) ? (field as BeginMode) : undefined;
 }
 
 function stamp(value: Record<string, unknown>): Stamp {
@@ -111,7 +140,11 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
   switch (input.t) {
     case "begin": {
       if (typeof input.streaming !== "boolean") return null;
-      return { t: "begin", session, streaming: input.streaming, ...eventStamp };
+      const mode = beginModeField(input);
+      // Conditional spread, matching every other optional field in this parser:
+      // `exactOptionalPropertyTypes` forbids assigning an explicit `undefined` to
+      // an optional property.
+      return { t: "begin", session, streaming: input.streaming, ...(mode === undefined ? {} : { mode }), ...eventStamp };
     }
     case "partial": {
       const speaker = input.speaker;

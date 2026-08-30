@@ -79,9 +79,12 @@ export type BeginMode = (typeof BEGIN_MODES)[number];
  * into someone's note. A mode invented by a newer app must read as "not one of the
  * modes I know", never as one of them.
  *
- * A follower that must distinguish "this app has no mode field" from "this session's
- * mode is unknown to me" reads the `begin-mode` capability on `hello`, which is what
- * that capability exists for.
+ * Nothing on `hello` lets a follower tell those two cases apart today: "this app
+ * predates the field" and "this app sent a mode this build does not recognize" both
+ * arrive here as the same `undefined`. A follower that needs the distinction must
+ * treat `undefined` as "not my business" rather than infer a default from it — a
+ * `begin-mode` capability on `hello` would resolve the ambiguity if `shorthand-app`
+ * ever emits one, but as of this writing it does not.
  */
 function beginModeField(value: Record<string, unknown>): BeginMode | undefined {
   const field = value.mode;

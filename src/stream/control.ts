@@ -67,9 +67,13 @@ export type ShorthandControlOptions = {
  * scanned) can take seconds, and this one timeout is shared by every `ControlSignal`.
  *
  * What a false `not-running` costs differs by signal, but it is never free. For the
- * toggle signals (`toggle-transcription`, `toggle-post-process`, `toggle-assisted-notes`,
- * `cancel`) it tells the caller nothing happened; a human who presses again fires the
- * toggle twice and the two presses cancel out. `start-assisted-notes`/`stop-assisted-notes`
+ * three genuine toggles (`toggle-transcription`, `toggle-post-process`,
+ * `toggle-assisted-notes`) it tells the caller nothing happened; a human who presses
+ * again fires the toggle twice and the two presses cancel out. `cancel` is not a toggle
+ * and does not share that hazard — it is one-way, and a second `cancel` with nothing
+ * running is a no-op — but a false `not-running` still misreports whether the capture
+ * the caller wanted stopped was actually stopped.
+ * `start-assisted-notes`/`stop-assisted-notes`
  * do not have that specific failure mode — that idempotence is the whole reason they
  * exist, see the class doc comment above — but a false `not-running` for them is still
  * a wrong answer a caller may act on: it can conclude Shorthand is not running and stop

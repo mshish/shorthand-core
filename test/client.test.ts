@@ -161,6 +161,100 @@ describe("wire compatibility", () => {
   test("keeps rejecting a begin record with no streaming flag", () => {
     expect(parseWireRecord({ t: "begin", session: 1, mode: "meeting" })).toBeNull();
   });
+
+  test("preserves the new capabilities a hello can advertise", () => {
+    const capabilities = [
+      "toggle-assisted-notes",
+      "start-assisted-notes",
+      "stop-assisted-notes",
+      "begin-mode",
+      "idle",
+      "refused",
+      "refused-publication-disabled",
+      "start-failed",
+    ];
+    expect(parseWireRecord({ t: "hello", protocol: 1, capabilities })).toEqual({
+      t: "hello",
+      protocol: 1,
+      capabilities,
+    });
+  });
+
+  test("parses idle, the counterpart to an active begin on subscribe", () => {
+    expect(parseWireRecord({ t: "idle", emitted_at: "2026-08-15T14:03:20.100-07:00" })).toEqual({
+      t: "idle",
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    });
+  });
+
+  test("idle with no emitted_at still parses", () => {
+    expect(parseWireRecord({ t: "idle" })).toEqual({ t: "idle" });
+  });
+
+  test("parses a refused record with a known reason and mode", () => {
+    expect(parseWireRecord({
+      t: "refused",
+      mode: "assisted-notes",
+      reason: "busy",
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    })).toEqual({
+      t: "refused",
+      mode: "assisted-notes",
+      reason: "busy",
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    });
+  });
+
+  // FOLLOW_STREAM.md is explicit that an unrecognized reason must still produce a usable
+  // record — "refused, but I do not know why" — rather than fail to parse. `reason` is
+  // deliberately not a closed union for this: the raw string survives instead of being
+  // dropped or coerced to undefined.
+  test("an unrecognized reason still parses, carrying the raw string through", () => {
+    expect(parseWireRecord({ t: "refused", mode: "assisted-notes", reason: "a-future-reason" })).toEqual({
+      t: "refused",
+      mode: "assisted-notes",
+      reason: "a-future-reason",
+    });
+  });
+
+  // Unlike `reason`, `mode` reuses beginModeField's undefined-on-unrecognized behaviour:
+  // a consumer gates real behaviour on which mode a refusal is about, so a mode this
+  // build does not know must never be mistaken for one it does.
+  test("an unrecognized mode on refused is dropped to undefined, not passed through", () => {
+    expect(parseWireRecord({ t: "refused", mode: "karaoke", reason: "busy" })).toEqual({
+      t: "refused",
+      reason: "busy",
+    });
+  });
+
+  test("a refused record with no reason at all is malformed", () => {
+    expect(parseWireRecord({ t: "refused", mode: "assisted-notes" })).toBeNull();
+  });
+
+  test("parses a start_failed record", () => {
+    expect(parseWireRecord({
+      t: "start_failed",
+      mode: "assisted-notes",
+      message: "no input device",
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    })).toEqual({
+      t: "start_failed",
+      mode: "assisted-notes",
+      message: "no input device",
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    });
+  });
+
+  test("an unrecognized mode on start_failed is dropped to undefined, not passed through", () => {
+    expect(parseWireRecord({ t: "start_failed", mode: "karaoke", message: "no input device" })).toEqual({
+      t: "start_failed",
+      message: "no input device",
+    });
+  });
+
+  test("a start_failed record with no message at all is malformed", () => {
+    expect(parseWireRecord({ t: "start_failed", mode: "assisted-notes" })).toBeNull();
+  });
 });
 
 describe("process lifecycle", () => {
@@ -291,6 +385,69 @@ describe("process lifecycle", () => {
     child.emit("close", 1);
     expect(reconnects).toHaveLength(0);
     expect(client.active).toBe(false);
+  });
+
+  test("idle/refused/start_failed reach the event channel but do not count as session activity", async () => {
+    const child = fakeChild();
+    const client = new StreamClient({
+      command: "fake",
+      reconnectOnExit: false,
+      spawnFn: () => child as unknown as ChildProcess,
+    });
+    const events: string[] = [];
+    client.on("event", ({ record }) => events.push(record.t));
+    const disconnect = new Promise<{ hadSessionEvents: boolean }>((resolve) => client.once("disconnect", resolve));
+    client.start();
+    child.stdout.write(
+      `${hello}\n` +
+        '{"t":"idle","emitted_at":"2026-08-15T14:03:20.100-07:00"}\n' +
+        '{"t":"refused","mode":"assisted-notes","reason":"busy"}\n' +
+        '{"t":"start_failed","mode":"assisted-notes","message":"no input device"}\n',
+    );
+    child.emit("close", 0);
+    // All three still reach a consumer — the bug this change fixes was that
+    // parseWireRecord dropped them before they ever got this far.
+    expect(events).toEqual(["hello", "idle", "refused", "start_failed"]);
+    // None of the three is transcript activity, so #sawSessionEvent must stay false: a
+    // caller reading `hadSessionEvents` off `disconnect` (or `gap` off `reconnect`) would
+    // otherwise be told a session happened when only a refusal/idle/failure was observed.
+    expect((await disconnect).hadSessionEvents).toBe(false);
+  });
+
+  test("a real session still sets hadSessionEvents, for contrast with the previous test", async () => {
+    const child = fakeChild();
+    const client = new StreamClient({
+      command: "fake",
+      reconnectOnExit: false,
+      spawnFn: () => child as unknown as ChildProcess,
+    });
+    const disconnect = new Promise<{ hadSessionEvents: boolean }>((resolve) => client.once("disconnect", resolve));
+    client.start();
+    child.stdout.write(`${hello}\n{"t":"begin","session":1,"streaming":true,"session_elapsed_ms":0}\n`);
+    child.emit("close", 0);
+    expect((await disconnect).hadSessionEvents).toBe(true);
+  });
+
+  test("a refused record arriving mid-drain does not short-circuit the wait for the real session to end", () => {
+    const order: string[] = [];
+    const child = fakeChild(() => order.push("kill"));
+    const client = new StreamClient({
+      command: "fake",
+      reconnectOnExit: false,
+      spawnFn: () => child as unknown as ChildProcess,
+    });
+    client.on("event", ({ record }) => order.push(record.t));
+    client.start();
+    child.stdout.write(`${hello}\n{"t":"begin","session":1,"streaming":true,"session_elapsed_ms":0}\n`);
+    client.stopAfterDrain();
+    // A refusal for an unrelated command arrives while session 1 is still open and
+    // #drainRequested is true. It must not be mistaken for the session ending: idle/refused/
+    // start_failed never touch #activeSessions, so this must not trigger #killChild().
+    child.stdout.write('{"t":"refused","mode":"assisted-notes","reason":"busy"}\n');
+    expect(order).not.toContain("kill");
+    child.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","session_elapsed_ms":10}\n');
+    expect(order).toEqual(["hello", "begin", "refused", "final", "kill"]);
+    child.emit("close", 0);
   });
 
   test("stopAfterDrain waits for the terminal event before killing the child", () => {

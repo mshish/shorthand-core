@@ -33,8 +33,8 @@ export type { TokenError, TokenErrorCode, TokenProvider, TokenResult } from "./a
 
 export type { Section } from "./note/markers.js";
 
-export { BEGIN_MODES, StreamClient } from "./stream/client.js";
-export type { BeginMode, ExitDiagnosis, StreamClientOptions } from "./stream/client.js";
+export { BEGIN_MODES, KNOWN_REFUSAL_REASONS, StreamClient } from "./stream/client.js";
+export type { BeginMode, ExitDiagnosis, KnownRefusalReason, StreamClientOptions, WireEvent } from "./stream/client.js";
 
 export { ShorthandControl } from "./stream/control.js";
 export type { ControlResult, ControlSignal, ShorthandControlOptions } from "./stream/control.js";

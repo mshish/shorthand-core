@@ -8,23 +8,46 @@ import type { SpawnFn } from "./client.js";
  *
  * Shorthand exposes control only as CLI flags delivered through
  * `tauri_plugin_single_instance`: a second `shorthand` process detects the running app,
- * forwards its args, and exits. There is no `--start`/`--stop` — the transcription
- * flags are toggles.
+ * forwards its args, and exits.
  *
- * Control must be its own short-lived spawn, never an extra argument on the
- * follower: Shorthand's parser declares `--follow-stream` as
- * `conflicts_with_all = ["toggle_transcription", "toggle_post_process", "cancel", "toggle_assisted_notes"]`,
- * so a combined invocation fails to parse.
+ * `start-assisted-notes`/`stop-assisted-notes` are the explicit pair for an Assisted
+ * Notes capture, and are idempotent rather than toggle semantics: starting when a
+ * capture is already running, or stopping when none is, is a success no-op instead of
+ * flipping something. A toggle is ambiguous exactly when a caller needs to retry it —
+ * if the confirmation for a first attempt is lost (a timeout that does not distinguish
+ * "never arrived" from "arrived but the reply did not"), resending a *toggle* risks
+ * firing the opposite edge from the one intended, undoing the very command the retry
+ * was meant to repeat. The explicit pair removes that risk: sending `start` twice, or
+ * `stop` twice, always converges on the same state, so a caller can retry freely.
+ * `toggle-assisted-notes` still exists — fork-only and harmless for manual, interactive
+ * use, where a human notices and corrects a wrong flip immediately — but a programmatic
+ * caller (this library's own `StreamClient`-driven callers included) should prefer the
+ * explicit pair.
  *
- * `toggle-assisted-notes` selects an app-owned capture mode by name. It carries
- * no settings values, deliberately: the app's own settings pane has to remain
- * the only description of how a running capture behaves, so this surface stays
- * a fixed list of mode selectors rather than an override channel.
+ * Control must be its own short-lived spawn, never an extra argument on the follower.
+ * Shorthand's parser makes `--toggle-transcription`, `--toggle-post-process`, `--cancel`,
+ * `--toggle-assisted-notes`, `--start-assisted-notes`, `--stop-assisted-notes` and
+ * `--follow-stream` a fully mutually-conflicting set: `--start-assisted-notes`,
+ * `--stop-assisted-notes` and `--follow-stream` each declare `conflicts_with_all` naming
+ * every one of the other six, and clap's conflict check is symmetric regardless of which
+ * side declares it (verified against `explicit_assisted_notes_flags_conflict_with_every_other_remote_control_flag`
+ * in the app's `cli.rs` test module, which parses `--toggle-transcription
+ * --start-assisted-notes` and asserts the failure even though `toggle_transcription`'s own
+ * attribute declares no `conflicts_with_all` at all). So any two of these seven flags
+ * together in one invocation fail to parse, not just a combination with `--follow-stream`.
+ *
+ * `toggle-assisted-notes`, `start-assisted-notes` and `stop-assisted-notes` each select
+ * an app-owned capture mode by name. They carry no settings values, deliberately: the
+ * app's own settings pane has to remain the only description of how a running capture
+ * behaves, so this surface stays a fixed list of mode selectors rather than an override
+ * channel.
  */
 export type ControlSignal =
   | "toggle-transcription"
   | "toggle-post-process"
   | "toggle-assisted-notes"
+  | "start-assisted-notes"
+  | "stop-assisted-notes"
   | "cancel";
 
 export type ControlResult =
@@ -39,11 +62,21 @@ export type ShorthandControlOptions = {
 };
 
 /**
- * Generous, because the only cost of waiting is a slower error and the only cost of
- * being wrong is the worst one available: measured warm forwards land in 48-71ms, but
- * a cold start (the Tauri binary paging in, an unsigned exe being scanned) can take
- * seconds, and a false `not-running` on a *toggle* tells the user nothing happened —
- * they press again and the two toggles cancel out.
+ * Generous, because the only cost of waiting is a slower error: measured warm forwards
+ * land in 48-71ms, but a cold start (the Tauri binary paging in, an unsigned exe being
+ * scanned) can take seconds, and this one timeout is shared by every `ControlSignal`.
+ *
+ * What a false `not-running` costs differs by signal, but it is never free. For the
+ * toggle signals (`toggle-transcription`, `toggle-post-process`, `toggle-assisted-notes`,
+ * `cancel`) it tells the caller nothing happened; a human who presses again fires the
+ * toggle twice and the two presses cancel out. `start-assisted-notes`/`stop-assisted-notes`
+ * do not have that specific failure mode — that idempotence is the whole reason they
+ * exist, see the class doc comment above — but a false `not-running` for them is still
+ * a wrong answer a caller may act on: it can conclude Shorthand is not running and stop
+ * retrying, or launch its own instance, when the original command may have reached a
+ * live one whose confirmation merely arrived after the timeout. Generosity costs the
+ * same slower error either way, so the timeout stays one value for every signal; only
+ * the shape of getting it wrong differs.
  */
 const DEFAULT_TIMEOUT_MS = 5_000;
 

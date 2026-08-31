@@ -73,7 +73,13 @@ export class TranscriptStore {
   #sequence = 0;
 
   ingest(connectionGeneration: number, event: WireEvent): TranscriptUpdate | null {
-    if (event.t === "hello") return null;
+    // `idle`/`refused`/`start_failed` carry no `session`, exactly like `hello` — see
+    // client.ts's `WireEvent` comment. None of the three belongs to a capture, so a
+    // transcript store has nothing to do with one: it must be excluded here rather than
+    // reaching `event.session` below (which does not exist on any of the three) or the
+    // terminal-reason fallthrough at the bottom of this method (which would otherwise
+    // treat "idle" as a `TerminalReason` a session ended with).
+    if (event.t === "hello" || event.t === "idle" || event.t === "refused" || event.t === "start_failed") return null;
     const key = sessionKey(connectionGeneration, event.session);
 
     if (event.t === "begin") {

@@ -9,13 +9,47 @@ export const NOT_RUNNING_MESSAGE =
 type Speaker = "me" | "them";
 type Stamp = { emitted_at?: string; session_elapsed_ms?: number; unstamped?: true };
 
+/**
+ * `refused.reason` values this build's `refused` records are documented to carry
+ * today. Exported so a consumer can compare against a known value without
+ * hardcoding the strings, but deliberately *not* the type of `refused.reason`
+ * itself — see that field's own comment on `WireEvent` for why an unrecognized
+ * reason must still parse rather than being coerced to one of these or dropped.
+ */
+export const KNOWN_REFUSAL_REASONS = ["busy", "mode-disabled", "publication-disabled"] as const;
+
+export type KnownRefusalReason = (typeof KNOWN_REFUSAL_REASONS)[number];
+
 export type WireEvent =
   | { t: "hello"; protocol: number; version?: string; emitted_at?: string; capabilities?: string[] }
   | ({ t: "begin"; session: number; streaming: boolean; mode?: BeginMode } & Stamp)
   | ({ t: "partial"; session: number; speaker: Speaker; committed: string; tentative: string } & Stamp)
   | ({ t: "final"; session: number; speaker?: Speaker; text: string } & Stamp)
   | ({ t: "no_speech" | "cancel"; session: number } & Stamp)
-  | ({ t: "error"; session: number; message: string } & Stamp);
+  | ({ t: "error"; session: number; message: string } & Stamp)
+  // Session-less, like `hello`: no `session`, no `session_elapsed_ms`, so these three
+  // take `emitted_at` directly rather than through `Stamp` (whose `unstamped` flag
+  // means "this session event was missing its elapsed time", which does not apply to
+  // an event that was never going to have one). See parseWireRecord's handling of all
+  // three, next to the session-less `error` case, for the full reasoning.
+  | { t: "idle"; emitted_at?: string }
+  | {
+      t: "refused";
+      mode?: BeginMode;
+      // Deliberately `string`, not a closed union of the reasons above: FOLLOW_STREAM.md
+      // is explicit that a follower must treat a `reason` it does not recognize as "refused,
+      // but I do not know why" rather than fail to parse the record. `mode` (just below)
+      // makes the opposite choice for the opposite reason — see `beginModeField`'s doc
+      // comment: an unrecognized *mode* is coerced to `undefined` because a consumer gates
+      // real behaviour on it (e.g. whether to attach a capture to a note), and a mode this
+      // build does not know must never be mistaken for one it does. `reason` gates nothing;
+      // it is shown to a human or logged, so passing the raw string through preserves
+      // information (a future reason value is still visible) instead of discarding it the
+      // way collapsing to `undefined` would.
+      reason: string;
+      emitted_at?: string;
+    }
+  | { t: "start_failed"; mode?: BeginMode; message: string; emitted_at?: string };
 
 export type ConnectionErrorRecord = {
   t: "error";
@@ -131,6 +165,51 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
     const message = stringField(input, "message") ?? code;
     const emittedAt = stringField(input, "emitted_at");
     return { t: "error", code, message, ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }) };
+  }
+
+  // `idle`, `refused` and `start_failed` are the three session-less records FOLLOW_STREAM.md
+  // added alongside the explicit start/stop commands. Before this, every branch below the
+  // session-less `error` case fell through to `numberField(input, "session")`, which returns
+  // `undefined` for all three (none of them ever carries a `session`) and silently dropped the
+  // record. That made a refusal, a failed start, and the idle state themselves unobservable —
+  // not merely mis-parsed but invisible — so they must be handled here, before that
+  // requirement, exactly like the session-less `error` case just above.
+  if (input.t === "idle") {
+    const emittedAt = stringField(input, "emitted_at");
+    return { t: "idle", ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }) };
+  }
+
+  if (input.t === "refused") {
+    // `reason` is required: a `refused` record with no `reason` at all (as opposed to one
+    // whose `reason` this build does not recognize) is malformed, not merely unexplained.
+    const reason = stringField(input, "reason");
+    if (reason === undefined) return null;
+    // `mode` reuses `beginModeField` rather than a bespoke parse: the same failure it guards
+    // on `begin` applies here — a mode this build does not recognize must read as `undefined`
+    // ("not one of the modes I know"), not be passed through, because a consumer gates
+    // real behaviour on which mode a `refused`/`start_failed` record is about.
+    const mode = beginModeField(input);
+    const emittedAt = stringField(input, "emitted_at");
+    return {
+      t: "refused",
+      reason,
+      ...(mode === undefined ? {} : { mode }),
+      ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }),
+    };
+  }
+
+  if (input.t === "start_failed") {
+    const message = stringField(input, "message");
+    if (message === undefined) return null;
+    // Same reuse of `beginModeField`, same reason, as `refused` above.
+    const mode = beginModeField(input);
+    const emittedAt = stringField(input, "emitted_at");
+    return {
+      t: "start_failed",
+      message,
+      ...(mode === undefined ? {} : { mode }),
+      ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }),
+    };
   }
 
   const session = numberField(input, "session");
@@ -407,7 +486,15 @@ export class StreamClient extends EventEmitter {
         this.#stabilityTimer = null;
         this.#attempts = 0;
       }, this.options.stableConnectionMs ?? 30_000);
-    } else {
+    } else if (record.t !== "idle" && record.t !== "refused" && record.t !== "start_failed") {
+      // `#sawSessionEvent` feeds `hadSessionEvents` on `disconnect`, and `reconnect`'s
+      // `gap` field: both exist to tell a caller whether this connection actually carried
+      // transcript activity before it died, so it can decide whether a reconnect is a
+      // silent retry or a real gap in coverage. `idle`/`refused`/`start_failed` are
+      // connection-state and control-response records, not transcript activity — none of
+      // them belongs to a session, per parseWireRecord's comment above — so counting one
+      // would tell a caller a session happened when at most a refusal or an idle
+      // connection was observed.
       this.#sawSessionEvent = true;
     }
     if (record.t === "begin") {
@@ -418,6 +505,9 @@ export class StreamClient extends EventEmitter {
       this.#activeSessions.delete(record.session);
     }
     this.emit("event", { generation: this.#generation, record });
+    // `idle`/`refused`/`start_failed` never reach the `begin`/terminal-event branches above,
+    // so they never add to or remove from `#activeSessions`; a drain requested while a real
+    // session is still open cannot be short-circuited by one of them arriving in between.
     if (this.#drainRequested && this.#activeSessions.size === 0) {
       if (this.#drainTimer !== null) clearTimeout(this.#drainTimer);
       this.#drainTimer = null;

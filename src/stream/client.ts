@@ -449,7 +449,42 @@ export type StreamClientOptions = {
   spawnFn?: SpawnFn;
 };
 
-export class StreamClient extends EventEmitter {
+/**
+ * Every event `StreamClient` emits, keyed to the argument tuple `this.emit(...)`
+ * actually passes — `@types/node`'s generic `EventEmitter<T>` types a listener from
+ * `T[K]` as an *argument list*, not a payload object, so `settled`'s single bare
+ * `ExitDiagnosis` argument (see `#emitSettled`) is `[ExitDiagnosis]`, not
+ * `[{ diagnosis: ExitDiagnosis }]` — the one event here whose shape does not follow
+ * the `{ generation, ... }` pattern the rest share. Reuses `WireEvent`,
+ * `ConnectionErrorRecord` and `ExitDiagnosis` rather than restating their shape, so a
+ * change to `parseWireRecord` or `diagnoseExit` cannot silently drift from what a
+ * listener is typed to receive.
+ *
+ * `event`'s `record` is `WireEvent`, not `WireEvent | ConnectionErrorRecord`: `#onRecord`
+ * always routes the session-less, code-carrying `error` record (`ConnectionErrorRecord`)
+ * to `connectionError` and returns before reaching `this.emit("event", ...)`, so only a
+ * `WireEvent` ever reaches this channel. `connectionError` is the mirror image, and
+ * `protocolError`'s `error` is the narrower `ProtocolError` (not `Error`) because the
+ * `#spawn` decoder callback only takes that branch after `error instanceof ProtocolError
+ * && error.actual !== undefined` — `parseError` is where an error that fails either half
+ * of that check, `ProtocolError` or not, actually lands.
+ */
+export type StreamClientEvents = Readonly<{
+  event: [Readonly<{ generation: number; record: WireEvent }>];
+  settled: [ExitDiagnosis];
+  disconnect: [Readonly<{ generation: number; diagnosis: ExitDiagnosis; hadSessionEvents: boolean }>];
+  reconnect: [
+    Readonly<{ attempt: number; generation: number; delayMs: number; diagnosis: ExitDiagnosis; gap: boolean }>,
+  ];
+  connectionError: [Readonly<{ generation: number; record: ConnectionErrorRecord }>];
+  protocolError: [Readonly<{ error: ProtocolError; line: string; generation: number }>];
+  parseError: [Readonly<{ error: Error; line: string; generation: number }>];
+  processError: [Readonly<{ error: NodeJS.ErrnoException; command: string; fatal: boolean }>];
+  giveUp: [Readonly<{ attempts: number; diagnosis: ExitDiagnosis }>];
+  drainTimeout: [Readonly<{ timeoutMs: number; activeSessions: readonly number[] }>];
+}>;
+
+export class StreamClient extends EventEmitter<StreamClientEvents> {
   #child: ChildProcess | null = null;
   #active = false;
   #attempts = 0;

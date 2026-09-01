@@ -95,7 +95,17 @@ class FileSystemSidecarStore implements SidecarStore {
   }
 }
 
-export class SidecarWriter extends EventEmitter {
+/**
+ * The one event `SidecarWriter` emits. Keyed to the argument tuple `this.emit(...)`
+ * passes (`@types/node`'s generic `EventEmitter<T>` types a listener from `T[K]` as an
+ * *argument list*), so the single `{ error, path }` payload `#flushOnce`'s caller in
+ * `flush()` builds is still `[Readonly<{...}>]`, not the bare object.
+ */
+export type SidecarWriterEvents = Readonly<{
+  writeError: [Readonly<{ error: Error; path: string }>];
+}>;
+
+export class SidecarWriter extends EventEmitter<SidecarWriterEvents> {
   readonly #sessions = new Map<string, SessionSnapshot>();
   #timeline: TimelineEntry[] = [];
   readonly #flushIntervalMs: number;

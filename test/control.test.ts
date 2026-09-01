@@ -90,6 +90,8 @@ describe("ShorthandControl argv", () => {
     "toggle-assisted-notes",
     "start-assisted-notes",
     "stop-assisted-notes",
+    "start-transcription",
+    "stop-transcription",
     "cancel",
   ];
 

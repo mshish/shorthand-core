@@ -10,34 +10,40 @@ import type { SpawnFn } from "./client.js";
  * `tauri_plugin_single_instance`: a second `shorthand` process detects the running app,
  * forwards its args, and exits.
  *
- * `start-assisted-notes`/`stop-assisted-notes` are the explicit pair for an Assisted
- * Notes capture, and are idempotent rather than toggle semantics: starting when a
+ * `start-assisted-notes`/`stop-assisted-notes` and `start-transcription`/`stop-transcription`
+ * are the explicit pairs for an Assisted Notes and a Meeting capture respectively, and are
+ * idempotent rather than toggle semantics: starting when a
  * capture is already running, or stopping when none is, is a success no-op instead of
  * flipping something. A toggle is ambiguous exactly when a caller needs to retry it —
  * if the confirmation for a first attempt is lost (a timeout that does not distinguish
  * "never arrived" from "arrived but the reply did not"), resending a *toggle* risks
  * firing the opposite edge from the one intended, undoing the very command the retry
- * was meant to repeat. The explicit pair removes that risk: sending `start` twice, or
+ * was meant to repeat. The explicit pairs remove that risk: sending `start` twice, or
  * `stop` twice, always converges on the same state, so a caller can retry freely.
- * `toggle-assisted-notes` still exists — fork-only and harmless for manual, interactive
- * use, where a human notices and corrects a wrong flip immediately — but a programmatic
- * caller (this library's own `StreamClient`-driven callers included) should prefer the
- * explicit pair.
+ * `toggle-assisted-notes` and `toggle-transcription` still exist — harmless for manual,
+ * interactive use, where a human notices and corrects a wrong flip immediately — but a
+ * programmatic caller (this library's own `StreamClient`-driven callers included) should
+ * prefer the explicit pair for the mode it drives.
+ *
+ * Only those two modes have an explicit pair. Dictation has none, and needs none: its text
+ * has already been delivered where it was wanted, so nothing follows a dictation capture.
  *
  * Control must be its own short-lived spawn, never an extra argument on the follower.
  * Shorthand's parser makes `--toggle-transcription`, `--toggle-post-process`, `--cancel`,
- * `--toggle-assisted-notes`, `--start-assisted-notes`, `--stop-assisted-notes` and
- * `--follow-stream` a fully mutually-conflicting set: `--start-assisted-notes`,
- * `--stop-assisted-notes` and `--follow-stream` each declare `conflicts_with_all` naming
- * every one of the other six, and clap's conflict check is symmetric regardless of which
+ * `--toggle-assisted-notes`, `--start-assisted-notes`, `--stop-assisted-notes`,
+ * `--start-transcription`, `--stop-transcription` and
+ * `--follow-stream` a fully mutually-conflicting set: the four explicit flags and
+ * `--follow-stream` each declare `conflicts_with_all` naming
+ * every one of the others, and clap's conflict check is symmetric regardless of which
  * side declares it (verified against `explicit_assisted_notes_flags_conflict_with_every_other_remote_control_flag`
- * in the app's `cli.rs` test module, which parses `--toggle-transcription
- * --start-assisted-notes` and asserts the failure even though `toggle_transcription`'s own
- * attribute declares no `conflicts_with_all` at all). So any two of these seven flags
+ * and `explicit_meeting_flags_conflict_with_every_other_remote_control_flag`
+ * in the app's `cli.rs` test module, which parse `--toggle-transcription
+ * --start-assisted-notes` and assert the failure even though `toggle_transcription`'s own
+ * attribute declares no `conflicts_with_all` at all). So any two of these nine flags
  * together in one invocation fail to parse, not just a combination with `--follow-stream`.
  *
- * `toggle-assisted-notes`, `start-assisted-notes` and `stop-assisted-notes` each select
- * an app-owned capture mode by name. They carry no settings values, deliberately: the
+ * Every signal except `cancel` selects an app-owned capture mode by name. They carry no
+ * settings values, deliberately: the
  * app's own settings pane has to remain the only description of how a running capture
  * behaves, so this surface stays a fixed list of mode selectors rather than an override
  * channel.
@@ -48,6 +54,8 @@ export type ControlSignal =
   | "toggle-assisted-notes"
   | "start-assisted-notes"
   | "stop-assisted-notes"
+  | "start-transcription"
+  | "stop-transcription"
   | "cancel";
 
 export type ControlResult =
@@ -72,8 +80,7 @@ export type ShorthandControlOptions = {
  * again fires the toggle twice and the two presses cancel out. `cancel` is not a toggle
  * and does not share that hazard — it is one-way, and a second `cancel` with nothing
  * running is a no-op — but a false `not-running` still misreports whether the capture
- * the caller wanted stopped was actually stopped.
- * `start-assisted-notes`/`stop-assisted-notes`
+ * the caller wanted stopped was actually stopped. The four explicit signals
  * do not have that specific failure mode — that idempotence is the whole reason they
  * exist, see the class doc comment above — but a false `not-running` for them is still
  * a wrong answer a caller may act on: it can conclude Shorthand is not running and stop

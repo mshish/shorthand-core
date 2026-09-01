@@ -168,10 +168,11 @@ describe("wire compatibility", () => {
       "start-assisted-notes",
       "stop-assisted-notes",
       "begin-mode",
-      "idle",
+      "capture-state",
       "refused",
       "refused-publication-disabled",
       "start-failed",
+      "start-failed-code",
     ];
     expect(parseWireRecord({ t: "hello", protocol: 1, capabilities })).toEqual({
       t: "hello",
@@ -180,15 +181,83 @@ describe("wire compatibility", () => {
     });
   });
 
-  test("parses idle, the counterpart to an active begin on subscribe", () => {
-    expect(parseWireRecord({ t: "idle", emitted_at: "2026-08-15T14:03:20.100-07:00" })).toEqual({
-      t: "idle",
+  test("parses capture_state while idle, with all optional fields absent", () => {
+    expect(parseWireRecord({ t: "capture_state", phase: "idle", emitted_at: "2026-08-15T14:03:20.100-07:00" })).toEqual({
+      t: "capture_state",
+      phase: "idle",
       emitted_at: "2026-08-15T14:03:20.100-07:00",
     });
   });
 
-  test("idle with no emitted_at still parses", () => {
-    expect(parseWireRecord({ t: "idle" })).toEqual({ t: "idle" });
+  test("capture_state with no emitted_at still parses", () => {
+    expect(parseWireRecord({ t: "capture_state", phase: "idle" })).toEqual({ t: "capture_state", phase: "idle" });
+  });
+
+  test("parses capture_state while recording, not publishing, with mode and no session", () => {
+    expect(parseWireRecord({
+      t: "capture_state",
+      phase: "recording",
+      mode: "dictation",
+      publishing: false,
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    })).toEqual({
+      t: "capture_state",
+      phase: "recording",
+      mode: "dictation",
+      publishing: false,
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    });
+  });
+
+  test("parses capture_state while processing and publishing, with session", () => {
+    expect(parseWireRecord({
+      t: "capture_state",
+      phase: "processing",
+      mode: "meeting",
+      publishing: true,
+      session: 42,
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    })).toEqual({
+      t: "capture_state",
+      phase: "processing",
+      mode: "meeting",
+      publishing: true,
+      session: 42,
+      emitted_at: "2026-08-15T14:03:20.100-07:00",
+    });
+  });
+
+  // `publishing: false` and `publishing` absent are different states — a real, deliberately
+  // silent capture versus nothing capturing at all — so a parse that collapsed one into the
+  // other would erase that distinction. The idle case above already covers `publishing`
+  // absent; this asserts the two are not merely equal-looking but distinguishable via `in`.
+  test("publishing:false is distinguishable from publishing absent", () => {
+    const notPublishing = parseWireRecord({ t: "capture_state", phase: "recording", mode: "dictation", publishing: false });
+    const idle = parseWireRecord({ t: "capture_state", phase: "idle" });
+    expect(notPublishing).not.toBeNull();
+    expect(idle).not.toBeNull();
+    expect(notPublishing && "publishing" in notPublishing).toBe(true);
+    expect((notPublishing as { publishing?: boolean }).publishing).toBe(false);
+    expect(idle && "publishing" in idle).toBe(false);
+  });
+
+  // `phase` gates real consumer behaviour and is required (see capturePhaseField's doc
+  // comment): an unrecognized value has no safe reading, so the whole record is dropped
+  // as malformed rather than passed through with a guessed phase.
+  test("an unrecognized phase makes the whole capture_state record malformed", () => {
+    expect(parseWireRecord({ t: "capture_state", phase: "sleeping" })).toBeNull();
+    expect(parseWireRecord({ t: "capture_state" })).toBeNull();
+  });
+
+  // Unlike `reason` on `refused`, `mode` reuses beginModeField's undefined-on-unrecognized
+  // behaviour: a consumer gates real behaviour on which mode a capture is, so a mode this
+  // build does not know must never be mistaken for one it does.
+  test("an unrecognized mode on capture_state is dropped to undefined, not passed through", () => {
+    expect(parseWireRecord({ t: "capture_state", phase: "recording", mode: "karaoke", publishing: true })).toEqual({
+      t: "capture_state",
+      phase: "recording",
+      publishing: true,
+    });
   });
 
   test("parses a refused record with a known reason and mode", () => {
@@ -254,6 +323,48 @@ describe("wire compatibility", () => {
 
   test("a start_failed record with no message at all is malformed", () => {
     expect(parseWireRecord({ t: "start_failed", mode: "assisted-notes" })).toBeNull();
+  });
+
+  test("parses a start_failed record's code", () => {
+    expect(parseWireRecord({
+      t: "start_failed",
+      mode: "assisted-notes",
+      code: "no-input-device",
+      message: "no input device",
+    })).toEqual({
+      t: "start_failed",
+      mode: "assisted-notes",
+      code: "no-input-device",
+      message: "no input device",
+    });
+  });
+
+  // Open set, exactly like `refused.reason`: the start path's classifier can grow a new
+  // code without a protocol bump, so an unrecognized value must still parse rather than
+  // fail, carrying the raw string through instead of being dropped or coerced.
+  test("an unrecognized start_failed code still parses, carrying the raw string through", () => {
+    expect(parseWireRecord({
+      t: "start_failed",
+      mode: "assisted-notes",
+      code: "a-future-code",
+      message: "no input device",
+    })).toEqual({
+      t: "start_failed",
+      mode: "assisted-notes",
+      code: "a-future-code",
+      message: "no input device",
+    });
+  });
+
+  // Older builds sent `start_failed` before `code` existed at all — absence is a normal
+  // legacy case, not a malformed record, unlike `refused.reason` which has always been
+  // mandatory.
+  test("a start_failed record with no code at all still parses", () => {
+    expect(parseWireRecord({ t: "start_failed", mode: "assisted-notes", message: "no input device" })).toEqual({
+      t: "start_failed",
+      mode: "assisted-notes",
+      message: "no input device",
+    });
   });
 });
 
@@ -387,7 +498,7 @@ describe("process lifecycle", () => {
     expect(client.active).toBe(false);
   });
 
-  test("idle/refused/start_failed reach the event channel but do not count as session activity", async () => {
+  test("capture_state/refused/start_failed reach the event channel but do not count as session activity", async () => {
     const child = fakeChild();
     const client = new StreamClient({
       command: "fake",
@@ -400,17 +511,50 @@ describe("process lifecycle", () => {
     client.start();
     child.stdout.write(
       `${hello}\n` +
-        '{"t":"idle","emitted_at":"2026-08-15T14:03:20.100-07:00"}\n' +
+        '{"t":"capture_state","phase":"idle","emitted_at":"2026-08-15T14:03:20.100-07:00"}\n' +
         '{"t":"refused","mode":"assisted-notes","reason":"busy"}\n' +
-        '{"t":"start_failed","mode":"assisted-notes","message":"no input device"}\n',
+        '{"t":"start_failed","mode":"assisted-notes","code":"no-input-device","message":"no input device"}\n',
     );
     child.emit("close", 0);
     // All three still reach a consumer — the bug this change fixes was that
     // parseWireRecord dropped them before they ever got this far.
-    expect(events).toEqual(["hello", "idle", "refused", "start_failed"]);
+    expect(events).toEqual(["hello", "capture_state", "refused", "start_failed"]);
     // None of the three is transcript activity, so #sawSessionEvent must stay false: a
     // caller reading `hadSessionEvents` off `disconnect` (or `gap` off `reconnect`) would
-    // otherwise be told a session happened when only a refusal/idle/failure was observed.
+    // otherwise be told a session happened when only a refusal/connection-state
+    // snapshot/failure was observed.
+    expect((await disconnect).hadSessionEvents).toBe(false);
+  });
+
+  // `capture_state` can carry its own `session` (identifying the active publication), which
+  // is a different field from the one `#activeSessions`/drain tracking cares about — the
+  // replayed `begin` is what actually opens a session. A `capture_state` reporting an active
+  // session must not, by itself, make the client believe a session is open for drain purposes.
+  test("a capture_state reporting an active session still does not count as session activity or open a drain session", async () => {
+    let killed = false;
+    const child = fakeChild(() => { killed = true; });
+    const client = new StreamClient({
+      command: "fake",
+      reconnectOnExit: false,
+      spawnFn: () => child as unknown as ChildProcess,
+    });
+    const events: string[] = [];
+    client.on("event", ({ record }) => events.push(record.t));
+    const disconnect = new Promise<{ hadSessionEvents: boolean }>((resolve) => client.once("disconnect", resolve));
+    client.start();
+    // No `begin` follows this `capture_state` — it reports session 42 itself, but that must
+    // not, on its own, register 42 in `#activeSessions`.
+    child.stdout.write(
+      `${hello}\n` +
+        '{"t":"capture_state","phase":"processing","mode":"meeting","publishing":true,"session":42}\n',
+    );
+    expect(events).toEqual(["hello", "capture_state"]);
+    // If `capture_state.session` had opened an active session, `stopAfterDrain` would take
+    // the "wait for it to close" branch and not kill immediately. Because it did not,
+    // `#activeSessions.size === 0` and the child is killed right away.
+    client.stopAfterDrain();
+    expect(killed).toBe(true);
+    child.emit("close", 0);
     expect((await disconnect).hadSessionEvents).toBe(false);
   });
 

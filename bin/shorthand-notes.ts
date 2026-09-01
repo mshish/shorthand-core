@@ -201,15 +201,25 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       console.log(`[generation ${generation}] partial session=${record.session} speaker=${record.speaker} committed=${record.committed.length}`);
     } else if (record.t === "begin" && !record.streaming) {
       console.error(`[generation ${generation}] session=${record.session} is non-streaming; partial transcript updates will not be available before final.`);
-    } else if (record.t === "idle") {
-      console.log(`[generation ${generation}] idle`);
+    } else if (record.t === "capture_state") {
+      // `capture_state`/`refused`/`start_failed` carry no plain, always-present `session`
+      // (see client.ts's `WireEvent` comment), so they must not fall into the generic
+      // `session=${record.session}` branch below — that would print the literal string
+      // "session=undefined" for `capture_state` whenever it is idle, and silently drop
+      // `phase`/`mode`/`publishing` entirely even when a session is active.
+      console.log(
+        `[generation ${generation}] capture_state phase=${record.phase}` +
+          `${record.mode === undefined ? "" : ` mode=${record.mode}`}` +
+          `${record.publishing === undefined ? "" : ` publishing=${String(record.publishing)}`}` +
+          `${record.session === undefined ? "" : ` session=${record.session}`}`,
+      );
     } else if (record.t === "refused") {
-      // `idle`/`refused`/`start_failed` carry no `session` (see client.ts's `WireEvent`
-      // comment), so they must not fall into the generic `session=${record.session}`
-      // branch below — that would print the literal string "session=undefined".
       console.error(`[generation ${generation}] refused${record.mode === undefined ? "" : ` mode=${record.mode}`} reason=${record.reason}`);
     } else if (record.t === "start_failed") {
-      console.error(`[generation ${generation}] start_failed${record.mode === undefined ? "" : ` mode=${record.mode}`}: ${record.message}`);
+      console.error(
+        `[generation ${generation}] start_failed${record.mode === undefined ? "" : ` mode=${record.mode}`}` +
+          `${record.code === undefined ? "" : ` code=${record.code}`}: ${record.message}`,
+      );
     } else if (record.t !== "hello") {
       console.log(`[generation ${generation}] ${record.t} session=${record.session}`);
     }

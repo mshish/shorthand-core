@@ -73,13 +73,15 @@ export class TranscriptStore {
   #sequence = 0;
 
   ingest(connectionGeneration: number, event: WireEvent): TranscriptUpdate | null {
-    // `idle`/`refused`/`start_failed` carry no `session`, exactly like `hello` — see
-    // client.ts's `WireEvent` comment. None of the three belongs to a capture, so a
-    // transcript store has nothing to do with one: it must be excluded here rather than
-    // reaching `event.session` below (which does not exist on any of the three) or the
-    // terminal-reason fallthrough at the bottom of this method (which would otherwise
-    // treat "idle" as a `TerminalReason` a session ended with).
-    if (event.t === "hello" || event.t === "idle" || event.t === "refused" || event.t === "start_failed") return null;
+    // `capture_state`/`refused`/`start_failed` are connection-state and control-response
+    // records, not session events, exactly like `hello` — see client.ts's `WireEvent`
+    // comment. None of the three belongs to a capture, so a transcript store has nothing to
+    // do with one: it must be excluded here rather than reaching `event.session` below
+    // (`capture_state.session`, when present, identifies the active publication — it is not
+    // the plain always-present `session` the branches below assume) or the terminal-reason
+    // fallthrough at the bottom of this method (which would otherwise treat "capture_state"
+    // as a `TerminalReason` a session ended with).
+    if (event.t === "hello" || event.t === "capture_state" || event.t === "refused" || event.t === "start_failed") return null;
     const key = sessionKey(connectionGeneration, event.session);
 
     if (event.t === "begin") {

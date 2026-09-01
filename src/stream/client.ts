@@ -20,6 +20,32 @@ export const KNOWN_REFUSAL_REASONS = ["busy", "mode-disabled", "publication-disa
 
 export type KnownRefusalReason = (typeof KNOWN_REFUSAL_REASONS)[number];
 
+/**
+ * `start_failed.code` values this build's classifier is documented to produce today
+ * (FOLLOW_STREAM.md's "Explicit start/stop commands" section). Exported so a consumer
+ * can compare against a known value without hardcoding the strings, but deliberately
+ * *not* the type of `start_failed.code` itself — same reasoning as `KNOWN_REFUSAL_REASONS`
+ * versus `refused.reason` below: the classifier can grow a new code without a protocol
+ * bump, and a follower must still get a usable record rather than a parse failure.
+ */
+export const KNOWN_START_FAILURE_CODES = [
+  "no-input-device",
+  "microphone-permission-denied",
+  "audio-capture-failed",
+] as const;
+
+export type KnownStartFailureCode = (typeof KNOWN_START_FAILURE_CODES)[number];
+
+/**
+ * Every phase the transcription coordinator's `Stage` can report on `capture_state`.
+ * `idle` here is the *phase value*, unrelated to the old `idle` record type it replaced
+ * (see the `WireEvent` union below) — `capture_state` carries this phase instead of
+ * being its own record per state.
+ */
+export const CAPTURE_PHASES = ["idle", "recording", "processing"] as const;
+
+export type CapturePhase = (typeof CAPTURE_PHASES)[number];
+
 export type WireEvent =
   | { t: "hello"; protocol: number; version?: string; emitted_at?: string; capabilities?: string[] }
   | ({ t: "begin"; session: number; streaming: boolean; mode?: BeginMode } & Stamp)
@@ -27,12 +53,39 @@ export type WireEvent =
   | ({ t: "final"; session: number; speaker?: Speaker; text: string } & Stamp)
   | ({ t: "no_speech" | "cancel"; session: number } & Stamp)
   | ({ t: "error"; session: number; message: string } & Stamp)
-  // Session-less, like `hello`: no `session`, no `session_elapsed_ms`, so these three
-  // take `emitted_at` directly rather than through `Stamp` (whose `unstamped` flag
-  // means "this session event was missing its elapsed time", which does not apply to
-  // an event that was never going to have one). See parseWireRecord's handling of all
-  // three, next to the session-less `error` case, for the full reasoning.
-  | { t: "idle"; emitted_at?: string }
+  // Session-less, like `hello`: no `session_elapsed_ms`, so these three take `emitted_at`
+  // directly rather than through `Stamp` (whose `unstamped` flag means "this session event
+  // was missing its elapsed time", which does not apply to an event that was never going to
+  // have one). See parseWireRecord's handling of all three, next to the session-less `error`
+  // case, for the full reasoning. `capture_state.session`, when present, identifies the
+  // active publication (and is guaranteed to equal the immediately following `begin`'s
+  // session, per FOLLOW_STREAM.md) — it is a different field with a different meaning from
+  // the `session` these session-less records otherwise lack, not a step towards making
+  // `capture_state` a session event.
+  | {
+      t: "capture_state";
+      // Required, unlike `mode` below: FOLLOW_STREAM.md guarantees `capture_state` is sent
+      // "always" immediately after `hello`, so there is no legacy-app case where omitting
+      // `phase` is normal the way omitting `mode`/`publishing`/`session` while idle is. See
+      // `capturePhaseField`'s doc comment for what happens when `phase` itself is a value
+      // this build does not recognize.
+      phase: CapturePhase;
+      // Reuses `beginModeField`, consistent with `begin`/`refused`/`start_failed`: omitted
+      // while idle, and an unrecognized value reads as `undefined` for the same reason.
+      mode?: BeginMode;
+      // Boolean, present only while recording or processing (omitted while idle, via
+      // `skip_serializing_if` on the app's side). Absent and `false` are deliberately
+      // distinct: absent means "not applicable, nothing is capturing"; `false` means a real
+      // capture is running but its resolved `follow_stream_enabled` keeps this connection
+      // from ever seeing a `begin` for it. Collapsing the two would make a live, deliberately
+      // silent capture indistinguishable from no capture at all.
+      publishing?: boolean;
+      // Present exactly when the hub still has an active publication; absent otherwise
+      // (including whenever `publishing` is absent or `false`, since a non-publishing or
+      // idle capture has no hub session to report).
+      session?: number;
+      emitted_at?: string;
+    }
   | {
       t: "refused";
       mode?: BeginMode;
@@ -49,7 +102,22 @@ export type WireEvent =
       reason: string;
       emitted_at?: string;
     }
-  | { t: "start_failed"; mode?: BeginMode; message: string; emitted_at?: string };
+  | {
+      t: "start_failed";
+      mode?: BeginMode;
+      // Same open-set reasoning as `refused.reason` just above: `code` is stable
+      // kebab-case machine vocabulary, but the start path's classifier can grow a new
+      // value without a protocol bump (FOLLOW_STREAM.md names three today, and says the
+      // set is not a closed promise). An unrecognized code must still produce a usable
+      // record — `message` stays available for display or logs — rather than fail to
+      // parse. Optional, unlike `reason` on `refused`: older builds emitted `start_failed`
+      // before `code` existed at all (see the `start-failed-code` capability, which tells a
+      // follower whether *this* connected app can be relied on to send it), so its absence
+      // is a normal legacy case, not a malformed record.
+      code?: string;
+      message: string;
+      emitted_at?: string;
+    };
 
 export type ConnectionErrorRecord = {
   t: "error";
@@ -80,6 +148,18 @@ function numberField(value: Record<string, unknown>, name: string): number | und
 
 function stringField(value: Record<string, unknown>, name: string): string | undefined {
   return typeof value[name] === "string" ? value[name] : undefined;
+}
+
+/**
+ * Unlike `stringField`/`numberField`, `capture_state.publishing` must distinguish
+ * "absent" from "present and `false`" — they mean different things, see that field's
+ * comment on `WireEvent`. A plain `typeof value[name] === "boolean"` guard already keeps
+ * that distinction (an absent or non-boolean field returns `undefined`, a real `false`
+ * returns `false`), so this only exists to give the check a name next to its siblings.
+ */
+function booleanField(value: Record<string, unknown>, name: string): boolean | undefined {
+  const field = value[name];
+  return typeof field === "boolean" ? field : undefined;
 }
 
 /**
@@ -125,6 +205,31 @@ function beginModeField(value: Record<string, unknown>): BeginMode | undefined {
   return (BEGIN_MODES as readonly unknown[]).includes(field) ? (field as BeginMode) : undefined;
 }
 
+/**
+ * `phase` is required on `capture_state`, unlike `mode` on `begin`/`refused`/`start_failed`
+ * — there is no legacy build that omits it, because `capture_state` did not exist before
+ * `phase` did. That removes the "absent" case `beginModeField` has to accommodate, but it
+ * does not remove the "unrecognized" one: a future app could still send a phase this build
+ * predates.
+ *
+ * `beginModeField` collapses that case to `undefined` because `undefined` is a safe,
+ * meaningful answer for `mode` — "not one of the modes I know, so not my business" — and
+ * the field stays optional either way. `phase` has no equivalent safe value: a follower
+ * that decides whether to treat a capture as idle, recording or processing from this field
+ * cannot safely default an unrecognized phase to any of the three without risking exactly
+ * the wrong one (mistaking a live capture for idle, or vice versa) — unlike an unrecognized
+ * `mode`, where "not my business" is always a safe read regardless of what is actually
+ * running. So this returns `null` and `parseWireRecord` drops the whole record as
+ * malformed, the same treatment a `begin` with a missing/invalid `streaming` gets: better
+ * for a follower to miss one connection-state snapshot (it still has `hello`, and will see
+ * `begin`/`refused`/`start_failed` on the same connection) than to observe one it cannot
+ * trust.
+ */
+function capturePhaseField(value: Record<string, unknown>): CapturePhase | null {
+  const field = value.phase;
+  return (CAPTURE_PHASES as readonly unknown[]).includes(field) ? (field as CapturePhase) : null;
+}
+
 function stamp(value: Record<string, unknown>): Stamp {
   const emittedAt = stringField(value, "emitted_at");
   const elapsed = numberField(value, "session_elapsed_ms");
@@ -167,16 +272,42 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
     return { t: "error", code, message, ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }) };
   }
 
-  // `idle`, `refused` and `start_failed` are the three session-less records FOLLOW_STREAM.md
-  // added alongside the explicit start/stop commands. Before this, every branch below the
-  // session-less `error` case fell through to `numberField(input, "session")`, which returns
-  // `undefined` for all three (none of them ever carries a `session`) and silently dropped the
-  // record. That made a refusal, a failed start, and the idle state themselves unobservable —
-  // not merely mis-parsed but invisible — so they must be handled here, before that
-  // requirement, exactly like the session-less `error` case just above.
-  if (input.t === "idle") {
+  // `capture_state`, `refused` and `start_failed` are the three session-less records
+  // FOLLOW_STREAM.md documents alongside the explicit start/stop commands (`capture_state`
+  // replaced the original `idle` record — see its own type comment on `WireEvent` for why).
+  // Every branch below the session-less `error` case falls through to
+  // `numberField(input, "session")`, which returns `undefined` for all three (none of them
+  // ever carries a plain, always-present `session` the way `begin`/`partial`/etc. do — see
+  // `capture_state`'s own optional `session` handled below) and would silently drop the
+  // record. That would make a refusal, a failed start, and the connection's current phase
+  // themselves unobservable — not merely mis-parsed but invisible — so they must be handled
+  // here, before that requirement, exactly like the session-less `error` case just above.
+  if (input.t === "capture_state") {
+    const phase = capturePhaseField(input);
+    // See `capturePhaseField`'s doc comment: an unrecognized phase has no safe reading, so
+    // the whole record is malformed rather than passed through with a guessed phase.
+    if (phase === null) return null;
+    // Same reuse of `beginModeField` as `refused`/`start_failed` below.
+    const mode = beginModeField(input);
+    // Conditional spread, not a plain assignment: `publishing: booleanField(input, "publishing")`
+    // would assign `undefined` explicitly when the field is absent, which
+    // `exactOptionalPropertyTypes` forbids for an optional property — see the identical
+    // comment on the `begin` case below. It also matters semantically here: assigning
+    // `undefined` and omitting the key are supposed to look identical to a consumer, but
+    // only the conditional spread guarantees that; a stray explicit `undefined` would still
+    // satisfy `.publishing === undefined` today; it exists to survive a future refactor
+    // rather than to fix a present bug.
+    const publishing = booleanField(input, "publishing");
+    const session = numberField(input, "session");
     const emittedAt = stringField(input, "emitted_at");
-    return { t: "idle", ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }) };
+    return {
+      t: "capture_state",
+      phase,
+      ...(mode === undefined ? {} : { mode }),
+      ...(publishing === undefined ? {} : { publishing }),
+      ...(session === undefined ? {} : { session }),
+      ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }),
+    };
   }
 
   if (input.t === "refused") {
@@ -203,11 +334,14 @@ export function parseWireRecord(input: unknown): WireEvent | ConnectionErrorReco
     if (message === undefined) return null;
     // Same reuse of `beginModeField`, same reason, as `refused` above.
     const mode = beginModeField(input);
+    // Open set, like `refused.reason` — see the `code` field's own comment on `WireEvent`.
+    const code = stringField(input, "code");
     const emittedAt = stringField(input, "emitted_at");
     return {
       t: "start_failed",
       message,
       ...(mode === undefined ? {} : { mode }),
+      ...(code === undefined ? {} : { code }),
       ...(emittedAt === undefined ? {} : { emitted_at: emittedAt }),
     };
   }
@@ -486,15 +620,17 @@ export class StreamClient extends EventEmitter {
         this.#stabilityTimer = null;
         this.#attempts = 0;
       }, this.options.stableConnectionMs ?? 30_000);
-    } else if (record.t !== "idle" && record.t !== "refused" && record.t !== "start_failed") {
+    } else if (record.t !== "capture_state" && record.t !== "refused" && record.t !== "start_failed") {
       // `#sawSessionEvent` feeds `hadSessionEvents` on `disconnect`, and `reconnect`'s
       // `gap` field: both exist to tell a caller whether this connection actually carried
       // transcript activity before it died, so it can decide whether a reconnect is a
-      // silent retry or a real gap in coverage. `idle`/`refused`/`start_failed` are
+      // silent retry or a real gap in coverage. `capture_state`/`refused`/`start_failed` are
       // connection-state and control-response records, not transcript activity — none of
       // them belongs to a session, per parseWireRecord's comment above — so counting one
-      // would tell a caller a session happened when at most a refusal or an idle
-      // connection was observed.
+      // would tell a caller a session happened when at most a refusal or a connection-state
+      // snapshot was observed. This holds even when `capture_state.session` is present: that
+      // field identifies which publication is active, but the record itself is still a
+      // connection-level snapshot taken once after `hello`, not a per-session event.
       this.#sawSessionEvent = true;
     }
     if (record.t === "begin") {
@@ -505,9 +641,11 @@ export class StreamClient extends EventEmitter {
       this.#activeSessions.delete(record.session);
     }
     this.emit("event", { generation: this.#generation, record });
-    // `idle`/`refused`/`start_failed` never reach the `begin`/terminal-event branches above,
-    // so they never add to or remove from `#activeSessions`; a drain requested while a real
-    // session is still open cannot be short-circuited by one of them arriving in between.
+    // `capture_state`/`refused`/`start_failed` never reach the `begin`/terminal-event branches
+    // above, so they never add to or remove from `#activeSessions` — including `capture_state`,
+    // even though it can carry its own `session` field; that field is never fed to
+    // `#activeSessions.add`/`.delete`, only the replayed `begin` is. A drain requested while a
+    // real session is still open cannot be short-circuited by one of them arriving in between.
     if (this.#drainRequested && this.#activeSessions.size === 0) {
       if (this.#drainTimer !== null) clearTimeout(this.#drainTimer);
       this.#drainTimer = null;

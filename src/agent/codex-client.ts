@@ -1,8 +1,8 @@
-import { accessSync, constants, rmSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, rmSync, statSync, type Dirent } from "node:fs";
 import { copyFile, cp, link, mkdir, mkdtemp, realpath, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { Codex, type ModelReasoningEffort } from "@openai/codex-sdk";
 import { shorthandConfigDirectory } from "../config.js";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
@@ -489,6 +489,13 @@ function turnFailureMessage(event: CodexEvent): string {
  * deployed away from `node_modules`. `spawn` does search PATH, and the SDK spawns whatever
  * `executablePath` it is handed, so resolving the path here is what makes the backend work
  * without configuration.
+ *
+ * Unconfigured order: PATH -> the native Windows installer's conventional location -> the real
+ * binary behind an npm global shim. Codex used to stop at PATH and hand back `undefined`, unlike
+ * {@link detectClaudeExecutable}'s own conventional-location fallback — leaving Codex the only
+ * backend with no recovery when PATH search misses, which turns into "Install the Codex CLI" for
+ * an operator who already has. See {@link findConventionalCodexInstall} and
+ * {@link findCodexBehindNpmShim} for why each is necessary and exactly what it does not cover.
  */
 export function detectCodexExecutable(
   override?: string,
@@ -503,9 +510,16 @@ export function detectCodexExecutable(
     // Handed back verbatim when the PATH search comes up empty, never downgraded to
     // `undefined`: undefined sends the SDK to its own npm lookup, which would silently run a
     // different Codex than the one the operator named — or throw with no mention of the name.
+    // The conventional-location and npm-shim fallbacks below deliberately do not apply here: the
+    // operator named something specific, and guessing a different Codex out from under them
+    // would be worse than the clear ENOENT this verbatim name produces.
     return searchPathForExecutable(configured, environment) ?? configured;
   }
-  return searchPathForExecutable("codex", environment);
+  return (
+    searchPathForExecutable("codex", environment) ??
+    findConventionalCodexInstall(environment) ??
+    findCodexBehindNpmShim(environment)
+  );
 }
 
 /**
@@ -550,6 +564,114 @@ function isSpawnableFile(candidate: string): boolean {
     // permission error on one directory must not abort the walk over the rest.
     return false;
   }
+}
+
+/**
+ * The native Windows installer's fixed location, tried when PATH search misses. Mirrors
+ * {@link detectClaudeExecutable}'s own conventional-location fallback: a PATH miss is not proof
+ * Codex is missing, only that this process's PATH does not carry it — a GUI-launched process
+ * (Obsidian, VS Code) does not always inherit a PATH change the installer made to the registry
+ * after that process started.
+ *
+ * Reads LOCALAPPDATA out of `environment` rather than `process.env`, same as
+ * {@link detectClaudeExecutable} reads USERPROFILE, so this branch is reachable from a test
+ * without touching the real install. Deliberately does not fall back further to a
+ * home-directory derivation the way `detectShorthandExecutable`'s conventional-location search
+ * does when its own environment var is absent: that further fallback reaches the real user
+ * profile on any machine that has one, which is exactly what made that function's not-found
+ * tests undeterministic — see `detectShorthandExecutable` in `src/config.ts` and the `fileExists`
+ * parameter its own doc comment explains was added to escape that exact problem.
+ * Treating "LOCALAPPDATA absent" as "skip this probe" keeps this one suppressible through
+ * `environment` alone, with no filesystem stub required.
+ *
+ * No POSIX equivalent: Homebrew and `/usr/local/bin` installs are already on PATH by
+ * convention, so a POSIX PATH miss is real evidence of absence rather than a registry-sync gap,
+ * and there is no separate documented native-installer location on POSIX to probe instead.
+ */
+function findConventionalCodexInstall(environment: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const localAppData = environment.LOCALAPPDATA;
+  if (localAppData === undefined || localAppData.length === 0) return undefined;
+  const candidate = join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+  return isSpawnableFile(candidate) ? resolve(candidate) : undefined;
+}
+
+/**
+ * The other real Windows install: `npm i -g @openai/codex`, the command Codex's own docs give.
+ * It leaves only `codex`, `codex.cmd` and `codex.ps1` on PATH — `searchPathForExecutable`
+ * correctly refuses all three, see its own comment — while the real binary sits behind an
+ * optional platform dependency that previously only `@openai/codex`'s own `bin/codex.js`
+ * launcher knew how to find. POSIX does not need this: npm's POSIX shim is a real symlink to an
+ * executable shebang script, which `searchPathForExecutable`'s PATH scan already accepts on its
+ * own — this whole function is a Windows-only gap.
+ */
+function findCodexBehindNpmShim(environment: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  for (const directory of (environment.PATH ?? "").split(delimiter)) {
+    if (directory.length === 0) continue;
+    // `.cmd` specifically: npm always writes it alongside `codex` and `codex.ps1` for a Windows
+    // bin entry, so its presence alone reliably signals "an npm install of Codex lives here"
+    // without checking all three names.
+    if (!existsSync(join(directory, "codex.cmd"))) continue;
+    const resolved = findVendoredCodexExecutable(join(directory, "node_modules", "@openai", "codex"));
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
+}
+
+/**
+ * `codexPackageDir` is where `@openai/codex`'s own `package.json` should be — the package whose
+ * `bin/codex.js` is the shim `findCodexBehindNpmShim` found on PATH. Returns the real vendored
+ * executable's absolute path, or `undefined` if this does not resolve to a real install after
+ * all.
+ *
+ * The platform package name (`@openai/codex-<platform>-<arch>`) is read out of `@openai/codex`'s
+ * own `optionalDependencies` rather than assumed, and the `vendor/<target-triple>` directory name
+ * is read off disk rather than pasted in as a literal, because the Rust target triple
+ * (`x86_64-pc-windows-msvc`) has no formula from `process.platform`/`process.arch` — the only
+ * alternative would be hardcoding the same lookup table `@openai/codex`'s own launcher carries
+ * (`PLATFORM_PACKAGE_BY_TARGET` in its `bin/codex.js`). If a future release renames that
+ * convention, or a platform package ever vendors more than one target triple, every probe below
+ * simply finds nothing and this returns `undefined` rather than a wrong path — it never guesses.
+ *
+ * Two directory layouts are tried because both happen in the wild: npm's global installer nests
+ * a package's own dependencies under that package's `node_modules` (the shape observed on the
+ * reporter's machine), while a flat/hoisted installer (bun, or npm with a shared store) places
+ * the platform package as a sibling instead. Two specific, known paths — not a directory walk.
+ */
+function findVendoredCodexExecutable(codexPackageDir: string): string | undefined {
+  let optionalDependencies: Record<string, unknown> | undefined;
+  try {
+    const raw = readFileSync(join(codexPackageDir, "package.json"), "utf8");
+    optionalDependencies = (JSON.parse(raw) as { optionalDependencies?: Record<string, unknown> }).optionalDependencies;
+  } catch {
+    return undefined;
+  }
+  const platformPackageName = `codex-${process.platform}-${process.arch}`;
+  if (optionalDependencies === undefined || !(`@openai/${platformPackageName}` in optionalDependencies)) return undefined;
+
+  const candidateRoots = [
+    join(codexPackageDir, "node_modules", "@openai", platformPackageName),
+    join(dirname(codexPackageDir), platformPackageName),
+  ];
+  for (const platformPackageDir of candidateRoots) {
+    const vendorRoot = join(platformPackageDir, "vendor");
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(vendorRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    // Not ambiguous in practice: the platform package is already scoped to one platform and
+    // architecture, so it vendors exactly one target triple. Anything other than exactly one
+    // directory here means this guess about the layout was wrong, not that there is a triple to
+    // pick among — so this candidate root is abandoned rather than guessed at.
+    const targetTriples = entries.filter((entry) => entry.isDirectory());
+    if (targetTriples.length !== 1) continue;
+    const candidate = join(vendorRoot, targetTriples[0]!.name, "bin", "codex.exe");
+    if (isSpawnableFile(candidate)) return resolve(candidate);
+  }
+  return undefined;
 }
 
 /**

@@ -149,6 +149,64 @@ function pathDirectory(...entries: readonly string[]): string {
   return directory;
 }
 
+// The native Windows installer's fixed layout (Programs/OpenAI/Codex/bin/codex.exe), rooted
+// under what the test will hand in as LOCALAPPDATA.
+function localAppDataDirectory(hasCodex: boolean): string {
+  const directory = mkdtempSync(join(tmpdir(), "shorthand-codex-localappdata-"));
+  pathFixtures.push(directory);
+  if (hasCodex) {
+    const binDirectory = join(directory, "Programs", "OpenAI", "Codex", "bin");
+    mkdirSync(binDirectory, { recursive: true });
+    writeFileSync(join(binDirectory, "codex.exe"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  return directory;
+}
+
+// The real `process.platform`/`process.arch` of whatever machine runs the suite, matching how
+// `findVendoredCodexExecutable` names the optional platform dependency — not hardcoded, for the
+// same reason `codexBinaryName` above is not: asserting against the platform actually running
+// keeps the test meaningful on both a Windows dev machine and CI's linux runner (where the whole
+// describe block below is skipped instead of asserting a guessed platform pair).
+const platformPackageName = `codex-${process.platform}-${process.arch}`;
+
+// An npm global bin directory for `@openai/codex`: always `codex.cmd` (what
+// `findCodexBehindNpmShim` looks for), and — when `optionalDependencies` is given — the real
+// package layout behind it, in either of the two shapes observed in the wild. `layout: "nested"`
+// is npm's own global installer (a package's dependencies land under its own node_modules);
+// `"flat"` is what a hoisting installer (bun; npm with a shared store) produces instead, with the
+// platform package as a sibling of `@openai/codex` rather than nested under it.
+function npmShimDirectory(options: {
+  optionalDependencies?: Record<string, string>;
+  layout?: "nested" | "flat";
+  vendorTriples?: readonly string[];
+} = {}): string {
+  const directory = mkdtempSync(join(tmpdir(), "shorthand-codex-shim-"));
+  pathFixtures.push(directory);
+  writeFileSync(join(directory, "codex.cmd"), "@echo off\r\n", { mode: 0o755 });
+  if (options.optionalDependencies === undefined) return directory;
+
+  const codexPackageDirectory = join(directory, "node_modules", "@openai", "codex");
+  mkdirSync(codexPackageDirectory, { recursive: true });
+  writeFileSync(
+    join(codexPackageDirectory, "package.json"),
+    JSON.stringify({ name: "@openai/codex", optionalDependencies: options.optionalDependencies }),
+  );
+
+  const platformPackageDirectory = (options.layout ?? "nested") === "nested"
+    ? join(codexPackageDirectory, "node_modules", "@openai", platformPackageName)
+    : join(directory, "node_modules", "@openai", platformPackageName);
+  // Deliberately not the real Rust target triple (e.g. "x86_64-pc-windows-msvc"): the whole
+  // point of findVendoredCodexExecutable is reading this name off disk rather than assuming it,
+  // and a fixture using the real string could not tell that implementation apart from one that
+  // still hardcoded it.
+  for (const triple of options.vendorTriples ?? ["fake-target-triple"]) {
+    const binDirectory = join(platformPackageDirectory, "vendor", triple, "bin");
+    mkdirSync(binDirectory, { recursive: true });
+    writeFileSync(join(binDirectory, "codex.exe"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  return directory;
+}
+
 afterAll(() => {
   for (const path of pathFixtures.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -206,6 +264,78 @@ describe("detectCodexExecutable", () => {
       .toBe(join(real, "codex.exe"));
   });
 
+  // The remaining Windows-only cases below cover the two fallbacks PATH search alone cannot
+  // reach: the native installer's conventional location, and the real binary behind an npm
+  // global shim. Both read their inputs from `environment` and temp directories only, per
+  // AGENTS.md's requirement that these probes never touch the real filesystem layout of the
+  // machine running the suite (a developer machine may have Codex installed for real).
+
+  test.skipIf(!isWindows)("finds Codex at the native installer's conventional location when PATH misses", () => {
+    const appData = localAppDataDirectory(true);
+    const found = detectCodexExecutable(undefined, { PATH: "", LOCALAPPDATA: appData });
+    expect(found).toBe(join(appData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"));
+  });
+
+  test.skipIf(!isWindows)("does not invent a conventional-location match when nothing is there", () => {
+    const appData = localAppDataDirectory(false);
+    expect(detectCodexExecutable(undefined, { PATH: "", LOCALAPPDATA: appData })).toBeUndefined();
+  });
+
+  test.skipIf(!isWindows)("prefers a real codex.exe on PATH over the conventional install location", () => {
+    const onPath = pathDirectory("codex.exe");
+    const appData = localAppDataDirectory(true);
+    const found = detectCodexExecutable(undefined, { PATH: onPath, LOCALAPPDATA: appData });
+    expect(found).toBe(join(onPath, "codex.exe"));
+  });
+
+  test.skipIf(!isWindows)("resolves the real binary behind an npm-installed shim, nested layout", () => {
+    const shimDirectory = npmShimDirectory({
+      optionalDependencies: { [`@openai/${platformPackageName}`]: `npm:@openai/codex@0.149.1-${process.platform}-${process.arch}` },
+      layout: "nested",
+    });
+    const found = detectCodexExecutable(undefined, { PATH: shimDirectory });
+    expect(found).toBe(join(
+      shimDirectory, "node_modules", "@openai", "codex", "node_modules", "@openai",
+      platformPackageName, "vendor", "fake-target-triple", "bin", "codex.exe",
+    ));
+  });
+
+  test.skipIf(!isWindows)("also resolves a flattened/hoisted platform package sitting beside the shim's own package", () => {
+    const shimDirectory = npmShimDirectory({
+      optionalDependencies: { [`@openai/${platformPackageName}`]: `npm:@openai/codex@0.149.1-${process.platform}-${process.arch}` },
+      layout: "flat",
+    });
+    const found = detectCodexExecutable(undefined, { PATH: shimDirectory });
+    expect(found).toBe(join(
+      shimDirectory, "node_modules", "@openai", platformPackageName,
+      "vendor", "fake-target-triple", "bin", "codex.exe",
+    ));
+  });
+
+  test.skipIf(!isWindows)("prefers the conventional install location over resolving an npm shim", () => {
+    const shimDirectory = npmShimDirectory({
+      optionalDependencies: { [`@openai/${platformPackageName}`]: `npm:@openai/codex@0.149.1-${process.platform}-${process.arch}` },
+    });
+    const appData = localAppDataDirectory(true);
+    const found = detectCodexExecutable(undefined, { PATH: shimDirectory, LOCALAPPDATA: appData });
+    expect(found).toBe(join(appData, "Programs", "OpenAI", "Codex", "bin", "codex.exe"));
+  });
+
+  test.skipIf(!isWindows)("does not resolve a shim whose package.json does not declare this platform", () => {
+    // Simulates either a foreign/corrupted install or a future rename of the optional-dependency
+    // naming convention: findVendoredCodexExecutable must not guess, only confirm.
+    const shimDirectory = npmShimDirectory({ optionalDependencies: { "@openai/codex-linux-arm64": "npm:@openai/codex@0.149.1-linux-arm64" } });
+    expect(detectCodexExecutable(undefined, { PATH: shimDirectory })).toBeUndefined();
+  });
+
+  test.skipIf(!isWindows)("does not guess between multiple target-triple directories under vendor/", () => {
+    const shimDirectory = npmShimDirectory({
+      optionalDependencies: { [`@openai/${platformPackageName}`]: `npm:@openai/codex@0.149.1-${process.platform}-${process.arch}` },
+      vendorTriples: ["fake-target-triple-a", "fake-target-triple-b"],
+    });
+    expect(detectCodexExecutable(undefined, { PATH: shimDirectory })).toBeUndefined();
+  });
+
   test("ignores a directory that merely shares the executable's name", () => {
     const directory = mkdtempSync(join(tmpdir(), "shorthand-codex-path-"));
     pathFixtures.push(directory);
@@ -253,8 +383,25 @@ describe("detectCodexExecutable", () => {
     expect(detectCodexExecutable("codex", {})).toBe("codex");
   });
 
-  test("does not fall back to a hardcoded install path the way detectClaudeExecutable does", () => {
+  // Codex now has a conventional-install fallback like Claude's (see the tests above), but reads
+  // LOCALAPPDATA directly rather than deriving AppData\Local from USERPROFILE the way
+  // detectShorthandExecutable's own conventional-location search does when LOCALAPPDATA is
+  // absent. Setting only USERPROFILE here must therefore still miss — on every platform, since
+  // findConventionalCodexInstall and findCodexBehindNpmShim both also no-op outside win32.
+  test("does not derive the conventional install location from USERPROFILE when LOCALAPPDATA is absent", () => {
     expect(detectCodexExecutable(undefined, { USERPROFILE: "C:\\Users\\someone" })).toBeUndefined();
+  });
+
+  // The two Windows-only fallbacks above are gated on process.platform, not on the shape of
+  // `environment` — so a POSIX run must ignore a LOCALAPPDATA-shaped environment and a
+  // resolvable npm-shim layout alike, rather than acting on them just because the right keys and
+  // files happen to be present. CI is the linux runner this actually exercises.
+  test.skipIf(isWindows)("ignores a Windows-shaped LOCALAPPDATA install and npm shim on POSIX", () => {
+    const appData = localAppDataDirectory(true);
+    const shimDirectory = npmShimDirectory({
+      optionalDependencies: { [`@openai/${platformPackageName}`]: `npm:@openai/codex@0.149.1-${process.platform}-${process.arch}` },
+    });
+    expect(detectCodexExecutable(undefined, { PATH: shimDirectory, LOCALAPPDATA: appData })).toBeUndefined();
   });
 });
 

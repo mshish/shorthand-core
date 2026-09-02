@@ -8,10 +8,18 @@ import { delimiter, join, resolve } from "node:path";
  * Order: explicit override -> SHORTHAND_BIN -> PATH -> conventional install and build
  * locations. Falls back to the bare command name so spawn still surfaces a clear ENOENT
  * (the CLI and plugin both report the resolved path when that happens).
+ *
+ * `fileExists` is injectable for the same reason `environment` is. The conventional
+ * locations are absolute paths that exist on any machine where Shorthand is installed —
+ * including the machine this library is developed on — so an empty PATH alone cannot
+ * reach the not-found fallback, and tests asserting it fail everywhere but a clean CI
+ * runner. Stubbing the probe is what makes that branch testable without uninstalling
+ * the app.
  */
 export function detectShorthandExecutable(
   override?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  fileExists: (path: string) => boolean = existsSync,
 ): string {
   const configured = override ?? environment.SHORTHAND_BIN;
   if (configured !== undefined && configured.length > 0) return resolve(configured);
@@ -22,7 +30,7 @@ export function detectShorthandExecutable(
   for (const directory of (environment.PATH ?? "").split(delimiter).filter(Boolean)) {
     for (const name of names) {
       const candidate = join(directory, name);
-      if (existsSync(candidate)) return candidate;
+      if (fileExists(candidate)) return candidate;
     }
   }
 
@@ -37,7 +45,7 @@ export function detectShorthandExecutable(
       : ["/usr/local/bin/shorthand", "/usr/bin/shorthand", join(home, ".local", "bin", "shorthand")];
 
   for (const candidate of conventional) {
-    if (existsSync(candidate)) return candidate;
+    if (fileExists(candidate)) return candidate;
   }
 
   return names[0]!;

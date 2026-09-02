@@ -44,13 +44,28 @@ describe("detectShorthandExecutable", () => {
     expect(detected).toBe(join(directory, binaryName));
   });
 
+  test("probes conventional install locations when PATH misses the binary", () => {
+    const probed: string[] = [];
+    const detected = detectShorthandExecutable(undefined, { PATH: "" }, (candidate) => {
+      probed.push(candidate);
+      return true;
+    });
+    expect(probed.length).toBe(1);
+    expect(detected).toBe(probed[0]!);
+  });
+
+  // These two stub the probe rather than trusting the real filesystem: on a machine with
+  // Shorthand installed a conventional location exists, so the not-found case is
+  // unreachable and the assertions below fail for a reason that has nothing to do with them.
+  const nothingOnDisk = () => false;
+
   test("returns the bare command name when nothing is found, so spawn reports a clear ENOENT", () => {
-    const detected = detectShorthandExecutable(undefined, { PATH: "" });
+    const detected = detectShorthandExecutable(undefined, { PATH: "" }, nothingOnDisk);
     expect(detected).toBe(binaryName);
   });
 
   test("an empty override is treated as absent rather than as a path", () => {
-    expect(detectShorthandExecutable("", { PATH: "" })).toBe(binaryName);
+    expect(detectShorthandExecutable("", { PATH: "" }, nothingOnDisk)).toBe(binaryName);
   });
 });
 

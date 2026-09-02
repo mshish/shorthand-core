@@ -1,4 +1,7 @@
 node_modules/
+.venv/
+__pycache__/
+evals/.results/
 
 # Local secrets (e.g. GOOGLE_OAUTH_CLIENT_ID/SECRET) — never committed.
 .env

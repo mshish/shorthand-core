@@ -1,0 +1,44 @@
+[
+  {
+    "id": "meeting-multiple-other-participants",
+    "mode": "meeting",
+    "userName": "Mike",
+    "currentSections": [],
+    "userNotes": "Customer launch review.",
+    "transcript": "me: Morning, I'm Mike. I want to leave with a launch decision and clear owners.\nthem: Priya here. The migration passed in staging, but twelve legacy accounts still need manual review.\nthem: This is Jordan. Support can review those accounts by Thursday, but we need the final list from Priya by Tuesday afternoon.\nme: Good. Let's launch Friday if the review is clean. Priya owns the list by Tuesday at 3 PM, Jordan owns review by Thursday noon, and I will make the go or no-go call Thursday at 4.\nthem: Priya again: one concern is the billing webhook retry spike. It is not a blocker yet, but I will watch it and alert everyone if failures exceed two percent.",
+    "expectedOutput": "A concise meeting note that identifies Mike, Priya, and Jordan only from clear evidence; records the conditional Friday launch, each owner and deadline, the twelve-account dependency, and the two-percent webhook escalation threshold. It should distinguish the monitoring risk from a blocker, use a task/action structure, and use a compact table where it improves scanning.",
+    "requiresTable": true,
+    "requiresCallout": true
+  },
+  {
+    "id": "meeting-uncertain-speakers-and-open-question",
+    "mode": "meeting",
+    "currentSections": [{"heading": "Summary", "markdown": "The team is considering a pilot."}],
+    "userNotes": "Do not lose the compliance question.",
+    "transcript": "me: We could pilot the new intake flow with the Northeast team in October.\nthem: That sounds reasonable, though nobody has checked whether the consent language needs legal review.\nme: Right, so this is not approved yet. I will ask legal next week. If they clear it, we can decide scope at the following planning meeting.\nthem: We should also measure completion time and abandonment, but we have not chosen targets.",
+    "expectedOutput": "A warm, concise note that clearly says the pilot is only proposed, not approved; preserves the unresolved legal-review dependency; assigns the legal question to the user without inventing the other participant's identity; and records that measurement targets remain undefined.",
+    "requiresTable": false,
+    "requiresCallout": true
+  },
+  {
+    "id": "assisted-notes-option-comparison",
+    "mode": "assisted-notes",
+    "userName": "Mike",
+    "currentSections": [],
+    "userNotes": "I care more about maintenance than initial speed.",
+    "transcript": "me: I'm trying to choose how to publish the internal handbook. Option one is a static site: fastest and cheap, but updates need a deploy. Option two is Obsidian Publish: easiest for me to maintain and the links already work, though access control costs more. Option three is a custom app, which could have perfect permissions but would take at least six weeks and create another service to own. I think Obsidian Publish is leading because maintenance matters most, but I need to confirm its group access controls before deciding. Next I should run a small permissions test and price twenty-five seats.",
+    "expectedOutput": "An Assisted Notes artifact that organizes the three options into a useful comparison, reflects maintenance as the primary criterion, labels Obsidian Publish as the current leader rather than a final decision, and captures the permissions test and 25-seat pricing as next actions.",
+    "requiresTable": true,
+    "requiresCallout": true
+  },
+  {
+    "id": "assisted-notes-rough-plan",
+    "mode": "assisted-notes",
+    "currentSections": [{"heading": "Idea", "markdown": "A monthly customer learning session."}],
+    "userNotes": "Keep this lightweight.",
+    "transcript": "me: The point is to hear how customers actually use the product, not turn this into another status meeting. Maybe one customer each month, forty-five minutes, with product and support listening. I don't know whether sales should attend every time because that could change the tone. We need a simple invitation, consent to record, and somewhere to collect patterns across sessions. I could test the format with Acme in September, but I have not asked them. The real open questions are who facilitates and how we share sensitive feedback.",
+    "expectedOutput": "A concise, thoughtful outline of the purpose, tentative monthly format, possible September Acme pilot, lightweight setup needs, and open questions. It must keep sales attendance and the Acme pilot tentative, and should make the facilitation and sensitive-feedback questions easy to see without fabricating answers.",
+    "requiresTable": false,
+    "requiresCallout": true
+  }
+]

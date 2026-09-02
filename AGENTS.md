@@ -108,13 +108,15 @@ still tells the truth.
 
 ## The enhancement prompt is split, deliberately
 
-`src/agent/contract.ts` exports two halves:
+`src/agent/contract.ts` exports the fixed half and two mode-specific editorial defaults:
 
 - `ENHANCEMENT_SAFETY_PREAMBLE` — the injection guard, the marker-token ban,
   "you do not write files", and "the given sections are authoritative". Always
   prepended by `EnhanceRunner`, never caller-supplied.
-- `DEFAULT_EDITORIAL_GUIDANCE` — the note-writing voice. Callers replace it via
-  `EnhanceRunnerOptions.guidance`.
+- `DEFAULT_MEETING_EDITORIAL_GUIDANCE` and
+  `DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE` — the note-writing voices selected by
+  `EnhanceRunnerOptions.mode`. `DEFAULT_EDITORIAL_GUIDANCE` remains a compatibility alias for
+  the meeting default. Callers replace the selected default via `EnhanceRunnerOptions.guidance`.
 
 Output *shape* is not defended by prose. Both backends enforce it at the
 provider boundary, with the schema derived from the zod schema by

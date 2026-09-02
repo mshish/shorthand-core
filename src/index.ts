@@ -81,7 +81,14 @@ export type { LlmAgentClientOptions } from "./agent/llm-client.js";
 export { llmCredentialsPath, readLlmCredentials } from "./agent/llm-credentials.js";
 export type { LlmCredentials, LlmCredentialsReadResult, LlmProviderId } from "./agent/llm-credentials.js";
 
-export { DEFAULT_EDITORIAL_GUIDANCE, ENHANCEMENT_SAFETY_PREAMBLE, MAX_GUIDANCE_CHARACTERS } from "./agent/contract.js";
+export {
+  DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
+  DEFAULT_EDITORIAL_GUIDANCE,
+  DEFAULT_MEETING_EDITORIAL_GUIDANCE,
+  ENHANCEMENT_SAFETY_PREAMBLE,
+  MAX_GUIDANCE_CHARACTERS,
+  MAX_USER_NAME_CHARACTERS,
+} from "./agent/contract.js";
 
 export { parseTemplateSections } from "./note/template.js";
 export type { TemplateSectionsResult } from "./note/template.js";
@@ -91,7 +98,10 @@ export type {
   AgentQueryRequest,
   AgentQueryResponse,
   AgentTier,
+  NoteTakingMode,
 } from "./agent/contract.js";
+
+export type { NoteTakingContext } from "./agent/runner.js";
 
 export { DEFAULT_CONFIG, detectShorthandExecutable } from "./config.js";
 export type { ShorthandConfig } from "./config.js";

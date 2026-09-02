@@ -2,13 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { AI_BLOCK_END, type Section } from "../src/note/markers.js";
 import {
   buildSectionOutputSchema,
+  DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
   DEFAULT_EDITORIAL_GUIDANCE,
+  DEFAULT_MEETING_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
   MAX_GUIDANCE_CHARACTERS,
   MAX_HEADING_CHARACTERS,
   MAX_MARKDOWN_CHARACTERS,
   MAX_SECTIONS,
   MAX_TOTAL_SECTION_CHARACTERS,
+  MAX_USER_NAME_CHARACTERS,
   queryForSections,
   validateSectionOutput,
   type AgentClient,
@@ -250,7 +253,18 @@ describe("enhancement system prompt", () => {
 
   test("the overridable half carries only editorial voice", () => {
     expect(DEFAULT_EDITORIAL_GUIDANCE).toContain("AI-owned section block");
-    expect(DEFAULT_EDITORIAL_GUIDANCE).toContain("add, rename, reorder, or drop");
+    expect(DEFAULT_EDITORIAL_GUIDANCE).toContain("add, rename, reorder, merge, or drop");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("two audio sides");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("Never quote");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("Organize and analyze the meeting");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("`* [ ]`");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("Keep paragraphs rare");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("A useful table may contain gaps");
+    expect(DEFAULT_MEETING_EDITORIAL_GUIDANCE).toContain("`Not discussed`");
+    expect(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE).toContain("thinking in progress");
+    expect(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE).toContain("organize, and visualize");
+    expect(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE).toContain("Never quote");
+    expect(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE).toContain("`*` for every unordered-list");
     expect(DEFAULT_EDITORIAL_GUIDANCE).not.toContain("untrusted");
     expect(DEFAULT_EDITORIAL_GUIDANCE).not.toContain("marker");
   });
@@ -259,6 +273,8 @@ describe("enhancement system prompt", () => {
     const entry = await import("../src/index.js");
     expect(entry.ENHANCEMENT_SAFETY_PREAMBLE).toBe(ENHANCEMENT_SAFETY_PREAMBLE);
     expect(entry.DEFAULT_EDITORIAL_GUIDANCE).toBe(DEFAULT_EDITORIAL_GUIDANCE);
+    expect(entry.DEFAULT_MEETING_EDITORIAL_GUIDANCE).toBe(DEFAULT_MEETING_EDITORIAL_GUIDANCE);
+    expect(entry.DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE).toBe(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE);
   });
 
   test("publishes the guidance cap the override surfaces validate against", async () => {
@@ -268,6 +284,7 @@ describe("enhancement system prompt", () => {
     expect(MAX_GUIDANCE_CHARACTERS).toBe(10_000);
     const entry = await import("../src/index.js");
     expect(entry.MAX_GUIDANCE_CHARACTERS).toBe(MAX_GUIDANCE_CHARACTERS);
+    expect(entry.MAX_USER_NAME_CHARACTERS).toBe(MAX_USER_NAME_CHARACTERS);
   });
 });
 

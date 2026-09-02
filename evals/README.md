@@ -31,8 +31,9 @@ The `.venv`, `.env.local`, Python caches, and local result directory are ignored
 .venv\Scripts\deepeval test run evals\test_note_prompts.py
 ```
 
-By default, Claude generates the notes and Codex judges them, avoiding candidate self-grading.
-Choose either local agent for either role:
+The defaults are explicit: Claude Sonnet 5 (`claude-sonnet-5`) at high effort generates the
+notes, and Codex Sol (`gpt-5.6-sol`) at high effort judges them. This avoids candidate
+self-grading. Choose either local agent for either role:
 
 ```powershell
 $env:SHORTHAND_EVAL_CANDIDATE_BACKEND = "codex"
@@ -50,9 +51,9 @@ Optional backend-specific settings are:
 * `SHORTHAND_EVAL_CODEX_EXE`
 * `SHORTHAND_EVAL_BUN`
 
-Unset model and effort values inherit the installed agent's defaults. Add reviewed,
-representative cases to `cases.json`; `expectedOutput` is a scoring rubric, not prose the note
-must copy.
+The model and effort variables override those pinned defaults for one shell. Empty or unset
+variables keep the pinned values. Add reviewed, representative cases to `cases.json`;
+`expectedOutput` is a scoring rubric, not prose the note must copy.
 
 ## Call budget
 

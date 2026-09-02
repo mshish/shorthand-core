@@ -8,6 +8,11 @@ import {
 
 type Backend = "claude" | "codex";
 
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-5";
+const DEFAULT_CLAUDE_EFFORT = "high";
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+const DEFAULT_CODEX_EFFORT = "high";
+
 type BridgeRequest = Readonly<{
   backend: Backend;
   prompt: string;
@@ -45,14 +50,14 @@ try {
 function createClient(backend: Backend): AgentClient {
   if (backend === "claude") {
     return new ClaudeAgentClient({
-      ...optional("model", process.env.SHORTHAND_EVAL_CLAUDE_MODEL),
-      ...optional("effort", process.env.SHORTHAND_EVAL_CLAUDE_EFFORT),
+      model: configured(process.env.SHORTHAND_EVAL_CLAUDE_MODEL, DEFAULT_CLAUDE_MODEL),
+      effort: configured(process.env.SHORTHAND_EVAL_CLAUDE_EFFORT, DEFAULT_CLAUDE_EFFORT),
     });
   }
   return new CodexAgentClient({
     ...optional("codexPathOverride", detectCodexExecutable(process.env.SHORTHAND_EVAL_CODEX_EXE)),
-    ...optional("model", process.env.SHORTHAND_EVAL_CODEX_MODEL),
-    ...optional("modelReasoningEffort", process.env.SHORTHAND_EVAL_CODEX_EFFORT),
+    model: configured(process.env.SHORTHAND_EVAL_CODEX_MODEL, DEFAULT_CODEX_MODEL),
+    modelReasoningEffort: configured(process.env.SHORTHAND_EVAL_CODEX_EFFORT, DEFAULT_CODEX_EFFORT),
   });
 }
 
@@ -80,4 +85,8 @@ function parseRequest(value: unknown): BridgeRequest {
 
 function optional<Key extends string>(key: Key, value: string | undefined): Partial<Record<Key, string>> {
   return value === undefined || value.length === 0 ? {} : { [key]: value } as Record<Key, string>;
+}
+
+function configured(value: string | undefined, fallback: string): string {
+  return value === undefined || value.length === 0 ? fallback : value;
 }

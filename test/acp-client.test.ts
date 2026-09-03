@@ -6,6 +6,7 @@ import type { ChildProcess, spawn } from "node:child_process";
 import { AgentQueryError, type AgentQueryRequest } from "../src/agent/contract.js";
 import {
   AcpAgentClient,
+  extractJsonFromText,
   type AcpAgentClientOptions,
 } from "../src/agent/acp-client.js";
 import { Utf8LineReader } from "../src/ndjson.js";
@@ -224,6 +225,53 @@ describe("AcpAgentClient", () => {
     await client.dispose();
   });
 
+  it("extracts clean JSON when section markdown contains internal code fences", async () => {
+    const mockChild = createMockProcess();
+    const expectedSections = [
+      {
+        heading: "Code Example",
+        markdown: "Here is the sample:\n```typescript\nconst x: number = 42;\nconsole.log(x);\n```\nDone.",
+      },
+    ];
+    const chunks = [
+      "Here is your note:\n```json\n",
+      JSON.stringify({ sections: expectedSections }),
+      "\n```\nAll done.",
+    ];
+    wireMockAcpServer(mockChild, { chunks });
+
+    const spawnFn: typeof spawn = (() => mockChild) as unknown as typeof spawn;
+    const client = new AcpAgentClient({
+      transport: { type: "stdio", command: "agent" },
+      spawnFn,
+    });
+
+    const response = await client.query(makeDummyRequest());
+    expect(response.structuredOutput).toEqual({ sections: expectedSections });
+    expect(response.diagnostics).toBeUndefined();
+
+    await client.dispose();
+  });
+
+  it("enforces timeoutMs and rejects with AgentQueryError when agent stalls", async () => {
+    const mockChild = createMockProcess();
+    wireMockAcpServer(mockChild, {
+      chunkDelayMs: 200, // slower than timeoutMs
+    });
+
+    const spawnFn: typeof spawn = (() => mockChild) as unknown as typeof spawn;
+    const client = new AcpAgentClient({
+      transport: { type: "stdio", command: "agent" },
+      timeoutMs: 30,
+      spawnFn,
+    });
+
+    await expect(client.query(makeDummyRequest())).rejects.toThrow(AgentQueryError);
+    await expect(client.query(makeDummyRequest())).rejects.toThrow("timed out");
+
+    await client.dispose();
+  });
+
   it("populates diagnostics on invalid JSON without throwing", async () => {
     const mockChild = createMockProcess();
     wireMockAcpServer(mockChild, {
@@ -394,3 +442,39 @@ describe("AcpAgentClient", () => {
     await expect(client.query(makeDummyRequest())).rejects.toThrow(AgentQueryError);
   });
 });
+
+describe("extractJsonFromText", () => {
+  it("parses clean raw JSON directly even with internal code fences", () => {
+    const payload = JSON.stringify({
+      sections: [{ heading: "Code", markdown: "```js\nconsole.log(1);\n```" }],
+    });
+    expect(extractJsonFromText(payload)).toEqual({
+      sections: [{ heading: "Code", markdown: "```js\nconsole.log(1);\n```" }],
+    });
+  });
+
+  it("unwraps outer markdown fence with internal code blocks", () => {
+    const raw = "```json\n" + JSON.stringify({
+      sections: [{ heading: "Code", markdown: "```python\nprint('hello')\n```" }],
+    }) + "\n```";
+    expect(extractJsonFromText(raw)).toEqual({
+      sections: [{ heading: "Code", markdown: "```python\nprint('hello')\n```" }],
+    });
+  });
+
+  it("extracts JSON surrounded by conversational text with curly braces", () => {
+    const raw = "Note {version: 1.0}:\n\n```json\n" + JSON.stringify({
+      sections: [{ heading: "Summary", markdown: "* Done" }],
+    }) + "\n```\n\nSignature {id: 42}";
+    expect(extractJsonFromText(raw)).toEqual({
+      sections: [{ heading: "Summary", markdown: "* Done" }],
+    });
+  });
+
+  it("throws when agent output has no JSON object", () => {
+    expect(() => extractJsonFromText("I am an AI assistant and I cannot do that.")).toThrow(
+      "No JSON object found in agent output.",
+    );
+  });
+});
+

@@ -13,6 +13,8 @@ import {
 } from "./contract.js";
 import { Utf8LineReader } from "../ndjson.js";
 
+export const DEFAULT_ACP_TIMEOUT_MS = 60_000;
+
 /**
  * Resolves the path to the Cursor CLI or an ACP-compatible agent executable.
  *
@@ -134,21 +136,66 @@ function jsonRpcErrorMessage(error: unknown): string {
 
 /**
  * Extracts and parses a JSON object from text that may contain markdown code fences,
- * conversational preambles, or postambles.
+ * internal code blocks, conversational preambles, or postambles.
  */
 export function extractJsonFromText(rawText: string): unknown {
-  let text = rawText.trim();
-  const fenceStart = text.indexOf("```");
-  const fenceEnd = text.lastIndexOf("```");
-  if (fenceStart !== -1 && fenceEnd > fenceStart) {
-    text = text.slice(fenceStart, fenceEnd + 3);
+  const trimmed = rawText.trim();
+  if (trimmed.length === 0) {
+    throw new Error("Agent output was empty.");
   }
-  const firstBrace = text.indexOf("{");
-  const lastBrace = text.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error("No JSON object found in agent output.");
+
+  // 1. Direct parse attempt (handles clean raw JSON, including internal code fences in markdown fields)
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Fall through to unwrap/extract
   }
-  return JSON.parse(text.slice(firstBrace, lastBrace + 1));
+
+  // 2. Outer markdown code fence unwrapping (payload wrapped entirely in ```json ... ```)
+  const outerFenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (outerFenceMatch && outerFenceMatch[1] !== undefined) {
+    const unwrapFence = outerFenceMatch[1].trim();
+    try {
+      return JSON.parse(unwrapFence);
+    } catch {
+      // Fall through
+    }
+  }
+
+  // 3. Conversational preamble / postamble surrounding a markdown code fence block
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+  let fenceBlock: RegExpExecArray | null;
+  while ((fenceBlock = fenceRegex.exec(trimmed)) !== null) {
+    const rawBlock = fenceBlock[1];
+    if (rawBlock === undefined) continue;
+    const blockContent = rawBlock.trim();
+    try {
+      return JSON.parse(blockContent);
+    } catch {
+      const bStart = blockContent.indexOf("{");
+      const bEnd = blockContent.lastIndexOf("}");
+      if (bStart !== -1 && bEnd > bStart) {
+        try {
+          return JSON.parse(blockContent.slice(bStart, bEnd + 1));
+        } catch {
+          // Keep checking
+        }
+      }
+    }
+  }
+
+  // 4. Outermost object extraction: search between first '{' and last '}'
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+    } catch {
+      // Fall through
+    }
+  }
+
+  throw new Error("No JSON object found in agent output.");
 }
 
 function extractTextFromChunk(update: unknown): string {
@@ -180,7 +227,6 @@ export class AcpAgentClient implements AgentClient {
   #scratchDir: string | undefined;
   #scratchDirCreated = false;
   #bridge: AcpTransportBridge | undefined;
-  #child: ChildProcess | undefined;
   #activeSessionId: string | undefined;
   #initialized = false;
   #queriesExecuted = 0;
@@ -192,7 +238,7 @@ export class AcpAgentClient implements AgentClient {
       reject: (error: unknown) => void;
     }
   >();
-  #notificationHandler: ((method: string, params: unknown) => void) | undefined;
+  readonly #sessionListeners = new Map<string, Set<(update: unknown) => void>>();
   #disposePromise: Promise<void> | undefined;
 
   constructor(options: AcpAgentClientOptions = {}) {
@@ -215,21 +261,31 @@ export class AcpAgentClient implements AgentClient {
       throw new AgentQueryError("Agent query aborted.");
     }
 
+    const timeoutMs = this.#options.timeoutMs ?? DEFAULT_ACP_TIMEOUT_MS;
+
     await this.#ensureConnection();
 
     if (!this.#initialized) {
-      await this.#request("initialize", {
-        protocolVersion: PROTOCOL_VERSION,
-        clientInfo: { name: "shorthand-core", version: "0.20.0" },
-        clientCapabilities: {},
-      });
+      await this.#request(
+        "initialize",
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          clientInfo: { name: "shorthand-core", version: "0.20.0" },
+          clientCapabilities: {},
+        },
+        timeoutMs,
+      );
 
-      const sessionResult = (await this.#request("session/new", {
-        cwd: this.#scratchDir,
-        mcpServers: [],
-        mode: this.#options.mode ?? "ask",
-        ...(this.#options.model ? { model: this.#options.model } : {}),
-      })) as { sessionId?: string };
+      const sessionResult = (await this.#request(
+        "session/new",
+        {
+          cwd: this.#scratchDir,
+          mcpServers: [],
+          mode: this.#options.mode ?? "ask",
+          ...(this.#options.model ? { model: this.#options.model } : {}),
+        },
+        timeoutMs,
+      )) as { sessionId?: string };
 
       if (!isRecord(sessionResult) || typeof sessionResult.sessionId !== "string") {
         throw new AgentQueryError("ACP agent did not return a valid sessionId from session/new.");
@@ -240,12 +296,16 @@ export class AcpAgentClient implements AgentClient {
       if (request.sessionId !== undefined && request.sessionId === this.#activeSessionId) {
         // Reuse active session
       } else {
-        const sessionResult = (await this.#request("session/new", {
-          cwd: this.#scratchDir,
-          mcpServers: [],
-          mode: this.#options.mode ?? "ask",
-          ...(this.#options.model ? { model: this.#options.model } : {}),
-        })) as { sessionId?: string };
+        const sessionResult = (await this.#request(
+          "session/new",
+          {
+            cwd: this.#scratchDir,
+            mcpServers: [],
+            mode: this.#options.mode ?? "ask",
+            ...(this.#options.model ? { model: this.#options.model } : {}),
+          },
+          timeoutMs,
+        )) as { sessionId?: string };
 
         if (!isRecord(sessionResult) || typeof sessionResult.sessionId !== "string") {
           throw new AgentQueryError("ACP agent did not return a valid sessionId from session/new.");
@@ -258,20 +318,21 @@ export class AcpAgentClient implements AgentClient {
     const fullPrompt = `${request.prompt}\n\n${ACP_JSON_OUTPUT_DIRECTIVE}`;
     const chunks: string[] = [];
 
-    this.#notificationHandler = (method: string, params: unknown) => {
-      if (method === "session/update" && isRecord(params)) {
-        if (!params.sessionId || params.sessionId === sessionId) {
-          const text = extractTextFromChunk(params.update);
-          if (text) chunks.push(text);
-        }
-      }
+    const onUpdate = (update: unknown) => {
+      const text = extractTextFromChunk(update);
+      if (text) chunks.push(text);
     };
+    this.#addSessionListener(sessionId, onUpdate);
 
+    let promptRequestId: number | undefined;
     let abortListener: (() => void) | undefined;
     const abortPromise = new Promise<never>((_, reject) => {
       if (request.signal) {
         abortListener = () => {
           this.#notify("session/cancel", { sessionId });
+          if (promptRequestId !== undefined) {
+            this.#pending.delete(promptRequestId);
+          }
           reject(new AgentQueryError("Agent query aborted."));
         };
         request.signal.addEventListener("abort", abortListener, { once: true });
@@ -279,10 +340,15 @@ export class AcpAgentClient implements AgentClient {
     });
 
     try {
-      const promptPromise = this.#request("session/prompt", {
-        sessionId,
-        prompt: [{ type: "text", text: fullPrompt }],
-      });
+      promptRequestId = this.#nextId;
+      const promptPromise = this.#request(
+        "session/prompt",
+        {
+          sessionId,
+          prompt: [{ type: "text", text: fullPrompt }],
+        },
+        timeoutMs,
+      );
 
       let promptResult: unknown;
       if (request.signal) {
@@ -323,10 +389,13 @@ export class AcpAgentClient implements AgentClient {
         ...(diagnostics ? { diagnostics } : {}),
       };
     } finally {
+      if (promptRequestId !== undefined && this.#pending.has(promptRequestId)) {
+        this.#pending.delete(promptRequestId);
+      }
       if (abortListener && request.signal) {
         request.signal.removeEventListener("abort", abortListener);
       }
-      this.#notificationHandler = undefined;
+      this.#removeSessionListener(sessionId, onUpdate);
     }
   }
 
@@ -362,8 +431,28 @@ export class AcpAgentClient implements AgentClient {
       waiter.reject(new AgentQueryError("AcpAgentClient has been disposed."));
     }
     this.#pending.clear();
+    this.#sessionListeners.clear();
     this.#activeSessionId = undefined;
     this.#initialized = false;
+  }
+
+  #addSessionListener(sessionId: string, listener: (update: unknown) => void): void {
+    let listeners = this.#sessionListeners.get(sessionId);
+    if (!listeners) {
+      listeners = new Set();
+      this.#sessionListeners.set(sessionId, listeners);
+    }
+    listeners.add(listener);
+  }
+
+  #removeSessionListener(sessionId: string, listener: (update: unknown) => void): void {
+    const listeners = this.#sessionListeners.get(sessionId);
+    if (listeners) {
+      listeners.delete(listener);
+      if (listeners.size === 0) {
+        this.#sessionListeners.delete(sessionId);
+      }
+    }
   }
 
   async #ensureConnection(): Promise<void> {
@@ -419,7 +508,6 @@ export class AcpAgentClient implements AgentClient {
         );
       }
 
-      this.#child = child;
       const stderrCapture = { text: "" };
       child.stderr?.on("data", (chunk: Buffer) => {
         stderrCapture.text += chunk.toString("utf8");
@@ -517,19 +605,46 @@ export class AcpAgentClient implements AgentClient {
     }
   }
 
-  async #request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  async #request(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs?: number,
+  ): Promise<unknown> {
     if (!this.#bridge) {
       throw new AgentQueryError("ACP transport is not connected.");
     }
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        timer = setTimeout(() => {
+          this.#pending.delete(id);
+          reject(new AgentQueryError(`ACP request '${method}' timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
+      }
+
+      this.#pending.set(id, {
+        resolve: (val) => {
+          if (timer) clearTimeout(timer);
+          resolve(val);
+        },
+        reject: (err) => {
+          if (timer) clearTimeout(timer);
+          reject(err);
+        },
+      });
+
       try {
         const result = this.#bridge!.write({ jsonrpc: "2.0", id, method, params });
         if (result instanceof Promise) {
-          result.catch(reject);
+          result.catch((err) => {
+            if (timer) clearTimeout(timer);
+            this.#pending.delete(id);
+            reject(err);
+          });
         }
       } catch (error) {
+        if (timer) clearTimeout(timer);
         this.#pending.delete(id);
         reject(error);
       }
@@ -563,8 +678,22 @@ export class AcpAgentClient implements AgentClient {
       }
     }
 
-    if (typeof msg.method === "string") {
-      this.#notificationHandler?.(msg.method, msg.params);
+    if (msg.method === "session/update" && isRecord(msg.params)) {
+      const sessionId = typeof msg.params.sessionId === "string" ? msg.params.sessionId : undefined;
+      if (sessionId) {
+        const listeners = this.#sessionListeners.get(sessionId);
+        if (listeners) {
+          for (const listener of listeners) {
+            listener(msg.params.update);
+          }
+        }
+      } else {
+        for (const listeners of this.#sessionListeners.values()) {
+          for (const listener of listeners) {
+            listener(msg.params.update);
+          }
+        }
+      }
     }
   }
 

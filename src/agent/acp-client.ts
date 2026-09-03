@@ -50,8 +50,10 @@ export function detectCursorExecutable(
     environment.Path ??
     Object.entries(environment).find(([k]) => k.toUpperCase() === "PATH")?.[1] ??
     "";
+  const isWindowsPath = /^[A-Za-z]:[\\/]/.test(searchPath) || searchPath.includes(";");
+  const pathDelimiter = isWindowsPath || platform === "win32" ? ";" : ":";
   const pathEntries = searchPath
-    .split(delimiter)
+    .split(pathDelimiter)
     .map((entry) => entry.trim().replace(/^"(.*)"$/, "$1"))
     .filter((entry) => entry.length > 0);
 
@@ -62,6 +64,7 @@ export function detectCursorExecutable(
       candidates.push(
         join(dir, "agent.cmd"),
         join(dir, "agent.ps1"),
+        join(dir, "agent.exe"),
         join(dir, "cursor.cmd"),
         join(dir, "cursor.exe"),
       );

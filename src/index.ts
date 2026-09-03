@@ -75,6 +75,19 @@ export {
 } from "./agent/codex-client.js";
 export type { CodexAgentClientOptions, CodexReasoningEffort } from "./agent/codex-client.js";
 
+export { listAcpModels } from "./agent/acp-catalog.js";
+export type { ListAcpModelsOptions } from "./agent/acp-catalog.js";
+
+export {
+  AcpAgentClient,
+  DEFAULT_ACP_TIMEOUT_MS,
+  detectCursorExecutable,
+} from "./agent/acp-client.js";
+export type {
+  AcpAgentClientOptions,
+  AcpTransportConfig,
+} from "./agent/acp-client.js";
+
 export { LlmAgentClient } from "./agent/llm-client.js";
 export type { LlmAgentClientOptions } from "./agent/llm-client.js";
 

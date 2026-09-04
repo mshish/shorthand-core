@@ -142,13 +142,9 @@ function parseAcpModel(value: unknown, index: number): AgentModel {
  * Pure mapping from ACP initialize and session/new results to AgentCatalog.
  */
 export function toAcpCatalog(initResult: unknown, sessionResult: unknown): AgentCatalog {
-  let authActive = true;
   let accountName: string | undefined;
 
   if (isRecord(initResult)) {
-    if (Array.isArray(initResult.authMethods)) {
-      authActive = initResult.authMethods.length === 0;
-    }
     if (
       isRecord(initResult.agentInfo) &&
       typeof initResult.agentInfo.name === "string" &&
@@ -170,8 +166,8 @@ export function toAcpCatalog(initResult: unknown, sessionResult: unknown): Agent
 
   return {
     models: mappedModels,
-    signedIn: authActive,
-    ...(authActive ? { account: accountName ?? "Cursor CLI" } : {}),
+    signedIn: true,
+    account: accountName ?? "Cursor CLI",
   };
 }
 
@@ -333,7 +329,7 @@ export async function listAcpModels(options: ListAcpModelsOptions = {}): Promise
   if (executable === undefined || executable.length === 0) {
     throw new AgentCatalogError(
       "executable-not-found",
-      "Could not locate an ACP or Cursor executable.",
+      "Could not locate Cursor CLI. Install the CLI from https://cursor.com/cli or provide an executable path.",
     );
   }
 

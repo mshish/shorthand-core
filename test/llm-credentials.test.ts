@@ -144,4 +144,36 @@ describe("readLlmCredentials", () => {
     const path = await writeJson(await scratchPath(), { ...VALID, temperature: 0.2, future_field: 7 });
     expect(await readLlmCredentials(path)).toEqual({ ok: true, value: VALID });
   });
+
+  test("ollama round-trips with model only (no base_url and no api_key needed)", async () => {
+    const path = await writeJson(await scratchPath(), {
+      provider: "ollama",
+      model: "llama3.2",
+    });
+    expect(await readLlmCredentials(path)).toEqual({
+      ok: true,
+      value: {
+        provider: "ollama",
+        model: "llama3.2",
+      },
+    });
+  });
+
+  test("ollama round-trips with optional base_url and api_key", async () => {
+    const path = await writeJson(await scratchPath(), {
+      provider: "ollama",
+      model: "llama3.2",
+      base_url: "http://192.168.1.50:11434",
+      api_key: "optional-token",
+    });
+    expect(await readLlmCredentials(path)).toEqual({
+      ok: true,
+      value: {
+        provider: "ollama",
+        model: "llama3.2",
+        base_url: "http://192.168.1.50:11434",
+        api_key: "optional-token",
+      },
+    });
+  });
 });

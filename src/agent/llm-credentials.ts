@@ -24,7 +24,7 @@ import { shorthandConfigDirectory } from "../config.js";
  * `base_url` is required only for `openai-compatible`: that provider id names no fixed
  * endpoint of its own, so without a `base_url` there is nowhere to send the request.
  */
-export type LlmProviderId = "openai" | "anthropic" | "openai-compatible";
+export type LlmProviderId = "openai" | "anthropic" | "ollama" | "openai-compatible";
 
 export type LlmCredentials = Readonly<{
   provider: LlmProviderId;
@@ -41,7 +41,7 @@ export function llmCredentialsPath(environment: NodeJS.ProcessEnv = process.env)
   return join(shorthandConfigDirectory(environment), "llm-credentials.json");
 }
 
-const PROVIDER_IDS = ["openai", "anthropic", "openai-compatible"] as const;
+const PROVIDER_IDS = ["openai", "anthropic", "ollama", "openai-compatible"] as const;
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -82,7 +82,7 @@ export async function readLlmCredentials(path = llmCredentialsPath()): Promise<L
 
   const record = parsed as Record<string, unknown>;
   if (!isLlmProviderId(record.provider)) {
-    return { ok: false, message: `LLM credentials at ${path} have provider ${JSON.stringify(record.provider)}; expected one of "openai", "anthropic", "openai-compatible".` };
+    return { ok: false, message: `LLM credentials at ${path} have provider ${JSON.stringify(record.provider)}; expected one of "openai", "anthropic", "ollama", "openai-compatible".` };
   }
   const provider = record.provider;
 

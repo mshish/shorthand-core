@@ -173,6 +173,11 @@ const OPENAI_COMPATIBLE_KEYLESS: LlmCredentialsFixture = {
   base_url: "http://127.0.0.1:11434/v1",
 };
 
+const OLLAMA: LlmCredentialsFixture = {
+  provider: "ollama",
+  model: "llama3.2",
+};
+
 /**
  * Canonical credentials paired with their exact expected bytes.
  *
@@ -203,6 +208,7 @@ export const LLM_CREDENTIALS_FIXTURES: Readonly<{
   anthropic: LlmCredentialsGoldenFixture;
   openaiCompatible: LlmCredentialsGoldenFixture;
   openaiCompatibleKeyless: LlmCredentialsGoldenFixture;
+  ollama: LlmCredentialsGoldenFixture;
 }> = Object.freeze({
   openai: Object.freeze({
     credentials: OPENAI,
@@ -255,6 +261,16 @@ export const LLM_CREDENTIALS_FIXTURES: Readonly<{
       '  "provider": "openai-compatible",',
       '  "model": "llama3.1",',
       '  "base_url": "http://127.0.0.1:11434/v1"',
+      "}",
+      "",
+    ].join("\n"),
+  }),
+  ollama: Object.freeze({
+    credentials: OLLAMA,
+    bytes: [
+      "{",
+      '  "provider": "ollama",',
+      '  "model": "llama3.2"',
       "}",
       "",
     ].join("\n"),

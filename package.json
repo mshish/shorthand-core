@@ -18,7 +18,7 @@
     "shorthand-notes": "./dist/shorthand-notes.mjs"
   },
   "scripts": {
-    "build": "esbuild bin/shorthand-notes.ts --bundle --platform=node --format=esm --target=node22 --external:@agentclientprotocol/sdk --external:@anthropic-ai/claude-agent-sdk --external:@openai/codex-sdk --external:@googleapis/docs --external:google-auth-library --external:ai --external:@ai-sdk/openai --external:@ai-sdk/anthropic --external:@ai-sdk/openai-compatible --outfile=dist/shorthand-notes.mjs",
+    "build": "esbuild bin/shorthand-notes.ts --bundle --platform=node --format=esm --target=node22 --external:@agentclientprotocol/sdk --external:@anthropic-ai/claude-agent-sdk --external:@openai/codex-sdk --external:@googleapis/docs --external:google-auth-library --external:ai --external:@ai-sdk/openai --external:@ai-sdk/anthropic --external:@ai-sdk/openai-compatible --external:ai-sdk-ollama --outfile=dist/shorthand-notes.mjs",
     "capture": "bun bin/shorthand-notes.ts capture",
     "test": "bun test",
     "test:e2e": "node test/e2e-smoke.mjs",
@@ -33,6 +33,7 @@
     "@googleapis/docs": "^10.0.0",
     "@openai/codex-sdk": "^0.149.1",
     "ai": "^7.0.74",
+    "ai-sdk-ollama": "^4.2.0",
     "google-auth-library": "10.5.0",
     "marked": "^18.0.10",
     "xstate": "5.32.5",

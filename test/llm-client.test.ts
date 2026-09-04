@@ -73,6 +73,7 @@ function fakeProviderFactory(factory: string) {
 mock.module("@ai-sdk/openai", () => ({ createOpenAI: fakeProviderFactory("openai") }));
 mock.module("@ai-sdk/anthropic", () => ({ createAnthropic: fakeProviderFactory("anthropic") }));
 mock.module("@ai-sdk/openai-compatible", () => ({ createOpenAICompatible: fakeProviderFactory("openai-compatible") }));
+mock.module("ai-sdk-ollama", () => ({ createOllama: fakeProviderFactory("ollama") }));
 
 const { LlmAgentClient } = await import("../src/agent/llm-client.js");
 
@@ -323,6 +324,32 @@ describe("LlmAgentClient provider construction", () => {
     expect(() => new LlmAgentClient({
       credentials: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:11434/v1" },
     })).not.toThrow();
+  });
+
+  test("builds an ollama provider defaulting to http://127.0.0.1:11434 with no api key", () => {
+    const injected = (async () => new Response()) as unknown as typeof globalThis.fetch;
+    new LlmAgentClient({
+      credentials: { provider: "ollama", model: "llama3.2" },
+      fetch: injected,
+    });
+    expect(providerCalls[0]!.factory).toBe("ollama");
+    expect(providerCalls[0]!.options).toEqual({
+      baseURL: "http://127.0.0.1:11434",
+      fetch: injected,
+    });
+    expect(providerCalls[0]!.modelIds).toEqual(["llama3.2"]);
+  });
+
+  test("builds an ollama provider with custom base_url and api_key when provided", () => {
+    new LlmAgentClient({
+      credentials: { provider: "ollama", model: "deepseek-r1:8b", base_url: "http://192.168.1.100:11434", api_key: "remote-token" },
+    });
+    expect(providerCalls[0]!.factory).toBe("ollama");
+    expect(providerCalls[0]!.options).toEqual({
+      baseURL: "http://192.168.1.100:11434",
+      apiKey: "remote-token",
+    });
+    expect(providerCalls[0]!.modelIds).toEqual(["deepseek-r1:8b"]);
   });
 
   test("refuses an openai-compatible profile with no base url rather than posting to undefined", () => {

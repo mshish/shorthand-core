@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createOllama } from "ai-sdk-ollama";
 import { NoObjectGeneratedError, NoOutputGeneratedError, Output, generateText, jsonSchema } from "ai";
 import type { CallWarning, LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
@@ -276,6 +277,14 @@ function buildModel(
         // section object, and failing its way is clearer than degrading into that ladder.
         supportsStructuredOutputs: true,
         // No key at all is legitimate here: a local Ollama endpoint authenticates nothing.
+        ...(credentials.api_key === undefined ? {} : { apiKey: credentials.api_key }),
+        ...(fetch === undefined ? {} : { fetch }),
+      })(credentials.model);
+    }
+    case "ollama": {
+      const endpoint = baseUrl ?? "http://127.0.0.1:11434";
+      return createOllama({
+        baseURL: endpoint,
         ...(credentials.api_key === undefined ? {} : { apiKey: credentials.api_key }),
         ...(fetch === undefined ? {} : { fetch }),
       })(credentials.model);

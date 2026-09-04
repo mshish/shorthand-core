@@ -156,6 +156,24 @@ describe("toAcpCatalog", () => {
     });
   });
 
+  it("marks signedIn as true even when initResult advertises authMethods if models are returned", () => {
+    const initResult = {
+      protocolVersion: 1,
+      authMethods: [{ id: "cursor_login", name: "Log in with Cursor" }],
+      agentInfo: { name: "Cursor CLI", version: "0.20.0" },
+    };
+    const sessionResult = {
+      sessionId: "s_auth_ad",
+      models: [
+        { modelId: "claude-3-7-sonnet", label: "Claude 3.7 Sonnet" },
+      ],
+    };
+
+    const catalog = toAcpCatalog(initResult, sessionResult);
+    expect(catalog.signedIn).toBe(true);
+    expect(catalog.models).toHaveLength(1);
+  });
+
   it("maps models.availableModels shape into AgentCatalog", () => {
     const initResult = { protocolVersion: 1 };
     const sessionResult = {
@@ -215,12 +233,13 @@ describe("toAcpCatalog", () => {
     expect(catalog.models[1]?.id).toBe("gpt-4o");
   });
 
-  it("marks signedIn: false and omits account when authMethods is non-empty", () => {
+  it("marks signedIn: true when session/new returns models even if authMethods is non-empty", () => {
     const initResult = {
       protocolVersion: 1,
       authMethods: [
         { id: "cursor_login", name: "Cursor Account", description: "Log in with Cursor" },
       ],
+      agentInfo: { name: "Cursor Account" },
     };
     const sessionResult = {
       sessionId: "s5",
@@ -228,8 +247,8 @@ describe("toAcpCatalog", () => {
     };
 
     const catalog = toAcpCatalog(initResult, sessionResult);
-    expect(catalog.signedIn).toBe(false);
-    expect(catalog.account).toBeUndefined();
+    expect(catalog.signedIn).toBe(true);
+    expect(catalog.account).toBe("Cursor Account");
   });
 
   it("marks signedIn: true when authMethods is empty or missing", () => {

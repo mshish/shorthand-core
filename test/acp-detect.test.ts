@@ -127,7 +127,21 @@ describe("detectCursorExecutable", () => {
       expect(detectCursorExecutable(undefined, env, "win32")).toBe(resolve(join(binDir, "cursor.exe")));
     });
 
-    it("respects PATH order across directories", () => {
+    it("respects PATH order across directories for same binary name", () => {
+      const dir1 = createTempDir();
+      const dir2 = createTempDir();
+      createFile(dir1, "agent.cmd");
+      createFile(dir2, "agent.cmd");
+      const emptyDir = createTempDir();
+      const env = {
+        PATH: `${dir1};${dir2}`,
+        LOCALAPPDATA: emptyDir,
+        USERPROFILE: emptyDir,
+      };
+      expect(detectCursorExecutable(undefined, env, "win32")).toBe(resolve(join(dir1, "agent.cmd")));
+    });
+
+    it("prefers agent executables over cursor editor wrapper across PATH directories", () => {
       const dir1 = createTempDir();
       const dir2 = createTempDir();
       createFile(dir1, "cursor.cmd");
@@ -138,7 +152,7 @@ describe("detectCursorExecutable", () => {
         LOCALAPPDATA: emptyDir,
         USERPROFILE: emptyDir,
       };
-      expect(detectCursorExecutable(undefined, env, "win32")).toBe(resolve(join(dir1, "cursor.cmd")));
+      expect(detectCursorExecutable(undefined, env, "win32")).toBe(resolve(join(dir2, "agent.cmd")));
     });
 
     it("respects candidate preference within a single directory (agent.cmd before cursor.cmd)", () => {

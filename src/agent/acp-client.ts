@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -60,20 +60,22 @@ export function detectCursorExecutable(
   const candidates: string[] = [];
 
   if (platform === "win32") {
+    const localAppData = environment.LOCALAPPDATA ?? join(environment.USERPROFILE ?? homedir(), "AppData", "Local");
     for (const dir of pathEntries) {
       candidates.push(
         join(dir, "agent.cmd"),
         join(dir, "agent.ps1"),
         join(dir, "agent.exe"),
+      );
+    }
+    candidates.push(join(localAppData, "cursor-agent", "agent.ps1"));
+    for (const dir of pathEntries) {
+      candidates.push(
         join(dir, "cursor.cmd"),
         join(dir, "cursor.exe"),
       );
     }
-    const localAppData = environment.LOCALAPPDATA ?? join(environment.USERPROFILE ?? homedir(), "AppData", "Local");
-    candidates.push(
-      join(localAppData, "Programs", "cursor", "resources", "app", "bin", "cursor.cmd"),
-      join(localAppData, "cursor-agent", "agent.ps1"),
-    );
+    candidates.push(join(localAppData, "Programs", "cursor", "resources", "app", "bin", "cursor.cmd"));
   } else {
     for (const dir of pathEntries) {
       candidates.push(join(dir, "agent"), join(dir, "cursor"));
@@ -552,9 +554,18 @@ export class AcpAgentClient implements AgentClient {
           }
         },
         close: () => {
+          try {
+            child.stdin?.end();
+          } catch {
+            // swallowed
+          }
           if (child.exitCode === null && child.signalCode === null) {
             try {
-              child.kill();
+              if (process.platform === "win32" && child.pid) {
+                spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+              } else {
+                child.kill();
+              }
             } catch {
               // swallowed
             }

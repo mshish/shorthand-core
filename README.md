@@ -45,7 +45,7 @@ The build creates `dist/shorthand-notes.mjs`. The tests use local fixtures and d
 
 ## Headless CLI
 
-Shorthand must be running with **Follow live transcript output** enabled before capture begins.
+Start the Shorthand desktop app before capture begins. **Follow live transcript output** is enabled by default for Meetings and Assisted notes.
 
 Create a meeting note:
 

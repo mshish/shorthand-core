@@ -6,7 +6,7 @@ import {
   queryForSections,
   type AgentQueryRequest,
 } from "../src/agent/contract.js";
-import type { LlmCredentials } from "../src/agent/llm-credentials.js";
+import type { LlmProfile } from "../src/agent/llm-credentials.js";
 
 type CallOptions = Record<string, unknown>;
 type ModelMessageLike = Readonly<{ role: string; content: unknown; providerOptions?: unknown }>;
@@ -68,18 +68,22 @@ function fakeProviderFactory(factory: string) {
   };
 }
 
-// Provider selection, api-key/base-url propagation and the injected fetch all happen in the
-// factories rather than in `ai`, so they are mocked separately or none of that is observable.
+// Provider selection, the placeholder key and the injected fetch all happen in the factories
+// rather than in `ai`, so they are mocked separately or none of that is observable.
 mock.module("@ai-sdk/openai", () => ({ createOpenAI: fakeProviderFactory("openai") }));
 mock.module("@ai-sdk/anthropic", () => ({ createAnthropic: fakeProviderFactory("anthropic") }));
 mock.module("@ai-sdk/openai-compatible", () => ({ createOpenAICompatible: fakeProviderFactory("openai-compatible") }));
 mock.module("ai-sdk-ollama", () => ({ createOllama: fakeProviderFactory("ollama") }));
 
-const { LlmAgentClient } = await import("../src/agent/llm-client.js");
+const { APP_MANAGED_API_KEY, LlmAgentClient, llmEndpointOrigin } = await import("../src/agent/llm-client.js");
 
 const SYSTEM_PROMPT = `${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${DEFAULT_EDITORIAL_GUIDANCE}`;
 const CACHE_HINT = { anthropic: { cacheControl: { type: "ephemeral" } } };
-const API_KEY = "sk-planted-secret-key";
+/**
+ * Stands in for `createAppFetch`'s result: every request this client makes goes through the
+ * Shorthand app, and the client has no other way to reach a provider.
+ */
+const FETCH = (async () => new Response()) as unknown as typeof globalThis.fetch;
 
 const warnLog: string[] = [];
 const realWarn = console.warn;
@@ -96,11 +100,10 @@ beforeEach(() => {
 
 afterEach(() => { console.warn = realWarn; });
 
-function credentials(overrides: Partial<LlmCredentials> = {}): LlmCredentials {
+function profile(overrides: Partial<LlmProfile> = {}): LlmProfile {
   return {
     provider: overrides.provider ?? "openai",
     model: overrides.model ?? "gpt-4o-mini",
-    api_key: overrides.api_key ?? API_KEY,
     ...(overrides.base_url === undefined ? {} : { base_url: overrides.base_url }),
   };
 }
@@ -190,7 +193,7 @@ describe("LlmAgentClient system prompt forwarding", () => {
   test.each(SYSTEM_PROMPT_CASES)(
     "sends the system prompt verbatim as the leading message: $label",
     async ({ systemPrompt }) => {
-      const client = new LlmAgentClient({ credentials: credentials() });
+      const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
       await client.query(agentRequest({ systemPrompt }));
       expect(instructionsOf().role).toBe("system");
       expect(instructionsOf().content).toBe(systemPrompt);
@@ -202,7 +205,7 @@ describe("LlmAgentClient system prompt forwarding", () => {
   );
 
   test("marks the system message for Anthropic ephemeral caching", async () => {
-    const client = new LlmAgentClient({ credentials: credentials({ provider: "anthropic", model: "claude-sonnet-4-5" }) });
+    const client = new LlmAgentClient({ profile: profile({ provider: "anthropic", model: "claude-sonnet-4-5" }), fetch: FETCH });
     await client.query(agentRequest());
     expect(instructionsOf().providerOptions).toEqual(CACHE_HINT);
   });
@@ -211,7 +214,7 @@ describe("LlmAgentClient system prompt forwarding", () => {
 describe("LlmAgentClient request shape", () => {
   test("hands the request's JSON Schema to Output.object through jsonSchema", async () => {
     const outputSchema = buildSectionOutputSchema();
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ outputSchema }));
     expect(schemasSeen).toEqual([outputSchema]);
     // The schema object Output.object received carries our exact JSON Schema, by identity.
@@ -219,7 +222,7 @@ describe("LlmAgentClient request shape", () => {
   });
 
   test("sends the prompt as the trailing user message", async () => {
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ prompt: "Sections, please." }));
     expect(messagesOf()).toEqual([{ role: "user", content: "Sections, please." }]);
     expect(instructionsOf()).toEqual({ role: "system", content: SYSTEM_PROMPT, providerOptions: CACHE_HINT });
@@ -229,7 +232,7 @@ describe("LlmAgentClient request shape", () => {
     // D7: the providers derive maxOutputTokens from the model, and a second ceiling here
     // would drift from capabilities we do not control. maxTurns bounds a tool loop that
     // does not exist on this backend. Both absences are asserted so neither is "fixed".
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ maxTurns: 9 }));
     expect(calls[0]).not.toHaveProperty("maxOutputTokens");
     expect(calls[0]).not.toHaveProperty("maxTurns");
@@ -237,7 +240,7 @@ describe("LlmAgentClient request shape", () => {
   });
 
   test("ignores tools and cwd rather than promising them", async () => {
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ tools: ["Read", "Glob", "Grep"], cwd: "C:\\vault" }));
     for (const key of ["tools", "toolChoice", "activeTools", "prepareStep", "cwd"]) {
       expect(calls[0]).not.toHaveProperty(key);
@@ -245,60 +248,76 @@ describe("LlmAgentClient request shape", () => {
   });
 
   test("reports that it cannot use vault tools", () => {
-    expect(new LlmAgentClient({ credentials: credentials() }).supportsVaultTools).toBe(false);
+    expect(new LlmAgentClient({ profile: profile(), fetch: FETCH }).supportsVaultTools).toBe(false);
   });
 
   test("forwards the request signal and a configured per-request timeout", async () => {
     const controller = new AbortController();
-    const client = new LlmAgentClient({ credentials: credentials(), timeoutMs: 30_000 });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH, timeoutMs: 30_000 });
     await client.query(agentRequest({ signal: controller.signal }));
     expect(calls[0]!.abortSignal).toBe(controller.signal);
     expect(calls[0]!.timeout).toBe(30_000);
   });
 
   test("omits the timeout when none is configured", async () => {
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest());
     expect(calls[0]).not.toHaveProperty("timeout");
   });
 });
 
 describe("LlmAgentClient provider construction", () => {
-  test("builds an OpenAI provider with the key, the base url override and the injected fetch", () => {
+  test("builds an OpenAI provider with the placeholder key, the base url override and the app fetch", () => {
     const injected = (async () => new Response()) as unknown as typeof globalThis.fetch;
     new LlmAgentClient({
-      credentials: credentials({ provider: "openai", model: "gpt-4o", base_url: "https://gateway.example/v1" }),
+      profile: profile({ provider: "openai", model: "gpt-4o", base_url: "https://gateway.example/v1" }),
       fetch: injected,
     });
     expect(providerCalls).toHaveLength(1);
     expect(providerCalls[0]!.factory).toBe("openai");
-    expect(providerCalls[0]!.options).toEqual({ apiKey: API_KEY, baseURL: "https://gateway.example/v1", fetch: injected });
+    // The factory demands a key string and this process has none: the app strips whatever
+    // authorization header the SDK builds from this one and injects the real secret.
+    expect(providerCalls[0]!.options).toEqual({
+      apiKey: "managed-by-shorthand",
+      baseURL: "https://gateway.example/v1",
+      fetch: injected,
+    });
     expect(providerCalls[0]!.modelIds).toEqual(["gpt-4o"]);
   });
 
+  test("exports the placeholder key it hands the factories", () => {
+    expect(APP_MANAGED_API_KEY).toBe("managed-by-shorthand");
+  });
+
   test("omits baseURL for OpenAI when the profile has none", () => {
-    new LlmAgentClient({ credentials: credentials({ provider: "openai" }) });
+    new LlmAgentClient({ profile: profile({ provider: "openai" }), fetch: FETCH });
     expect(providerCalls[0]!.options).not.toHaveProperty("baseURL");
   });
 
   test("honours base_url for Anthropic too, not only the compatible provider", () => {
     const injected = (async () => new Response()) as unknown as typeof globalThis.fetch;
     new LlmAgentClient({
-      credentials: credentials({ provider: "anthropic", model: "claude-sonnet-4-5", base_url: "https://proxy.example" }),
+      profile: profile({ provider: "anthropic", model: "claude-sonnet-4-5", base_url: "https://proxy.example" }),
       fetch: injected,
     });
     expect(providerCalls[0]!.factory).toBe("anthropic");
-    expect(providerCalls[0]!.options).toEqual({ apiKey: API_KEY, baseURL: "https://proxy.example", fetch: injected });
+    expect(providerCalls[0]!.options).toEqual({
+      apiKey: "managed-by-shorthand",
+      baseURL: "https://proxy.example",
+      fetch: injected,
+    });
     expect(providerCalls[0]!.modelIds).toEqual(["claude-sonnet-4-5"]);
   });
 
   test("builds an openai-compatible provider with its required base url", () => {
     const injected = (async () => new Response()) as unknown as typeof globalThis.fetch;
     new LlmAgentClient({
-      credentials: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:11434/v1" },
+      profile: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:11434/v1" },
       fetch: injected,
     });
     expect(providerCalls[0]!.factory).toBe("openai-compatible");
+    // No apiKey at all: this provider sends one only when given one, and the app supplies the
+    // header when the slot has a secret. A local endpoint authenticates nothing.
     expect(providerCalls[0]!.options).toEqual({
       name: "openai-compatible",
       baseURL: "http://127.0.0.1:11434/v1",
@@ -315,23 +334,15 @@ describe("LlmAgentClient provider construction", () => {
     // against a local endpoint then fails to parse and exhausts the retry ladder. Deleting the
     // flag would leave the assertion above passing, so it needs a test that names the reason.
     new LlmAgentClient({
-      credentials: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:1234/v1" },
+      profile: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:1234/v1" },
+      fetch: FETCH,
     });
     expect(providerCalls[0]!.options).toMatchObject({ supportsStructuredOutputs: true });
   });
 
-  test("a keyless openai-compatible endpoint is allowed, because a local Ollama needs no key", () => {
-    expect(() => new LlmAgentClient({
-      credentials: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:11434/v1" },
-    })).not.toThrow();
-  });
-
-  test("builds an ollama provider defaulting to http://127.0.0.1:11434 with no api key", () => {
+  test("builds an ollama provider defaulting to http://127.0.0.1:11434", () => {
     const injected = (async () => new Response()) as unknown as typeof globalThis.fetch;
-    new LlmAgentClient({
-      credentials: { provider: "ollama", model: "llama3.2" },
-      fetch: injected,
-    });
+    new LlmAgentClient({ profile: { provider: "ollama", model: "llama3.2" }, fetch: injected });
     expect(providerCalls[0]!.factory).toBe("ollama");
     expect(providerCalls[0]!.options).toEqual({
       baseURL: "http://127.0.0.1:11434",
@@ -340,60 +351,106 @@ describe("LlmAgentClient provider construction", () => {
     expect(providerCalls[0]!.modelIds).toEqual(["llama3.2"]);
   });
 
-  test("builds an ollama provider with custom base_url and api_key when provided", () => {
+  test("builds an ollama provider with a custom base_url when one is given", () => {
     new LlmAgentClient({
-      credentials: { provider: "ollama", model: "deepseek-r1:8b", base_url: "http://192.168.1.100:11434", api_key: "remote-token" },
+      profile: { provider: "ollama", model: "deepseek-r1:8b", base_url: "http://192.168.1.100:11434" },
+      fetch: FETCH,
     });
     expect(providerCalls[0]!.factory).toBe("ollama");
     expect(providerCalls[0]!.options).toEqual({
       baseURL: "http://192.168.1.100:11434",
-      apiKey: "remote-token",
+      fetch: FETCH,
     });
     expect(providerCalls[0]!.modelIds).toEqual(["deepseek-r1:8b"]);
   });
 
+  test("every provider is built on the injected fetch, since nothing else can reach the network", () => {
+    // The app performs the request and holds the key. A factory built without this fetch
+    // would call the provider directly from this process, unauthenticated.
+    const cases: readonly LlmProfile[] = [
+      { provider: "openai", model: "gpt-4o" },
+      { provider: "anthropic", model: "claude-sonnet-4-5" },
+      { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:11434/v1" },
+      { provider: "ollama", model: "llama3.2" },
+    ];
+    for (const each of cases) new LlmAgentClient({ profile: each, fetch: FETCH });
+    expect(providerCalls.map((call) => call.factory))
+      .toEqual(["openai", "anthropic", "openai-compatible", "ollama"]);
+    for (const call of providerCalls) expect(call.options.fetch).toBe(FETCH);
+  });
+
   test("refuses an openai-compatible profile with no base url rather than posting to undefined", () => {
-    // The reader rejects this profile, so reaching here means a caller hand-built the object.
-    expect(() => new LlmAgentClient({ credentials: { provider: "openai-compatible", model: "llama3.1" } }))
+    // A caller hand-built this profile: both the CLI and the plugin require a base url for
+    // this provider, because the endpoint is unknowable without one.
+    expect(() => new LlmAgentClient({ profile: { provider: "openai-compatible", model: "llama3.1" }, fetch: FETCH }))
       .toThrow(/base_url/);
   });
+});
 
-  test("rejects a keyless openai profile with a message that names the provider, the file and the fix", () => {
-    let thrown: unknown;
-    try {
-      new LlmAgentClient({
-        credentials: { provider: "openai", model: "gpt-4o" },
-        credentialsPath: "C:\\Users\\x\\.shorthand\\llm-credentials.json",
-      });
-    } catch (error) { thrown = error; }
-    const message = (thrown as Error).message;
-    expect(message).toContain("openai");
-    expect(message).toContain("C:\\Users\\x\\.shorthand\\llm-credentials.json");
-    expect(message).toMatch(/settings/i);
-    expect(message).toMatch(/switch to a provider/i);
+describe("llmEndpointOrigin", () => {
+  // This is what the caller puts in the credential slot, and the app refuses any request whose
+  // URL origin differs from it. A path or a trailing slash here is an origin_mismatch on every
+  // call, so each case pins the exact string.
+  const CASES: Readonly<{ label: string; profile: LlmProfile; origin: string }>[] = [
+    { label: "openai default", profile: { provider: "openai", model: "gpt-4o" }, origin: "https://api.openai.com" },
+    {
+      label: "openai with the api base url spelled out",
+      profile: { provider: "openai", model: "gpt-4o", base_url: "https://api.openai.com/v1" },
+      origin: "https://api.openai.com",
+    },
+    {
+      label: "openai behind a gateway on a port",
+      profile: { provider: "openai", model: "gpt-4o", base_url: "https://Gateway.Example:8443/openai/v1" },
+      origin: "https://gateway.example:8443",
+    },
+    {
+      label: "anthropic default",
+      profile: { provider: "anthropic", model: "claude-sonnet-4-5" },
+      origin: "https://api.anthropic.com",
+    },
+    {
+      label: "anthropic behind a proxy",
+      profile: { provider: "anthropic", model: "claude-sonnet-4-5", base_url: "https://proxy.example/anthropic" },
+      origin: "https://proxy.example",
+    },
+    { label: "ollama default", profile: { provider: "ollama", model: "llama3.2" }, origin: "http://127.0.0.1:11434" },
+    {
+      label: "ollama on another host",
+      profile: { provider: "ollama", model: "llama3.2", base_url: "http://192.168.1.100:11434" },
+      origin: "http://192.168.1.100:11434",
+    },
+    {
+      label: "openai-compatible from its base url",
+      profile: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:1234/v1" },
+      origin: "http://127.0.0.1:1234",
+    },
+  ];
+
+  test.each(CASES)("returns $origin for $label", ({ profile: each, origin }) => {
+    expect(llmEndpointOrigin(each)).toBe(origin);
   });
 
-  test("a whitespace-only key is not a key, so openai is rejected the same as a missing one", () => {
-    // The credentials reader's nonEmptyString does not trim, so "   " arrives as a present
-    // value. Treating it as a key would send an unauthenticated request AND drive
-    // replaceAll("   ", ...) across every message the client produces.
-    expect(() => new LlmAgentClient({
-      credentials: { provider: "openai", model: "gpt-4o", api_key: "   " },
-      credentialsPath: "P.json",
-    })).toThrow(/No API key for "openai" in P\.json/);
+  test("matches the ollama default the client actually builds", () => {
+    // Two constants naming the same endpoint is exactly the pair that drifts, and drift here
+    // is silent until the app rejects every call as an origin mismatch.
+    new LlmAgentClient({ profile: { provider: "ollama", model: "llama3.2" }, fetch: FETCH });
+    expect(providerCalls[0]!.options.baseURL).toBe(llmEndpointOrigin({ provider: "ollama", model: "llama3.2" }));
   });
 
-  test("rejects a keyless anthropic profile the same way", () => {
-    expect(() => new LlmAgentClient({
-      credentials: { provider: "anthropic", model: "claude-sonnet-4-5" },
-      credentialsPath: "/home/x/.shorthand/llm-credentials.json",
-    })).toThrow(/anthropic[\s\S]*\/home\/x\/\.shorthand\/llm-credentials\.json/);
+  test("refuses an openai-compatible profile with no base url, since it names no endpoint", () => {
+    expect(() => llmEndpointOrigin({ provider: "openai-compatible", model: "llama3.1" })).toThrow(/base_url/);
   });
 
-  test("names the default credentials path when no path was supplied", () => {
-    let thrown: unknown;
-    try { new LlmAgentClient({ credentials: { provider: "openai", model: "gpt-4o" } }); } catch (error) { thrown = error; }
-    expect((thrown as Error).message).toContain("llm-credentials.json");
+  test("refuses a base url that is not an absolute URL, naming the value", () => {
+    expect(() => llmEndpointOrigin({ provider: "openai", model: "gpt-4o", base_url: "api.openai.com/v1" }))
+      .toThrow(/api\.openai\.com\/v1/);
+  });
+
+  test("refuses a scheme with no origin of its own rather than returning the string \"null\"", () => {
+    // `new URL("file:///x").origin` is the literal "null", which would otherwise reach the app
+    // as a slot origin and fail there instead of here.
+    expect(() => llmEndpointOrigin({ provider: "openai-compatible", model: "m", base_url: "file:///models" }))
+      .toThrow(/origin/i);
   });
 });
 
@@ -403,13 +460,13 @@ describe("LlmAgentClient output handling", () => {
     // is the only judge. An empty array is invalid there and must still arrive unchanged.
     const produced = { sections: [] };
     respond = () => generatedResult(produced);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const response = await client.query(agentRequest());
     expect(response.structuredOutput).toBe(produced);
   });
 
   test("returns a stable non-empty session id across passes", async () => {
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const first = await client.query(agentRequest());
     const second = await client.query(agentRequest({ sessionId: first.sessionId }));
     expect(first.sessionId.length).toBeGreaterThan(0);
@@ -417,25 +474,25 @@ describe("LlmAgentClient output handling", () => {
   });
 
   test("two instances do not share a session id", async () => {
-    const a = await new LlmAgentClient({ credentials: credentials() }).query(agentRequest());
-    const b = await new LlmAgentClient({ credentials: credentials() }).query(agentRequest());
+    const a = await new LlmAgentClient({ profile: profile(), fetch: FETCH }).query(agentRequest());
+    const b = await new LlmAgentClient({ profile: profile(), fetch: FETCH }).query(agentRequest());
     expect(a.sessionId).not.toBe(b.sessionId);
   });
 
   test("rejects a session id that belongs to a different client, which would splice two meetings together", async () => {
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await expect(client.query(agentRequest({ sessionId: "some-other-capture" }))).rejects.toThrow(/session/i);
   });
 
   test("an empty session id is treated as absent rather than as a mismatch", async () => {
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await expect(client.query(agentRequest({ sessionId: "" }))).resolves.toBeDefined();
   });
 
   test("refuses to start on an already-aborted signal", async () => {
     const controller = new AbortController();
     controller.abort();
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await expect(client.query(agentRequest({ signal: controller.signal }))).rejects.toThrow(/abort/i);
     expect(calls).toHaveLength(0);
   });
@@ -444,7 +501,7 @@ describe("LlmAgentClient output handling", () => {
 describe("LlmAgentClient error conversion", () => {
   test("converts NoObjectGeneratedError into an absent output with diagnostics", async () => {
     respond = () => { throw noObjectGenerated("schema validation failed"); };
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const response = await client.query(agentRequest());
     expect(response.structuredOutput).toBeUndefined();
     expect(response.diagnostics?.join(" ")).toContain("schema validation failed");
@@ -455,7 +512,7 @@ describe("LlmAgentClient error conversion", () => {
     // finishReason !== "stop". Letting it escape would cost the corrective second attempt for
     // exactly the truncation case D7 chose not to guard with maxOutputTokens.
     respond = () => throwingResult(new NoOutputGeneratedError());
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const response = await client.query(agentRequest());
     expect(response.structuredOutput).toBeUndefined();
     expect(response.diagnostics?.length).toBeGreaterThan(0);
@@ -468,7 +525,7 @@ describe("LlmAgentClient error conversion", () => {
       if (attempt === 1) throw noObjectGenerated("sections was not an array");
       return generatedResult({ sections: [{ heading: "Summary", markdown: "Done" }] });
     };
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const result = await queryForSections(client, agentRequest(), []);
     expect(result.status).toBe("valid");
     expect(result.attempts).toBe(2);
@@ -480,7 +537,7 @@ describe("LlmAgentClient error conversion", () => {
 
   test("any other provider failure throws, naming the provider and the model", async () => {
     respond = () => { throw new Error("429 rate limit exceeded"); };
-    const client = new LlmAgentClient({ credentials: credentials({ provider: "openai", model: "gpt-4o" }) });
+    const client = new LlmAgentClient({ profile: profile({ provider: "openai", model: "gpt-4o" }), fetch: FETCH });
     let thrown: unknown;
     try { await client.query(agentRequest()); } catch (error) { thrown = error; }
     const message = (thrown as Error).message;
@@ -489,35 +546,22 @@ describe("LlmAgentClient error conversion", () => {
     expect(message).toContain("429 rate limit exceeded");
   });
 
-  test("scrubs the configured key out of a thrown provider error", async () => {
-    // Providers echo the Authorization header back in some 401 bodies, and this message ends
-    // up in an operator log and in the note's status line.
-    respond = () => { throw new Error(`401 Unauthorized: key ${API_KEY} is revoked`); };
-    const client = new LlmAgentClient({ credentials: credentials() });
+  test("reports a provider message verbatim, because this process holds no key to scrub", async () => {
+    // The client used to rewrite every message it produced, to hide the key it held. It holds
+    // none now — the app injects the secret — so a 401 body arrives intact, and an operator
+    // reading the note's status line sees what the provider actually said.
+    respond = () => { throw new Error("401 Unauthorized: the key for this request is revoked"); };
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     let thrown: unknown;
     try { await client.query(agentRequest()); } catch (error) { thrown = error; }
     const message = (thrown as Error).message;
-    expect(message).not.toContain(API_KEY);
-    expect(message).toContain("[REDACTED]");
+    expect(message).toContain("401 Unauthorized: the key for this request is revoked");
+    expect(message).not.toContain("[REDACTED]");
   });
 
-  test("scrubs the configured key out of the diagnostics path too", async () => {
-    respond = () => { throw noObjectGenerated(`upstream rejected key ${API_KEY} mid-stream`); };
-    const client = new LlmAgentClient({ credentials: credentials() });
-    const response = await client.query(agentRequest());
-    const diagnostics = response.diagnostics?.join(" ") ?? "";
-    expect(diagnostics).not.toContain(API_KEY);
-    expect(diagnostics).toContain("[REDACTED]");
-  });
-
-  test("a whitespace-only key does not garble diagnostics with [REDACTED]", async () => {
-    // openai-compatible is the provider that tolerates a keyless profile, so it is the one
-    // that can actually reach #redact holding "   ". Without a trim-aware guard, every run
-    // of three spaces in this message would be rewritten.
+  test("reports a diagnostic verbatim too", async () => {
     respond = () => { throw noObjectGenerated("model   returned   nothing   usable"); };
-    const client = new LlmAgentClient({
-      credentials: { provider: "openai-compatible", model: "m", base_url: "http://127.0.0.1:11434/v1", api_key: "   " },
-    });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const response = await client.query(agentRequest());
     expect(response.diagnostics?.join(" ")).toContain("model   returned   nothing   usable");
     expect(response.diagnostics?.join(" ")).not.toContain("[REDACTED]");
@@ -526,7 +570,7 @@ describe("LlmAgentClient error conversion", () => {
   test("an abort during the call surfaces as a thrown error, not as absent output", async () => {
     const controller = new AbortController();
     respond = () => { controller.abort(); throw new Error("This operation was aborted"); };
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await expect(client.query(agentRequest({ signal: controller.signal }))).rejects.toThrow();
   });
 });
@@ -536,14 +580,14 @@ describe("LlmAgentClient provider warnings", () => {
 
   test("surfaces provider warnings in diagnostics", async () => {
     respond = () => generatedResult({ sections: [] }, [warning]);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const response = await client.query(agentRequest());
     expect(response.diagnostics?.join(" ")).toContain("clamping max tokens to 4096");
   });
 
   test("also warns on the console, because diagnostics are inert on a successful pass", async () => {
     respond = () => generatedResult({ sections: [] }, [warning]);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest());
     expect(warnLog.join(" ")).toContain("clamping max tokens to 4096");
   });
@@ -551,7 +595,7 @@ describe("LlmAgentClient provider warnings", () => {
   test("repeats a given warning once per instance, not once per pass", async () => {
     // A four-hour capture makes dozens of passes; an undeduped warning would bury the log.
     respond = () => generatedResult({ sections: [] }, [warning]);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest());
     await client.query(agentRequest());
     await client.query(agentRequest());
@@ -561,7 +605,7 @@ describe("LlmAgentClient provider warnings", () => {
   test("a distinct warning still gets its own line", async () => {
     const other = { type: "unsupported" as const, feature: "toolChoice" };
     respond = () => generatedResult({ sections: [] }, [warning]);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest());
     respond = () => generatedResult({ sections: [] }, [warning, other]);
     await client.query(agentRequest());
@@ -569,12 +613,12 @@ describe("LlmAgentClient provider warnings", () => {
     expect(warnLog[1]).toContain("toolChoice");
   });
 
-  test("scrubs the key out of a warning before logging it", async () => {
-    respond = () => generatedResult({ sections: [] }, [{ type: "other" as const, message: `header carried ${API_KEY}` }]);
-    const client = new LlmAgentClient({ credentials: credentials() });
+  test("logs a warning verbatim, on both outlets", async () => {
+    respond = () => generatedResult({ sections: [] }, [{ type: "other" as const, message: "header x-foo was ignored" }]);
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const response = await client.query(agentRequest());
-    expect(warnLog.join(" ")).not.toContain(API_KEY);
-    expect(response.diagnostics?.join(" ")).not.toContain(API_KEY);
+    expect(warnLog.join(" ")).toContain("header x-foo was ignored");
+    expect(response.diagnostics?.join(" ")).toContain("header x-foo was ignored");
   });
 });
 
@@ -582,7 +626,7 @@ describe("LlmAgentClient history", () => {
   test("a second pass carries the first pass's user and assistant turns", async () => {
     const produced = { sections: [{ heading: "Summary", markdown: "Done" }] };
     respond = () => generatedResult(produced);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ prompt: "first" }));
     await client.query(agentRequest({ prompt: "second" }));
     const messages = messagesOf(1);
@@ -594,7 +638,7 @@ describe("LlmAgentClient history", () => {
 
   test("a pass whose output parsed to undefined appends nothing rather than a non-string turn", async () => {
     respond = () => generatedResult(undefined);
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ prompt: "first" }));
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "second" }));
@@ -603,7 +647,7 @@ describe("LlmAgentClient history", () => {
 
   test("a pass that produced no structured output leaves no half pair behind", async () => {
     respond = () => { throw noObjectGenerated("nope"); };
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ prompt: "first" }));
     respond = () => generatedResult({ sections: [] });
     await client.query(agentRequest({ prompt: "second" }));
@@ -619,7 +663,7 @@ describe("LlmAgentClient history commit rule", () => {
     const b = deferred<unknown>();
     const queue = [a.promise, b.promise];
     respond = () => queue.shift()!;
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
 
     const controller = new AbortController();
     const passA = client.query(agentRequest({ prompt: "A", signal: controller.signal }));
@@ -646,7 +690,7 @@ describe("LlmAgentClient history commit rule", () => {
     const b = deferred<unknown>();
     const queue = [a.promise, b.promise];
     respond = () => queue.shift()!;
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
 
     const passA = client.query(agentRequest({ prompt: "A" }));
     await tick();
@@ -669,7 +713,7 @@ describe("LlmAgentClient history commit rule", () => {
   test("an aborted pass loses even when no replacement ever ran, so the abort check is load-bearing", async () => {
     const a = deferred<unknown>();
     respond = () => a.promise;
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     const controller = new AbortController();
     const passA = client.query(agentRequest({ prompt: "A", signal: controller.signal }));
     await tick();
@@ -691,7 +735,7 @@ describe("LlmAgentClient history budget", () => {
     // eviction produces the roles asserted below.
     const answer = { sections: [{ heading: "H", markdown: "x".repeat(10) }] };
     respond = () => generatedResult(answer);
-    const client = new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: 1000 });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH, maxHistoryCharacters: 1000 });
     await client.query(agentRequest({ prompt: "p".repeat(800) }));
     await client.query(agentRequest({ prompt: "q".repeat(800) }));
     await client.query(agentRequest({ prompt: "final" }));
@@ -703,7 +747,7 @@ describe("LlmAgentClient history budget", () => {
 
   test("keeps a pair that fits, so the budget does not evict eagerly", async () => {
     respond = () => generatedResult({ sections: [{ heading: "H", markdown: "x".repeat(10) }] });
-    const client = new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: 1000 });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH, maxHistoryCharacters: 1000 });
     await client.query(agentRequest({ prompt: "p".repeat(800) }));
     await client.query(agentRequest({ prompt: "q".repeat(800) }));
     expect(messagesOf(1).map((message) => message.role)).toEqual(["user", "assistant", "user"]);
@@ -711,7 +755,7 @@ describe("LlmAgentClient history budget", () => {
 
   test("the system message and the current prompt are outside the budget and never evictable", async () => {
     // A budget that could evict the system message would silently drop the safety preamble.
-    const client = new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: 0 });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH, maxHistoryCharacters: 0 });
     await client.query(agentRequest({ prompt: "first" }));
     await client.query(agentRequest({ prompt: "second" }));
     const messages = messagesOf(1);
@@ -722,7 +766,7 @@ describe("LlmAgentClient history budget", () => {
   });
 
   test("a budget smaller than the system prompt still leaves a working call", async () => {
-    const client = new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: 10 });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH, maxHistoryCharacters: 10 });
     await client.query(agentRequest({ prompt: "first" }));
     const response = await client.query(agentRequest({ prompt: "second" }));
     expect(response.structuredOutput).toBeDefined();
@@ -737,7 +781,7 @@ describe("LlmAgentClient history budget", () => {
   ];
 
   test.each(BAD_BUDGETS)("rejects a $label history budget at construction, not at first use", ({ value }) => {
-    expect(() => new LlmAgentClient({ credentials: credentials(), maxHistoryCharacters: value }))
+    expect(() => new LlmAgentClient({ profile: profile(), fetch: FETCH, maxHistoryCharacters: value }))
       .toThrow(/maxHistoryCharacters/);
   });
 });
@@ -750,7 +794,7 @@ describe("LlmAgentClient against the real generateText", () => {
     // client's OWN recorded options against the real implementation with only the model
     // swapped, so "we passed a system prompt" becomes "the SDK accepted it and the provider
     // saw it".
-    const client = new LlmAgentClient({ credentials: credentials() });
+    const client = new LlmAgentClient({ profile: profile(), fetch: FETCH });
     await client.query(agentRequest({ prompt: "hi" }));
 
     const answer = { sections: [{ heading: "H", markdown: "m" }] };

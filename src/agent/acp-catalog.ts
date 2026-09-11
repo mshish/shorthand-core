@@ -10,6 +10,7 @@ import {
   type CatalogFailureReason,
 } from "./catalog.js";
 import { detectCursorExecutable } from "./acp-client.js";
+import { CORE_VERSION } from "../config.js";
 import { Utf8LineReader } from "../ndjson.js";
 
 export type ListAcpModelsOptions = Readonly<{
@@ -305,7 +306,7 @@ function runAcpHandshake(
     (async () => {
       const initResult = await request("initialize", {
         protocolVersion: 1,
-        clientInfo: { name: "shorthand-core", version: "0.20.0" },
+        clientInfo: { name: "shorthand-core", version: CORE_VERSION },
       });
       const sessionResult = await request("session/new", {
         cwd: scratchDir,

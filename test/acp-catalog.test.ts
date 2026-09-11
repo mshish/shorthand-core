@@ -9,6 +9,7 @@ import {
   toAcpCatalog,
   type ListAcpModelsOptions,
 } from "../src/agent/acp-catalog.js";
+import { CORE_VERSION } from "../src/config.js";
 import { Utf8LineReader } from "../src/ndjson.js";
 
 type MockChild = Omit<ChildProcess, "exitCode"> & {
@@ -353,7 +354,9 @@ describe("listAcpModels", () => {
     expect(initReq?.id).toBe(1);
     expect(initReq?.params).toEqual({
       protocolVersion: 1,
-      clientInfo: { name: "shorthand-core", version: "0.20.0" },
+      // Read from the constant, not repeated: a literal here is what let the shipped value
+      // sit at 0.20.0 while the package moved on.
+      clientInfo: { name: "shorthand-core", version: CORE_VERSION },
     });
 
     // Verify session/new request parameters

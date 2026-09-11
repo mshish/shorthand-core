@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { PROTOCOL_VERSION, type Stream } from "@agentclientprotocol/sdk";
-import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
+import { createWebSocketStream, type WebSocketConstructor } from "@agentclientprotocol/sdk/experimental/ws-client";
 import { createHttpStream } from "@agentclientprotocol/sdk/experimental/http-client";
 import {
   AgentQueryError,
@@ -11,6 +11,7 @@ import {
   type AgentQueryRequest,
   type AgentQueryResponse,
 } from "./contract.js";
+import { CORE_VERSION } from "../config.js";
 import { Utf8LineReader } from "../ndjson.js";
 
 export const DEFAULT_ACP_TIMEOUT_MS = 60_000;
@@ -100,10 +101,18 @@ export type AcpTransportConfig =
       args?: readonly string[];
       env?: NodeJS.ProcessEnv;
     }>
+  /**
+   * The caller supplies the transport, not a credential. Both default to the platform's,
+   * which reaches an agent that needs no authentication; the Shorthand app's shims
+   * (`createAppFetch`, `createAppWebSocketConstructor`) put the request through the app,
+   * which holds the agent's token and attaches it on its own side of the shim. Core never
+   * sees the secret, so there is nothing here for it to pass along.
+   */
   | Readonly<{
       type: "network";
       url: string;
-      authToken?: string;
+      fetch?: typeof globalThis.fetch;
+      WebSocket?: WebSocketConstructor;
     }>;
 
 export type AcpAgentClientOptions = Readonly<{
@@ -275,7 +284,7 @@ export class AcpAgentClient implements AgentClient {
         "initialize",
         {
           protocolVersion: PROTOCOL_VERSION,
-          clientInfo: { name: "shorthand-core", version: "0.20.0" },
+          clientInfo: { name: "shorthand-core", version: CORE_VERSION },
           clientCapabilities: {},
         },
         timeoutMs,
@@ -574,12 +583,12 @@ export class AcpAgentClient implements AgentClient {
       };
     } else {
       const url = transport.url;
-      const headers = transport.authToken ? { Authorization: `Bearer ${transport.authToken}` } : undefined;
       let stream: Stream;
       if (url.startsWith("ws://") || url.startsWith("wss://")) {
-        stream = createWebSocketStream(url, headers ? { headers } : undefined);
+        // Omitted rather than passed as undefined so the SDK's own default applies.
+        stream = createWebSocketStream(url, transport.WebSocket ? { WebSocket: transport.WebSocket } : undefined);
       } else {
-        stream = createHttpStream(url, headers ? { headers } : undefined);
+        stream = createHttpStream(url, transport.fetch ? { fetch: transport.fetch } : undefined);
       }
 
       let closed = false;

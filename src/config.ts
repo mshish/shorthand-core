@@ -78,6 +78,16 @@ export function requestSocketDiscoveryPath(environment: NodeJS.ProcessEnv = proc
   return join(shorthandConfigDirectory(environment), "request-socket.json");
 }
 
+/**
+ * This package's version, as reported to an ACP agent in `clientInfo`.
+ *
+ * Declared once because the two call sites that send it each carried their own literal and
+ * both were still claiming 0.20.0 two releases later. It is not read from `package.json`:
+ * `resolveJsonModule` is off, and enabling it to import the manifest into library code is a
+ * larger change than this needs. Bump it together with `package.json`.
+ */
+export const CORE_VERSION = "0.22.0";
+
 export const DEFAULT_CONFIG = Object.freeze({
   shorthandBinaryPath: "shorthand",
   followStreamArgs: ["--follow-stream", "json"] as readonly string[],

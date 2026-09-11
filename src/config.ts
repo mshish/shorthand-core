@@ -67,6 +67,17 @@ export function shorthandConfigDirectory(environment: NodeJS.ProcessEnv = proces
   return join(environment.XDG_CONFIG_HOME ?? join(home, ".config"), "shorthand");
 }
 
+/**
+ * The file the Shorthand app writes when it starts listening on its request socket, and
+ * removes on a clean stop. It lives beside the other Shorthand config files rather than
+ * in a runtime directory so both sides can find it with `shorthandConfigDirectory()`
+ * alone — there is no second, per-platform runtime-path convention to keep in sync
+ * across three repositories and two languages.
+ */
+export function requestSocketDiscoveryPath(environment: NodeJS.ProcessEnv = process.env): string {
+  return join(shorthandConfigDirectory(environment), "request-socket.json");
+}
+
 export const DEFAULT_CONFIG = Object.freeze({
   shorthandBinaryPath: "shorthand",
   followStreamArgs: ["--follow-stream", "json"] as readonly string[],

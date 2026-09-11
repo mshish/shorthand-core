@@ -78,6 +78,11 @@ export interface AppClientLike {
   readonly appVersion: string;
   readonly capabilities: readonly string[];
   request<T = unknown>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T>;
+  startRequest<T = unknown>(
+    method: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Readonly<{ id: string; result: Promise<T> }>;
   onEvent(listener: (event: AppEvent) => void): () => void;
   onClose(listener: (error?: Error) => void): () => void;
   close(): void;
@@ -230,16 +235,34 @@ export class ShorthandAppClient implements AppClientLike {
    *
    * `signal` aborts the caller's wait. For `http.fetch` it also sends `http.abort`, since
    * the app is otherwise left streaming a response body nobody is reading; no other method
-   * has anything to cancel.
+   * has anything to cancel. Aborting after the response has arrived is the caller's to
+   * handle — by then this request is settled and the signal is no longer watched.
    */
   request<T = unknown>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-    if (this.#closed) {
-      return Promise.reject(codedError("closed", "The connection to the Shorthand app is closed."));
-    }
-    if (signal?.aborted === true) return Promise.reject(abortError(signal));
+    return this.startRequest<T>(method, params, signal).result;
+  }
 
+  /**
+   * Sends one request and hands back its wire id alongside the pending result.
+   *
+   * `http.fetch` carries its response body in `http.body` events tagged with this id, and
+   * those events can arrive in the same socket read as the response line — the reader
+   * delivers both synchronously, before anything awaiting the result resumes. A caller
+   * that waited for the result to learn the id would have already missed the first chunk,
+   * so the id has to be available at send time.
+   */
+  startRequest<T = unknown>(
+    method: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Readonly<{ id: string; result: Promise<T> }> {
     const id = randomUUID();
-    return new Promise<T>((resolve, reject) => {
+    if (this.#closed) {
+      return { id, result: Promise.reject(codedError("closed", "The connection to the Shorthand app is closed.")) };
+    }
+    if (signal?.aborted === true) return { id, result: Promise.reject(abortError(signal)) };
+
+    const result = new Promise<T>((resolve, reject) => {
       const cleanups: Array<() => void> = [];
       if (signal !== undefined) {
         const onAbort = (): void => this.#abort(id, method, signal);
@@ -265,6 +288,7 @@ export class ShorthandAppClient implements AppClientLike {
       });
       this.#write({ id, method, params });
     });
+    return { id, result };
   }
 
   onEvent(listener: (event: AppEvent) => void): () => void {

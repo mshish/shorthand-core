@@ -24,6 +24,10 @@ export class FakeAppClient implements AppClientLike {
     return this.#eventListeners.size;
   }
 
+  get closeListenerCount(): number {
+    return this.#closeListeners.size;
+  }
+
   /** The ids of requests the fake has been told to send but has not answered. */
   get pendingIds(): readonly string[] {
     return [...this.#pending.keys()];

@@ -17,6 +17,14 @@ function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error("The request was aborted.");
 }
 
+/** `code: "closed"` is the code the client gives its own failures, so a caller can branch on one. */
+function connectionLost(error?: Error): Error {
+  if (error !== undefined) return error;
+  return Object.assign(new Error("The connection to the Shorthand app closed before the response body ended."), {
+    code: "closed",
+  });
+}
+
 /** Header values that are not strings are a malformed answer, not a header worth guessing at. */
 function responseHeaders(value: unknown): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -104,6 +112,14 @@ export function createAppFetch(client: AppClientLike, slot: AppCredentialSlot): 
         }
       }),
     );
+    // A body ends with an event, and a dead connection sends none: the client rejects
+    // pending requests when it shuts down, but a body already streaming has no request left
+    // to reject, and there is no timeout anywhere below this to rescue the reader.
+    cleanups.push(
+      client.onClose((error) => {
+        if (finish()) controller?.error(connectionLost(error));
+      }),
+    );
 
     const fail = (error: unknown): never => {
       if (finish()) controller?.error(error instanceof Error ? error : new Error(errorMessage(error)));
@@ -117,8 +133,9 @@ export function createAppFetch(client: AppClientLike, slot: AppCredentialSlot): 
 
     const status = ok.status;
     if (request.method === "HEAD" || NULL_BODY_STATUSES.has(status)) {
-      // No body events are coming, so the subscription ends with the `http.end` the app
-      // still sends; the stream itself is dropped unread.
+      // Nothing will read this stream and no chunk is coming, so the subscription ends here
+      // rather than waiting on an `http.end` the app is under no obligation to send.
+      finish();
       return new Response(null, { status, headers: responseHeaders(ok.headers) });
     }
 
@@ -133,6 +150,9 @@ export function createAppFetch(client: AppClientLike, slot: AppCredentialSlot): 
     // abort that matters — the one during a long streamed body — is this shim's to send.
     signal.addEventListener("abort", onAbort, { once: true });
     cleanups.push(() => signal.removeEventListener("abort", onAbort));
+    // An abort raised between the client settling the request and this continuation resuming
+    // is watched by neither side, and the listener above only fires on aborts still to come.
+    if (signal.aborted) onAbort();
 
     return new Response(bodyStream, { status, headers: responseHeaders(ok.headers) });
   };

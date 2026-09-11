@@ -174,6 +174,47 @@ describe("createAppFetch", () => {
     expect(client.eventListenerCount).toBe(0);
   });
 
+  test("an abort raised while the response is being handed back still reaches the app", async () => {
+    const client = new FakeAppClient();
+    const fetch = createAppFetch(client, SLOT);
+
+    const controller = new AbortController();
+    const pending = fetch(URL_UNDER_TEST, { signal: controller.signal });
+    await flush();
+    const id = client.lastSent("http.fetch")!.id;
+    // Both in one turn, so the abort lands after the client has settled the request and
+    // before the shim resumes: the window neither side is watching the signal.
+    client.respond(id, { status: 200, headers: {} });
+    controller.abort();
+
+    const response = await pending;
+    expect(client.lastSent("http.abort")?.params).toEqual({ request: id });
+    const error = await caught(response.text());
+    expect((error as Error).name).toBe("AbortError");
+    expect(client.eventListenerCount).toBe(0);
+  });
+
+  test("losing the connection to the app mid-body rejects the body read", async () => {
+    const client = new FakeAppClient();
+    const fetch = createAppFetch(client, SLOT);
+
+    const pending = fetch(URL_UNDER_TEST);
+    await flush();
+    const id = client.lastSent("http.fetch")!.id;
+    client.respond(id, { status: 200, headers: {} });
+    const response = await pending;
+    client.emit({ t: "http.body", request: id, data: base64("half a stream") });
+
+    // No `http.error` follows a dead connection, and the request itself is long settled, so
+    // without the close listener this read would wait for a chunk that cannot arrive.
+    client.close();
+
+    const error = await caught(response.text());
+    expect((error as Error & { code?: string }).code).toBe("closed");
+    expect(client.eventListenerCount).toBe(0);
+    expect(client.closeListenerCount).toBe(0);
+  });
+
   test("cancelling the body sends http.abort", async () => {
     const client = new FakeAppClient();
     const fetch = createAppFetch(client, SLOT);
@@ -200,12 +241,14 @@ describe("createAppFetch", () => {
     const pending = fetch(URL_UNDER_TEST, { method });
     await flush();
     const id = client.lastSent("http.fetch")!.id;
+    // Deliberately no `http.end`: a response with no body has nothing left to wait for.
     client.respond(id, { status, headers: { "content-length": "12" } });
-    client.emit({ t: "http.end", request: id });
 
     const response = await pending;
     expect(response.status).toBe(status);
     expect(response.body).toBeNull();
+    expect(client.eventListenerCount).toBe(0);
+    expect(client.closeListenerCount).toBe(0);
   });
 
   test("stops listening for events once the body ends", async () => {

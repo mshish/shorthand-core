@@ -181,6 +181,24 @@ describe("ShorthandAppClient.connect", () => {
     expect((error as AppUnavailableError).reason).toBe("not-running");
   });
 
+  test("reports not-running when the connection fails with a permissions error", async () => {
+    const environment = await scratchEnvironment({ protocol: 1, path: "/protected/request.sock" });
+    const error = await ShorthandAppClient.connect({
+      environment,
+      // EACCES is what a stale pipe or socket file with the wrong owner/DACL fails with —
+      // distinct from the ECONNREFUSED/ENOENT cases above, and the one this fix stops from
+      // escaping as a bare errno.
+      connect: () => {
+        const socket = new Socket();
+        queueMicrotask(() => socket.emit("error", Object.assign(new Error("connect EACCES"), { code: "EACCES" })));
+        return socket;
+      },
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AppUnavailableError);
+    expect((error as AppUnavailableError).reason).toBe("not-running");
+    expect((error as Error).message).toContain("EACCES");
+  });
+
   test("reports too-old with the app version when the app speaks an older protocol", async () => {
     const app = await startFakeApp({ hello: { t: "hello", protocol: 0, version: "0.4.1", capabilities: [] } });
     const environment = await scratchEnvironment({ protocol: 1, path: app.path });
@@ -366,6 +384,21 @@ describe("credential helpers", () => {
     expect(app.received[0]?.params).toEqual({ slots });
   });
 
+  test("credentialStatus matches replies to slots structurally, not by array position", async () => {
+    const slots = [
+      { kind: "notes-llm", provider: "anthropic", origin: "https://api.anthropic.com" },
+      { kind: "notes-acp", vaultId: "3f9a1c0b2d4e6f80", origin: "wss://agent.example" },
+    ] as const;
+    const app = await startFakeApp({
+      // The wire contract never promises reply order mirrors request order; answering out of
+      // order is exactly what a positional read would get wrong.
+      respond: (request, self) =>
+        ok(self, request, { statuses: [{ slot: slots[1], status: "missing" }, { slot: slots[0], status: "configured" }] }),
+    });
+    const client = await connectTo(app);
+    expect(await client.credentialStatus(slots)).toEqual(["configured", "missing"]);
+  });
+
   test("credentialStatus rejects a response that does not answer every slot", async () => {
     const app = await startFakeApp({ respond: (request, self) => ok(self, request, { statuses: [] }) });
     const client = await connectTo(app);
@@ -373,6 +406,34 @@ describe("credential helpers", () => {
       .credentialStatus([{ kind: "notes-acp", vaultId: "3f9a1c0b2d4e6f80", origin: "wss://agent.example" }])
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain("malformed status list");
+    expect((error as Error & { code?: string }).code).toBe("malformed");
+    expect((error as Error).message).toContain("expected exactly one");
+  });
+
+  test("credentialStatus rejects a response with two entries for the same requested slot", async () => {
+    const slot = { kind: "notes-acp", vaultId: "3f9a1c0b2d4e6f80", origin: "wss://agent.example" } as const;
+    const app = await startFakeApp({
+      respond: (request, self) =>
+        ok(self, request, { statuses: [{ slot, status: "configured" }, { slot, status: "missing" }] }),
+    });
+    const client = await connectTo(app);
+    const error = await client.credentialStatus([slot]).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error & { code?: string }).code).toBe("malformed");
+    expect((error as Error).message).toContain("expected exactly one");
+  });
+
+  test("credentialStatus rejects a status value this build does not know, with a client-side code", async () => {
+    const slot = { kind: "notes-llm", provider: "openai", origin: "https://api.openai.com" } as const;
+    const app = await startFakeApp({
+      respond: (request, self) => ok(self, request, { statuses: [{ slot, status: "expired" }] }),
+    });
+    const client = await connectTo(app);
+    const error = await client.credentialStatus([slot]).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    // `bad_request` is the code the app sends about a request *it* rejects; this is the
+    // client rejecting the app's own reply, so it must not be confused with that.
+    expect((error as Error & { code?: string }).code).toBe("malformed");
+    expect((error as Error & { code?: string }).code).not.toBe("bad_request");
   });
 });

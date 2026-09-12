@@ -311,10 +311,14 @@ elsewhere in the vault, because that backend performs no vault reads. Putting th
 the client rather than asking consumers to omit `vaultRoot` prevents a forgotten omission
 from silently shipping tools and a vault path to a client that cannot honour them.
 
-**A provider key is never in a file core reads, and never in this process.** It lives in the
-Shorthand app's keyring, and the app makes the authenticated call itself (see *App request
-socket* above). Core holds only an `LlmProfile` — provider, model, optional `base_url`, all
-non-secret — and a slot naming which keyring entry the app should attach.
+**A provider key is never in a file core reads, and never in this process** — except Google
+and Codex, which own their own auth: Google's OAuth library refreshes its own token from a
+file it defines, and the Codex SDK owns its own auth, so core passes an operator-supplied key
+through unchanged or links the ambient `~/.codex/auth.json` (`CONTRACT.md` §5.4 has both). For
+every other provider, the key lives in the Shorthand app's keyring, and the app makes the
+authenticated call itself (see *App request socket* above). Core holds only an `LlmProfile`
+— provider, model, optional `base_url`, all non-secret — and a slot naming which keyring
+entry the app should attach.
 
 The original form of this invariant was a `0600` file in `shorthandConfigDirectory()`, chosen
 because an Obsidian settings field lands in `data.json`, which is plaintext and travels with

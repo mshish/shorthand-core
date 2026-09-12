@@ -121,11 +121,34 @@ function wireError(code: unknown, message: unknown): Error {
 
 /**
  * The same `code` shape as a wire error, for failures this client decides on its own.
- * `timeout` is the wire code with the same meaning; `closed` is one no server ever sends,
- * so a caller matching on wire codes cannot confuse the two.
+ * `timeout` is the wire code with the same meaning; `closed` and `malformed` are codes no
+ * server ever sends, so a caller matching on wire codes cannot confuse a client-side verdict
+ * with one the app made — `bad_request`, in particular, is what the app sends about a
+ * request *it* rejected, not what this client should synthesize about a reply it rejected.
  */
 function codedError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
+}
+
+/**
+ * The structural identity of a slot, independent of property order — two slots are the same
+ * credential iff this key matches. Used to correlate a `credential.status` reply's entries
+ * with the slots that were requested, because the wire contract never states that reply order
+ * mirrors request order and echoes the slot in each entry precisely so a client does not have
+ * to assume it does.
+ */
+function slotKey(slot: AppCredentialSlot): string {
+  return slot.kind === "notes-llm" ? `notes-llm:${slot.provider}:${slot.origin}` : `notes-acp:${slot.vaultId}:${slot.origin}`;
+}
+
+/** Same key as `slotKey`, built defensively from an untrusted wire value instead of a typed slot. */
+function wireSlotKey(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { kind, provider, vaultId, origin } = value as Record<string, unknown>;
+  if (!isString(origin)) return undefined;
+  if (kind === "notes-llm" && isString(provider)) return `notes-llm:${provider}:${origin}`;
+  if (kind === "notes-acp" && isString(vaultId)) return `notes-acp:${vaultId}:${origin}`;
+  return undefined;
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -318,17 +341,38 @@ export class ShorthandAppClient implements AppClientLike {
     await this.request("credential.clear", { slot });
   }
 
-  /** Statuses come back positionally: entry `n` answers `slots[n]`. */
+  /**
+   * Matches each reply entry to the slot it answers by structural equality (kind plus
+   * provider/vaultId and origin), not array position: the wire contract echoes the slot in
+   * every entry and never states that reply order mirrors request order. A requested slot
+   * with anything other than exactly one matching entry, or a status this build does not
+   * know, makes the whole reply malformed rather than guessed at.
+   */
   async credentialStatus(slots: readonly AppCredentialSlot[]): Promise<readonly AppCredentialStatus[]> {
     const result = await this.request<{ statuses?: unknown }>("credential.status", { slots });
     const statuses = result?.statuses;
-    if (!Array.isArray(statuses) || statuses.length !== slots.length) {
-      throw wireError("bad_request", `The Shorthand app answered ${slots.length} credential slots with a malformed status list.`);
+    if (!Array.isArray(statuses)) {
+      throw codedError("malformed", "The Shorthand app answered credential.status with something other than a status list.");
     }
-    return statuses.map((entry) => {
-      const status = (entry as { status?: unknown })?.status;
+    const entriesByKey = new Map<string, unknown[]>();
+    for (const entry of statuses) {
+      const key = wireSlotKey((entry as { slot?: unknown } | undefined)?.slot);
+      if (key === undefined) continue;
+      const bucket = entriesByKey.get(key);
+      if (bucket === undefined) entriesByKey.set(key, [entry]);
+      else bucket.push(entry);
+    }
+    return slots.map((slot) => {
+      const matches = entriesByKey.get(slotKey(slot)) ?? [];
+      if (matches.length !== 1) {
+        throw codedError(
+          "malformed",
+          `The Shorthand app answered credential.status with ${matches.length} entries for a requested slot, expected exactly one.`,
+        );
+      }
+      const status = (matches[0] as { status?: unknown }).status;
       if (status !== "configured" && status !== "missing" && status !== "unavailable") {
-        throw wireError("bad_request", "The Shorthand app reported a credential status this build does not know.");
+        throw codedError("malformed", "The Shorthand app reported a credential status this build does not know.");
       }
       return status;
     });
@@ -485,8 +529,13 @@ export class ShorthandAppClient implements AppClientLike {
 
 function connectFailure(error: NodeJS.ErrnoException): Error {
   // ENOENT is a discovery file naming a socket the app already removed; ECONNREFUSED is a
-  // stale Unix socket file left behind by a crash. Both mean the app is not listening.
-  return error.code === "ECONNREFUSED" || error.code === "ENOENT"
-    ? new AppUnavailableError("not-running", `Shorthand is not listening on its request socket (${error.code}).`)
-    : error;
+  // stale Unix socket file left behind by a crash; EACCES/EPERM is a stale pipe or socket
+  // file with a DACL or owner that no longer matches this caller. Every errno here, known or
+  // not, means the same thing to a caller: the app cannot be reached this way. Mapping only
+  // the two known codes let the rest escape raw, so `instanceof AppUnavailableError` missed
+  // them and the user saw a bare errno next to the pipe path instead of an actionable message.
+  return new AppUnavailableError(
+    "not-running",
+    `Shorthand is not listening on its request socket (${error.code ?? error.message}).`,
+  );
 }

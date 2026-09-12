@@ -432,7 +432,8 @@ produce a shape appears as a `todo` in the report instead of a silently absent t
 path to an authenticated request.** An LLM provider key and an ACP agent token live in the
 Shorthand app's keyring. Core asks the app for the call, the app attaches the secret and
 performs the network I/O, and the response comes back over the request socket. Nothing in
-this package, and nothing on the consumer's disk, holds the key.
+this package, and nothing on the consumer's disk, holds the key — except Google and Codex,
+each of which owns its own auth for reasons given below.
 
 What a consumer supplies instead of a secret is a **slot** — `AppCredentialSlot`, the name
 the app derives its keyring entry from:
@@ -463,9 +464,14 @@ remain exported for one caller only: the plugin's one-time migration, which read
 
 #### The Google credentials file
 
-Google is the exception, and the reason is Google's: `google-auth-library` refreshes an
+Google is one exception, and the reason is Google's: `google-auth-library` refreshes an
 OAuth token itself, from a file in a shape it defines, so there is no request for the app to
 make on core's behalf.
+
+Codex is the other: the Codex SDK owns its own auth, so core either passes an
+operator-supplied key through unchanged (`CodexAgentClientOptions.apiKey`) or links the
+ambient `~/.codex/auth.json` into a scratch `CODEX_HOME` (`linkAmbientCodexAuth`,
+`src/agent/codex-client.ts`) — there is no request for the app to make here either.
 
 `shorthand-core/google` **reads** `google-credentials.json` and never writes it. One writer
 per file: a file with two writers has an invariant that lives in neither of them. Core's job

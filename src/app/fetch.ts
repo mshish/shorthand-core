@@ -9,6 +9,16 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 type FetchOk = Readonly<{ status?: unknown; headers?: unknown }>;
 
+/**
+ * The wire contract's own auth-injection rule (CONTRACT.md §5.4) strips these four and then
+ * sets `authorization` or `x-api-key` itself from the slot's secret — so this shim strips
+ * them first rather than relying on the app to. The concrete case that made it not optional:
+ * the AI SDK provider factories refuse to build without an `apiKey` string, so they are handed
+ * `APP_MANAGED_API_KEY`, and that placeholder becomes a literal `authorization: Bearer
+ * managed-by-shorthand` header that would otherwise cross the socket in place of a secret.
+ */
+const STRIPPED_REQUEST_HEADERS = new Set(["authorization", "x-api-key", "cookie", "proxy-authorization"]);
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -51,7 +61,10 @@ export function createAppFetch(client: AppClientLike, slot: AppCredentialSlot): 
     const request = new Request(input, init);
     const headers: Record<string, string> = {};
     // `Headers` already lower-cases every name, which is the case the wire contract asks for.
-    for (const [name, value] of request.headers) headers[name] = value;
+    for (const [name, value] of request.headers) {
+      if (STRIPPED_REQUEST_HEADERS.has(name)) continue;
+      headers[name] = value;
+    }
     const body = Buffer.from(await request.arrayBuffer());
 
     const { id, result } = client.startRequest<FetchOk>(

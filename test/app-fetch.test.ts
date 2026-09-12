@@ -50,6 +50,34 @@ describe("createAppFetch", () => {
     await pending;
   });
 
+  test("strips the SDK's placeholder auth headers before sending", async () => {
+    const client = new FakeAppClient();
+    const fetch = createAppFetch(client, SLOT);
+
+    const pending = fetch(URL_UNDER_TEST, {
+      headers: {
+        Authorization: "Bearer managed-by-shorthand",
+        "X-Api-Key": "managed-by-shorthand",
+        Cookie: "session=abc",
+        "Proxy-Authorization": "Basic xyz",
+        "X-Custom": "1",
+      },
+    });
+    await flush();
+
+    const headers = client.lastSent("http.fetch")?.params.headers as Record<string, string>;
+    expect(headers).not.toHaveProperty("authorization");
+    expect(headers).not.toHaveProperty("x-api-key");
+    expect(headers).not.toHaveProperty("cookie");
+    expect(headers).not.toHaveProperty("proxy-authorization");
+    expect(headers["x-custom"]).toBe("1");
+
+    const sent = client.lastSent("http.fetch")!;
+    client.respond(sent.id, { status: 200, headers: {} });
+    client.emit({ t: "http.end", request: sent.id });
+    await pending;
+  });
+
   test("accepts a Request object and omits the body when there is none", async () => {
     const client = new FakeAppClient();
     const fetch = createAppFetch(client, SLOT);

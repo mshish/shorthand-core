@@ -24,10 +24,10 @@ frowned upon. There are four entry points.
 
 | Specifier | Contains | Who imports it |
 | --- | --- | --- |
-| `shorthand-core` | The ports and the engine: `EnhanceRunner`, `NoteSink`, `SidecarStore` and their result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, the agent clients and configuration helpers | Every consumer |
+| `shorthand-core` | The ports and the engine: `EnhanceRunner`, `NoteSink`, `SidecarStore` and their result types, `Section`, `StreamClient`, `ShorthandControl`, `TranscriptStore`, `SidecarWriter`, the agent clients and configuration helpers (`CORE_VERSION`, `DEFAULT_CONFIG`, `detectShorthandExecutable`, `requestSocketDiscoveryPath`); and the app request socket — `ShorthandAppClient`, `AppUnavailableError`, `APP_PROTOCOL_VERSION`, `createAppFetch`, `createAppWebSocketConstructor`, `readDiscovery`, `llmEndpointOrigin`, `APP_MANAGED_API_KEY`, with `AppClientLike`, `AppCredentialSlot`, `AppCredentialStatus`, `AppUnavailableReason`, `AppEvent`, `ShorthandAppClientOptions`, `RequestSocketDiscovery`, `AppWebSocketConstructor`, `AppWebSocketLike`, `AppWebSocketEvent` and `LlmProfile` | Every consumer |
 | `shorthand-core/markdown` | The reference `MarkdownNoteSink`; the transport-free document codec (`readMarkdownDocument`, `updateMarkdownDocument`, `scaffoldMarkdownDocument` and result/edit types); and note-scaffolding helpers (`locateAiBlock`, `transcriptWikilink`, `ensureNoteScaffold`, `linkTranscriptFrontmatter`, `buildNoteScaffold`) | Markdown consumers only. **An API sink must not import this.** |
 | `shorthand-core/google` | The Google Docs sink and the pieces it needs: `GoogleDocsNoteSink`, `GOOGLE_DOCS_SCOPE`, `GoogleApiDocsClient` and its API types, the credentials reader — `FileTokenProvider`, `credentialsPath`, `readCredentials`, `GoogleCredentials`, `CredentialsReadResult`, `FileTokenProviderOptions` — and `resolveGoogleDocsSink`/`ResolveGoogleSinkOptions`/`ResolveGoogleSinkResult`, which mints or reuses a per-capture tab and constructs the sink | Google Docs consumers only. **A Markdown or other API sink must not import this.** Core reads the credentials file and never writes it; see §5.4 |
-| `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkHarnessFactory`, `SinkConformanceScenario`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For Google credentials: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsHarnessFactory`, `CredentialsFixture`, `CredentialsGoldenFixture`, `CredentialsConformanceScenario`, and `CredentialsConformanceSupport`. For LLM credentials: `LLM_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeLlmCredentialsConformance`, `LLM_CREDENTIALS_FIXTURES`, `LlmCredentialsWriterHarness`, `LlmCredentialsHarnessFactory`, `LlmCredentialsFixture`, `LlmCredentialsGoldenFixture`, `LlmCredentialsConformanceScenario`, and `LlmCredentialsConformanceSupport` | Any sink's test suite; any writer of either credentials file |
+| `shorthand-core/testing` | The executable contracts. For the sink port: `NOTE_SINK_CONFORMANCE_SCENARIOS`, `describeNoteSinkConformance`, `SinkHarness`, `SinkHarnessFactory`, `SinkConformanceScenario`, `SinkConformanceSupport`, `ConformanceTestPrimitives`. For Google credentials: `GOOGLE_CREDENTIALS_CONFORMANCE_SCENARIOS`, `describeGoogleCredentialsConformance`, `GOOGLE_CREDENTIALS_FIXTURES`, `CredentialsWriterHarness`, `CredentialsHarnessFactory`, `CredentialsFixture`, `CredentialsGoldenFixture`, `CredentialsConformanceScenario`, and `CredentialsConformanceSupport` | Any sink's test suite; any writer of the Google credentials file |
 
 `parseTemplateSections` is on the root entry point rather than `shorthand-core/markdown`
 even though its output is fed to `ensureNoteScaffold`: the starting sections of a note are
@@ -426,7 +426,46 @@ independently and disposes it afterwards, so state must not leak between them.
 Capabilities are **declared** in `support` rather than probed, so a transport that cannot
 produce a shape appears as a `todo` in the report instead of a silently absent test.
 
-### 5.4 The Google credentials file
+### 5.4 Credentials
+
+**Credentials are app-owned: core never reads a secret, and `createAppFetch` is the only
+path to an authenticated request.** An LLM provider key and an ACP agent token live in the
+Shorthand app's keyring. Core asks the app for the call, the app attaches the secret and
+performs the network I/O, and the response comes back over the request socket. Nothing in
+this package, and nothing on the consumer's disk, holds the key.
+
+What a consumer supplies instead of a secret is a **slot** — `AppCredentialSlot`, the name
+the app derives its keyring entry from:
+
+```ts
+const client = await ShorthandAppClient.connect();
+const profile: LlmProfile = { provider: "openai", model: "gpt-5" };
+const slot: AppCredentialSlot = {
+  kind: "notes-llm", provider: profile.provider, origin: llmEndpointOrigin(profile),
+};
+const agent = new LlmAgentClient({ profile, fetch: createAppFetch(client, slot) });
+```
+
+`origin` is `scheme://host[:port]`, lower-case and with no path; derive it with
+`llmEndpointOrigin` rather than by hand, because the app compares every request URL's origin
+against it and refuses a mismatch before any network I/O. `createAppWebSocketConstructor` is
+the same arrangement for a `wss://` ACP agent. `APP_MANAGED_API_KEY` is the placeholder the
+AI SDK factories are given where they refuse to build without an `apiKey` string; it is not
+a credential, and the app replaces the header it produces.
+
+`connect()` throws `AppUnavailableError` with a `reason` — `not-running`, `too-old`,
+`protocol` — so a consumer can tell the user which of "open the app", "update the app" or
+"update this build" applies without matching prose.
+
+`llmCredentialsPath` / `readLlmCredentials` / `LlmCredentials` / `LlmCredentialsReadResult`
+remain exported for one caller only: the plugin's one-time migration, which reads the old
+`llm-credentials.json` to move an existing key into the app. They are removed in 0.23.
+
+#### The Google credentials file
+
+Google is the exception, and the reason is Google's: `google-auth-library` refreshes an
+OAuth token itself, from a file in a shape it defines, so there is no request for the app to
+make on core's behalf.
 
 `shorthand-core/google` **reads** `google-credentials.json` and never writes it. One writer
 per file: a file with two writers has an invariant that lives in neither of them. Core's job

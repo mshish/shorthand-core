@@ -106,7 +106,8 @@ limit on the re-queued half.
 
 ## Adjacent timeouts that are not part of this budget
 
-Listed so they are not confused with the enhancement path. All in `DEFAULT_CONFIG`.
+Listed so they are not confused with the enhancement path. All in `DEFAULT_CONFIG` except
+the app request timeout, which is the app's.
 
 | Value | Default | Governs |
 | --- | --- | --- |
@@ -114,6 +115,7 @@ Listed so they are not confused with the enhancement path. All in `DEFAULT_CONFI
 | `drainTimeoutMs` | 10_000 | Waiting for the follow-stream child on a graceful stop |
 | `shutdownTimeoutMs` | 12_000 | Whole-process shutdown before force-stopping the child |
 | `sidecarFlushIntervalMs` | 250 | Transcript sidecar write batching |
+| app request timeout | 15 min | One `http.fetch` or `ws.open` on the app request socket, **enforced by the Shorthand app**. `ShorthandAppClient` mirrors it so a connected-but-silent app cannot leave a promise pending forever. It sits outside `timeoutMs`: a pass whose provider call is still in flight is abandoned by the runner's own deadline long before this one fires, and this exists only to bound a request no runner is waiting on. Not configurable from core — the app is the enforcer. |
 
 ## Known sharp edges
 

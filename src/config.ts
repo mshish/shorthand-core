@@ -84,7 +84,8 @@ export function requestSocketDiscoveryPath(environment: NodeJS.ProcessEnv = proc
  * Declared once because the two call sites that send it each carried their own literal and
  * both were still claiming 0.20.0 two releases later. It is not read from `package.json`:
  * `resolveJsonModule` is off, and enabling it to import the manifest into library code is a
- * larger change than this needs. Bump it together with `package.json`.
+ * larger change than this needs. Bump it together with `package.json` — `test/config.test.ts`
+ * reads the manifest and fails if the two ever disagree again.
  */
 export const CORE_VERSION = "0.22.0";
 

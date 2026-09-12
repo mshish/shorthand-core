@@ -19,6 +19,12 @@ export class FakeAppClient implements AppClientLike {
   readonly #eventListeners = new Set<(event: AppEvent) => void>();
   readonly #closeListeners = new Set<(error?: Error) => void>();
   #nextId = 1;
+  #closed = false;
+
+  /** Whether `close()` has been called, which is how a caller's shutdown path is checked. */
+  get closed(): boolean {
+    return this.#closed;
+  }
 
   get eventListenerCount(): number {
     return this.#eventListeners.size;
@@ -76,6 +82,7 @@ export class FakeAppClient implements AppClientLike {
   }
 
   close(): void {
+    this.#closed = true;
     for (const listener of [...this.#closeListeners]) listener();
   }
 

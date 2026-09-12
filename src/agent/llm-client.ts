@@ -281,11 +281,13 @@ function originOf(baseUrl: string): string {
   } catch {
     throw new Error(`base_url ${JSON.stringify(baseUrl)} is not an absolute URL, so it names no endpoint to authorise.`);
   }
-  // `URL.origin` is the literal string "null" for a scheme with no origin of its own —
-  // `file:`, `data:` — and handing that to the app as a slot origin fails there, one layer
-  // further from the setting the user actually got wrong.
-  if (url.origin === "null") {
-    throw new Error(`base_url ${JSON.stringify(baseUrl)} has no origin; use an http or https URL.`);
+  // An allowlist, not a check for the literal "null" `URL.origin` gives a scheme with no
+  // origin of its own. `file:` and `data:` are caught either way, but `ws:` and `ftp:` have
+  // real origins and would otherwise pass — and the app only ever performs `http.fetch`, so
+  // a slot registered under one of those authorises a request that can never be made. The
+  // failure belongs here, at the setting the user got wrong, not one layer further on.
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`base_url ${JSON.stringify(baseUrl)} uses scheme ${JSON.stringify(url.protocol)}; use an http or https URL.`);
   }
   return url.origin;
 }

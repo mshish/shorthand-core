@@ -7,11 +7,10 @@ import { shorthandConfigDirectory } from "../config.js";
  * Vercel AI SDK, and how — provider id, model, and the optional key/endpoint pair a given
  * provider needs.
  *
- * Core does not write this file, and there is no function here that does. One writer per
- * file — a file with two writers in two languages has an invariant that lives in neither
- * of them, and the merge such a scheme needs is exactly the class of silent data loss
- * removing the second writer removes. `src/testing/llm-credentials-conformance.ts` (a
- * later task) is the executable form of the contract a writer must satisfy.
+ * Legacy file, read once by the plugin's migration; removed in 0.23. Core does not write
+ * it and never did, and there is no longer a conformance suite specifying its bytes: the
+ * key it used to hold now lives in the Shorthand app's keyring, so the file has one reader
+ * left and no future writer to hold to a contract.
  *
  * `api_key` is optional for EVERY provider, including `openai` and `anthropic`, not just
  * providers like a local Ollama endpoint that can plausibly run keyless: a user clearing
@@ -69,10 +68,7 @@ function isLlmProviderId(value: unknown): value is LlmProviderId {
 /**
  * Reads and validates the credentials file. NEVER throws.
  *
- * LEGACY. Nothing in core calls this any more: the key lives in the Shorthand app's
- * keyring and the app injects it, so there is no file for core to read a secret from. It
- * survives for exactly one caller — the plugin's one-time migration, which reads the old
- * file once to move an existing key into the app — and is removed in 0.23.
+ * Legacy file, read once by the plugin's migration; removed in 0.23.
  *
  * The writer is a different program, quite possibly in a different language, so a
  * malformed or partial file is ordinary input rather than a bug in core. It has to arrive

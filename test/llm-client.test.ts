@@ -399,6 +399,13 @@ describe("llmEndpointOrigin", () => {
       origin: "https://api.openai.com",
     },
     {
+      // The app derives the slot the same way, so a `:443` that survived here would be a
+      // mismatch against an origin the app collapsed.
+      label: "openai with the default https port spelled out",
+      profile: { provider: "openai", model: "gpt-4o", base_url: "https://api.openai.com:443/v1" },
+      origin: "https://api.openai.com",
+    },
+    {
       label: "openai behind a gateway on a port",
       profile: { provider: "openai", model: "gpt-4o", base_url: "https://Gateway.Example:8443/openai/v1" },
       origin: "https://gateway.example:8443",
@@ -424,6 +431,11 @@ describe("llmEndpointOrigin", () => {
       profile: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:1234/v1" },
       origin: "http://127.0.0.1:1234",
     },
+    {
+      label: "openai-compatible from a base url that is only a trailing slash",
+      profile: { provider: "openai-compatible", model: "llama3.1", base_url: "http://127.0.0.1:1234/" },
+      origin: "http://127.0.0.1:1234",
+    },
   ];
 
   test.each(CASES)("returns $origin for $label", ({ profile: each, origin }) => {
@@ -446,11 +458,18 @@ describe("llmEndpointOrigin", () => {
       .toThrow(/api\.openai\.com\/v1/);
   });
 
-  test("refuses a scheme with no origin of its own rather than returning the string \"null\"", () => {
+  test.each([
     // `new URL("file:///x").origin` is the literal "null", which would otherwise reach the app
     // as a slot origin and fail there instead of here.
-    expect(() => llmEndpointOrigin({ provider: "openai-compatible", model: "m", base_url: "file:///models" }))
-      .toThrow(/origin/i);
+    ["file:///models", "file:"],
+    // These two DO have an origin, so a null-origin check would let them through. The app only
+    // performs `http.fetch`, so a slot registered under either authorises a request that can
+    // never be made.
+    ["ws://127.0.0.1:1234", "ws:"],
+    ["ftp://models.example/v1", "ftp:"],
+  ])("refuses the base url %s, naming the scheme", (baseUrl, scheme) => {
+    expect(() => llmEndpointOrigin({ provider: "openai-compatible", model: "m", base_url: baseUrl }))
+      .toThrow(`base_url ${JSON.stringify(baseUrl)} uses scheme ${JSON.stringify(scheme)}; use an http or https URL.`);
   });
 });
 

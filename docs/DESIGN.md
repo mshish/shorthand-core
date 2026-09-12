@@ -103,6 +103,38 @@ that seam through the Vercel AI SDK; `ClaudeAgentClient` remains the default. No
 section schema, or `validateSectionOutput` had to split by provider. That is the evidence that
 the seam describes enhancement transport rather than merely wrapping one SDK.
 
+### App request socket
+
+**The secret never enters this process.** `LlmAgentClient` and the ACP network transport
+both take a `fetch` (or a `WebSocket` constructor) rather than a key. `createAppFetch(client,
+slot)` builds one that sends the request to the Shorthand app over a second socket; the app
+strips whatever `authorization`, `x-api-key`, `cookie` or `proxy-authorization` header the
+SDK produced, attaches the secret from its keyring, and makes the call. Core supplies a
+**slot** — `{kind, provider|vaultId, origin}` — not a credential, and the app refuses any
+request whose URL origin differs from the slot's before it opens a connection. The transport
+is NDJSON over a named pipe on Windows and a `0600` filesystem socket elsewhere, found
+through a discovery file the app writes on listen and removes on a clean stop.
+
+**Why this is a second socket and not a message on the follow-stream.** The follow-stream
+already exists, already connects core to the app, and reusing it was the first thing
+considered. It cannot carry this:
+
+- **No request ids.** The follow-stream is a one-way sequence of transcript records. A
+  credential reply has nothing to correlate it with the request that asked for it, and
+  adding ids would be a new protocol inside the old one.
+- **Session-less records are dropped.** `src/stream/client.ts:349` discards any record
+  without a `session` field. A reply sent over the follow-stream would be thrown away before
+  any caller saw it, and widening that parser would make every transcript consumer
+  responsible for records that are none of its business.
+- **It is read-only by design.** Core spawns `shorthand --follow-stream json` and reads its
+  stdout. There is no channel back at all, so "send a request" is not a smaller change than
+  a new socket — it is a new socket plus a parser change.
+
+The per-request timeout on this socket is 15 minutes, enforced by the app and mirrored in
+`ShorthandAppClient` so a connected-but-silent app cannot leave a promise pending forever.
+It is not part of the enhancement budget; see
+[`ENHANCEMENT-LIMITS.md`](ENHANCEMENT-LIMITS.md).
+
 **One entry point, enforced by `exports`.** Consumers import `shorthand-core` (and
 `/markdown`, `/testing`) — never a deep path. The `exports` map in `package.json` is the
 enforcement; there are deliberately no tsconfig `paths`, which would defeat it. Entry points
@@ -279,14 +311,18 @@ elsewhere in the vault, because that backend performs no vault reads. Putting th
 the client rather than asking consumers to omit `vaultRoot` prevents a forgotten omission
 from silently shipping tools and a vault path to a client that cannot honour them.
 
-**Provider credentials stay outside the document they unlock.** `llm-credentials.json` lives
-in `shorthandConfigDirectory()`, following `google-credentials.json` exactly. Core reads it
-and never writes it; the consumer is the sole writer, and `shorthand-core/testing` exports an
-executable conformance suite that writer must satisfy. It is deliberately not an Obsidian
-settings field: `data.json` is plaintext and travels with vault sync, which would copy a
-billable API key to every synced machine and every vault backup. Provider, model, `base_url`
-and key share one file because they have one owner and one write moment; splitting the
-non-secret selection into a sibling file would create a torn profile between two writes.
+**A provider key is never in a file core reads, and never in this process.** It lives in the
+Shorthand app's keyring, and the app makes the authenticated call itself (see *App request
+socket* above). Core holds only an `LlmProfile` — provider, model, optional `base_url`, all
+non-secret — and a slot naming which keyring entry the app should attach.
+
+The original form of this invariant was a `0600` file in `shorthandConfigDirectory()`, chosen
+because an Obsidian settings field lands in `data.json`, which is plaintext and travels with
+vault sync — copying a billable key to every synced machine and every vault backup. The
+keyring is the same invariant carried further: a file on disk is still readable by anything
+running as the user, and still ends up in a backup. `llm-credentials.json` and
+`readLlmCredentials` survive for one caller, the plugin's one-time migration that moves an
+existing key into the app, and are removed in 0.23.
 
 **The safety preamble is not the caller's to replace.** The system prompt is composed at one
 site (`runner.ts`) as `ENHANCEMENT_SAFETY_PREAMBLE` + the editorial guidance, in that order.

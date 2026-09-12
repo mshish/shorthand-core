@@ -1,17 +1,48 @@
 import { tmpdir } from "node:os";
-import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:net";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { createEnhanceRunner, runCli, runFinalEnhancementWithRetries, selectAgent } from "../bin/shorthand-notes.js";
 import { ClaudeAgentClient } from "../src/agent/client.js";
 import { CodexAgentClient } from "../src/agent/codex-client.js";
-import { LlmAgentClient } from "../src/agent/llm-client.js";
-import { llmCredentialsPath } from "../src/agent/llm-credentials.js";
-import type { LlmCredentials } from "../src/agent/llm-credentials.js";
+import { AppUnavailableError } from "../src/app/client.js";
+import type { AppClientLike } from "../src/app/client.js";
 import type { PassOutcome } from "../src/agent/runner.js";
-import { DEFAULT_CONFIG } from "../src/config.js";
+import { DEFAULT_CONFIG, requestSocketDiscoveryPath } from "../src/config.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
+import { FakeAppClient } from "./fixtures/fake-app-client.js";
+
+/**
+ * The provider factories are stubbed so a CLI test can see what `selectAgent` handed the
+ * LLM backend — specifically the app-backed `fetch`, which is otherwise sealed inside the
+ * model the factory returns. Calling that captured fetch against a `FakeAppClient` is the
+ * only way to observe the credential slot the CLI built, and the slot is the wire contract:
+ * a wrong `provider` or `origin` is an `origin_mismatch` on every real request.
+ *
+ * Only `@ai-sdk/*` is replaced. Everything else the CLI touches — the Claude and Codex
+ * clients, the runner, the sidecar — is the real module.
+ */
+type ProviderOptions = Record<string, unknown>;
+const providerCalls: ProviderOptions[] = [];
+
+function fakeProviderFactory() {
+  return (options: ProviderOptions = {}) => {
+    providerCalls.push(options);
+    return (modelId: string) => ({ __model: modelId });
+  };
+}
+
+mock.module("@ai-sdk/openai", () => ({ createOpenAI: fakeProviderFactory() }));
+mock.module("@ai-sdk/anthropic", () => ({ createAnthropic: fakeProviderFactory() }));
+mock.module("@ai-sdk/openai-compatible", () => ({ createOpenAICompatible: fakeProviderFactory() }));
+mock.module("ai-sdk-ollama", () => ({ createOllama: fakeProviderFactory() }));
+
+// Imported after the mocks are registered, for the reason test/llm-client.test.ts documents:
+// these modules read the provider factories at call time through live bindings, so the
+// registration has to happen before the module graph that reaches them is evaluated.
+const { createEnhanceRunner, runCli, runFinalEnhancementWithRetries, selectAgent } = await import("../bin/shorthand-notes.js");
+const { LlmAgentClient } = await import("../src/agent/llm-client.js");
 
 const scratchDirectories: string[] = [];
 afterEach(async () => {
@@ -394,13 +425,12 @@ describe("shorthand-notes CLI", () => {
       ["--backend", "llm"],
       ["--backend=llm", undefined],
     ])("%s parses and selects the LLM backend", async (flag, value) => {
-      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-llm-test-"));
-      scratchDirectories.push(configDirectory);
-      const environment = await withLlmCredentials(configDirectory, {
-        provider: "openai-compatible", model: "local-model", base_url: "http://127.0.0.1:1",
-      });
       const args = value === undefined ? [flag] : [flag, value];
-      const result = await selectAgent(args, environment);
+      const result = await selectAgent(
+        [...args, "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        connectFake(),
+      );
       if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
       expect(result.agent).toBeInstanceOf(LlmAgentClient);
     });
@@ -409,50 +439,139 @@ describe("shorthand-notes CLI", () => {
       await expect(selectAgent(["--backend", "bogus"], {})).rejects.toThrow("--backend must be claude, llm, or codex.");
     });
 
-    test("a missing LLM credentials file exits non-zero with the reader's message verbatim", async () => {
-      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-missing-creds-test-"));
-      scratchDirectories.push(configDirectory);
-      const environment = await withLlmCredentials(configDirectory, undefined);
-      const result = await selectAgent(["--backend", "llm"], environment);
-      expect(result.ok).toBe(false);
-      expect(!result.ok && result.message).toBe(`No LLM credentials at ${llmCredentialsPath(environment)}; configure an LLM provider, then retry.`);
-    });
-
-    test("a malformed LLM credentials file exits non-zero with the reader's message verbatim", async () => {
-      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-bad-creds-test-"));
-      scratchDirectories.push(configDirectory);
-      const environment = await withLlmCredentials(configDirectory, undefined);
-      const path = llmCredentialsPath(environment);
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, "{ not json", "utf8");
-      const result = await selectAgent(["--backend", "llm"], environment);
-      expect(result.ok).toBe(false);
-      expect(!result.ok && result.message).toContain(`LLM credentials at ${path} are not valid JSON`);
-    });
-
-    test("keyless openai-compatible credentials are accepted", async () => {
-      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-keyless-test-"));
-      scratchDirectories.push(configDirectory);
-      const environment = await withLlmCredentials(configDirectory, {
-        provider: "openai-compatible", model: "local-model", base_url: "http://127.0.0.1:1",
-      });
-      const result = await selectAgent(["--backend", "llm"], environment);
+    test("names the slot the app holds the key under: kind, provider, and the profile's origin", async () => {
+      // The app compares this origin against every request URL and refuses a mismatch before
+      // any network I/O, so the slot the CLI builds is wire contract, not an internal detail.
+      const client = new FakeAppClient();
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        async () => client,
+      );
       if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
-      expect(result.agent).toBeInstanceOf(LlmAgentClient);
+      expect(await slotOfNextFetch(client, "https://api.openai.com/v1/chat/completions")).toEqual({
+        kind: "notes-llm", provider: "openai", origin: "https://api.openai.com",
+      });
     });
 
-    test("a provider that needs a key but has none surfaces through ok:false, not a thrown exception", async () => {
-      // Construction throws inside LlmAgentClient for a keyed provider with no key.
-      // selectAgent must catch it and route it through the same ok:false path a
-      // credential-read failure takes, so runCli's catch-all (which reformats anything
-      // that is not an ArgumentError) never sees it.
-      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-backend-nokey-test-"));
-      scratchDirectories.push(configDirectory);
-      const environment = await withLlmCredentials(configDirectory, { provider: "openai", model: "gpt-4o-mini" });
-      const result = await selectAgent(["--backend", "llm"], environment);
+    test("--llm-base-url reaches both the model's transport and the slot origin", async () => {
+      const client = new FakeAppClient();
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai-compatible", "--llm-model", "local-model",
+          "--llm-base-url", "http://127.0.0.1:1234/v1"],
+        {},
+        async () => client,
+      );
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(providerCalls.at(-1)?.baseURL).toBe("http://127.0.0.1:1234/v1");
+      expect(await slotOfNextFetch(client, "http://127.0.0.1:1234/v1/chat/completions")).toEqual({
+        kind: "notes-llm", provider: "openai-compatible", origin: "http://127.0.0.1:1234",
+      });
+    });
+
+    test("falls back to HANDY_NOTES_LLM_PROVIDER/MODEL/BASE_URL when the flags are absent", async () => {
+      const client = new FakeAppClient();
+      const result = await selectAgent(["--backend", "llm"], {
+        HANDY_NOTES_LLM_PROVIDER: "openai-compatible",
+        HANDY_NOTES_LLM_MODEL: "local-model",
+        HANDY_NOTES_LLM_BASE_URL: "http://127.0.0.1:1234/v1",
+      }, async () => client);
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(providerCalls.at(-1)?.baseURL).toBe("http://127.0.0.1:1234/v1");
+    });
+
+    test.each([
+      ["--llm-model absent", ["--llm-provider", "openai"]],
+      ["--llm-provider absent", ["--llm-model", "gpt-5"]],
+      ["both absent", []],
+    ])("reports what --backend llm needs when %s", async (_label, extra) => {
+      const connect = connectFake();
+      const result = await selectAgent(["--backend", "llm", ...extra], {}, connect);
       expect(result.ok).toBe(false);
-      expect(!result.ok && result.message).toContain("No API key");
-      expect(!result.ok && result.message).toContain(llmCredentialsPath(environment));
+      expect(!result.ok && result.message).toBe("--backend llm needs --llm-provider and --llm-model.");
+    });
+
+    test("an unknown --llm-provider is a usage error, the same way an unknown --backend is", async () => {
+      await expect(selectAgent(["--backend", "llm", "--llm-provider", "bogus", "--llm-model", "m"], {}, connectFake()))
+        .rejects.toThrow("--llm-provider must be openai, anthropic, ollama, or openai-compatible.");
+    });
+
+    test("Shorthand not running is reported as something the user can act on", async () => {
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        async () => {
+          throw new AppUnavailableError("not-running", "Shorthand is not running: it has published no request socket.");
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toBe("Shorthand is not running. Open the Shorthand app, then retry.");
+    });
+
+    test("an app too old to speak the request-socket protocol names the version to upgrade to", async () => {
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        async () => {
+          throw new AppUnavailableError("too-old", "Shorthand 0.4.0 speaks request-socket protocol 0; this build needs protocol 1.", "0.4.0");
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toBe("Update Shorthand to 0.5.0 or newer.");
+    });
+
+    test("an app NEWER than this build keeps the client's own message, which says so", async () => {
+      // "Update Shorthand" would be actively wrong here: the app is ahead, and it is this
+      // build that needs upgrading.
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        async () => {
+          throw new AppUnavailableError("protocol", "Shorthand 0.9.0 speaks request-socket protocol 2, newer than the protocol 1 this build understands.", "0.9.0");
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toContain("newer than the protocol 1 this build understands");
+    });
+
+    test("a base url with no usable origin fails before a connection is opened", async () => {
+      // The origin is what the slot is registered under, so it has to be computable before
+      // there is an app client to close again.
+      let connectCalls = 0;
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai-compatible", "--llm-model", "m", "--llm-base-url", "file:///models"],
+        {},
+        async () => {
+          connectCalls += 1;
+          return new FakeAppClient();
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.message).toMatch(/http or https/);
+      expect(connectCalls).toBe(0);
+    });
+
+    test("hands back a closeApp that releases the request socket", async () => {
+      const client = new FakeAppClient();
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        async () => client,
+      );
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(client.closed).toBe(false);
+      result.closeApp?.();
+      expect(client.closed).toBe(true);
+    });
+
+    test("the LLM backend reports it cannot drive vault tools, which is what downgrades a link pass", async () => {
+      const result = await selectAgent(
+        ["--backend", "llm", "--llm-provider", "openai", "--llm-model", "gpt-5"],
+        {},
+        connectFake(),
+      );
+      if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+      expect(result.agent.supportsVaultTools).toBe(false);
     });
 
     test("rejects --claude combined with --backend llm instead of silently ignoring one", async () => {
@@ -507,14 +626,20 @@ describe("shorthand-notes CLI", () => {
         .rejects.toThrow("--claude cannot be combined with --backend codex");
     });
 
-    test("--agent-stub wins over --backend, even when the LLM credentials would fail to resolve", async () => {
+    test("--agent-stub wins over --backend, and never reaches the app at all", async () => {
+      let connectCalls = 0;
       const result = await selectAgent(
         ["--backend", "llm", "--agent-stub", join(process.cwd(), "test", "fixtures", "fake-agent.mjs")],
         {},
+        async () => {
+          connectCalls += 1;
+          return new FakeAppClient();
+        },
       );
       if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
       expect(result.agent).not.toBeInstanceOf(LlmAgentClient);
       expect(result.agent).not.toBeInstanceOf(ClaudeAgentClient);
+      expect(connectCalls).toBe(0);
     });
 
     test("capture --backend llm runs the tick tier, since the LLM backend cannot drive vault tools", async () => {
@@ -526,22 +651,45 @@ describe("shorthand-notes CLI", () => {
       expect((await run(entry, [
         "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
       ])).code).toBe(0);
-      // Port 1 refuses the TCP connection almost immediately (confirmed ~50ms locally), but
-      // the AI SDK wraps every call in its own retry loop with backoff, which stacks with the
-      // contract's own retry — confirmed empirically to stretch a full failed pass to ~13s.
-      // The assertion only needs the tier the runner requested, and that is decided before the
-      // network call ever happens (runner.ts:189-191), so runUntilStderrContains below kills
-      // the child the moment "started (tick)" appears rather than waiting out those retries.
-      const environment = await withLlmCredentials(configDirectory, {
-        provider: "openai-compatible", model: "local-model", base_url: "http://127.0.0.1:1",
-      });
-      const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
-      const stderr = await runUntilStderrContains(entry, [
-        "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture,
+      // The only test that exercises selectAgent's DEFAULT connectApp — a real
+      // ShorthandAppClient, a real discovery file, a real socket — because in a subprocess
+      // there is nothing to inject. The stand-in app says hello and then answers nothing, so
+      // the enhancement pass hangs on its first http.fetch. That is enough: the tier is
+      // decided before the request is ever sent (runner.ts:189-191), so
+      // runUntilStderrContains kills the child the moment "started (tick)" appears.
+      const app = await startStandInApp(configDirectory);
+      try {
+        const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
+        const stderr = await runUntilStderrContains(entry, [
+          "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture,
+          "--no-reconnect", "--enhance", "--backend", "llm",
+          "--llm-provider", "openai-compatible", "--llm-model", "local-model",
+          "--llm-base-url", "http://127.0.0.1:1234/v1",
+        ], app.environment, "started (tick)");
+        expect(stderr).toContain("started (tick)");
+      } finally {
+        await app.close();
+      }
+    }, 15_000);
+
+    test("capture --backend llm stops with the app's own message when Shorthand is not running", async () => {
+      const vault = await mkdtemp(join(tmpdir(), ".cli-capture-llm-noapp-test-"));
+      scratchDirectories.push(vault);
+      const configDirectory = await mkdtemp(join(tmpdir(), ".cli-capture-llm-noapp-config-"));
+      scratchDirectories.push(configDirectory);
+      const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+      expect((await run(entry, [
+        "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
+      ])).code).toBe(0);
+      const result = await run(entry, [
+        "capture", "--vault", vault, "--note", "meeting.md",
+        "--fake-stream", join(process.cwd(), "test", "fixtures", "fake-stream.mjs"),
         "--no-reconnect", "--enhance", "--backend", "llm",
-      ], environment, "started (tick)");
-      expect(stderr).toContain("started (tick)");
-    }, 10_000);
+        "--llm-provider", "openai", "--llm-model", "gpt-5",
+      ], redirectConfigDirectory(configDirectory));
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Shorthand is not running. Open the Shorthand app, then retry.");
+    }, 15_000);
   });
 
   test("capture teardown cancels the live interval timer before a sidecar close failure", async () => {
@@ -686,25 +834,74 @@ function withoutGoogleOAuthEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.Proces
   return { ...stripGoogleOAuthEnv(process.env), ...overrides };
 }
 
-// Redirects the config directory the same way withoutGoogleOAuthEnv's Google-credentials
-// callers already do (APPDATA/XDG_CONFIG_HOME/HOME/USERPROFILE all pointed at a scratch
-// directory), then optionally seeds llm-credentials.json at the path llmCredentialsPath
-// resolves under that redirect — so a test can control exactly what selectAgent/readLlmCredentials
-// see without touching the real per-user config directory. `credentials === undefined` leaves
-// the file absent, for the missing-file case.
-async function withLlmCredentials(
-  configDirectory: string,
-  credentials: LlmCredentials | undefined,
-): Promise<NodeJS.ProcessEnv> {
-  const environment = withoutGoogleOAuthEnv({
+/** The connectApp most LLM-backend tests want: one that succeeds and is never inspected. */
+function connectFake(): () => Promise<AppClientLike> {
+  return async () => new FakeAppClient();
+}
+
+/**
+ * Drives one request through the `fetch` the last-built LLM backend was given, and reports
+ * the credential slot it arrived at the app under.
+ *
+ * The wait is a loop rather than a fixed number of turns because `createAppFetch` reads the
+ * whole request body before it sends, and how many turns that takes is the `Request`
+ * implementation's business, not this test's. The fake never answers, so the returned
+ * promise stays pending on purpose — the assertion is about the request, not the response.
+ */
+async function slotOfNextFetch(client: FakeAppClient, url: string): Promise<unknown> {
+  const appFetch = providerCalls.at(-1)?.fetch as typeof globalThis.fetch;
+  void appFetch(url, { method: "POST", body: "{}" });
+  for (let attempt = 0; attempt < 50 && client.lastSent("http.fetch") === undefined; attempt += 1) {
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
+  }
+  return client.lastSent("http.fetch")?.params.slot;
+}
+
+// Points every environment variable shorthandConfigDirectory() consults at a scratch
+// directory, the same way withoutGoogleOAuthEnv's Google-credentials callers already do, so
+// requestSocketDiscoveryPath() resolves inside it on every platform and a test never reads
+// the real per-user config directory.
+function redirectConfigDirectory(configDirectory: string): NodeJS.ProcessEnv {
+  return withoutGoogleOAuthEnv({
     APPDATA: configDirectory, XDG_CONFIG_HOME: configDirectory, HOME: configDirectory, USERPROFILE: configDirectory,
   });
-  if (credentials !== undefined) {
-    const path = llmCredentialsPath(environment);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify(credentials), "utf8");
-  }
-  return environment;
+}
+
+/**
+ * A server that answers the request socket with a hello line and then nothing else, plus the
+ * discovery file pointing at it — the minimum for a subprocess CLI to get past
+ * `ShorthandAppClient.connect`.
+ *
+ * A named pipe on Windows and a filesystem socket elsewhere, because that is the split the
+ * wire contract specifies and `connect()` inherits it from the discovery file either way.
+ */
+async function startStandInApp(
+  configDirectory: string,
+): Promise<Readonly<{ environment: NodeJS.ProcessEnv; close: () => Promise<void> }>> {
+  const environment = redirectConfigDirectory(configDirectory);
+  const address = process.platform === "win32"
+    ? `\\\\.\\pipe\\shorthand-cli-test-${process.pid}-${Date.now()}`
+    : join(configDirectory, "request.sock");
+  const server: Server = createServer((socket) => {
+    socket.write(`${JSON.stringify({ t: "hello", protocol: 1, version: "0.5.0", capabilities: ["credential", "http-fetch", "ws-relay"] })}\n`);
+    socket.on("error", () => {});
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(address, () => {
+      server.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+  const discovery = requestSocketDiscoveryPath(environment);
+  await mkdir(dirname(discovery), { recursive: true });
+  await writeFile(discovery, JSON.stringify({ protocol: 1, path: address }), "utf8");
+  return {
+    environment,
+    close: () => new Promise<void>((resolveClose) => {
+      server.close(() => resolveClose());
+    }),
+  };
 }
 
 function run(

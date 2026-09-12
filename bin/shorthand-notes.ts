@@ -316,9 +316,36 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       await sidecar.close();
     }
     if (enhancer !== undefined) {
-      await enhancer.waitForIdle();
-      const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
-      if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+      // An in-flight pass is otherwise bounded only by its own per-pass timeoutMs — up to
+      // DEFAULT_CONFIG.enhancement.timeoutMs (four minutes for a live capture) — because
+      // that is the deadline the runner's state machine enforces regardless of why capture
+      // is ending. On a signalled shutdown that is the wrong bound: a backend that never
+      // answers (an app that accepted the connection but never replies to an in-flight
+      // http.fetch, say) would keep this process alive for minutes after SIGTERM/SIGHUP or a
+      // second Ctrl+C, which defeats the point of asking it to stop. Racing the wait against
+      // the same shutdownTimeoutMs already used to force-stop the stream's child keeps the
+      // whole shutdown bounded end to end; `enhancer.stop()` on a timeout aborts the pass the
+      // same way the outer `finally` already does on every other exit path.
+      let idleInTime = true;
+      if (shutdownRequested) {
+        idleInTime = await Promise.race([
+          enhancer.waitForIdle().then(() => true),
+          new Promise<boolean>((resolveTimeout) => {
+            const timer = setTimeout(() => resolveTimeout(false), DEFAULT_CONFIG.shutdownTimeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+        if (!idleInTime) enhancer.stop();
+      } else {
+        await enhancer.waitForIdle();
+      }
+      if (idleInTime) {
+        const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
+        if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+      } else {
+        console.error(`Enhancement pass still in flight after ${DEFAULT_CONFIG.shutdownTimeoutMs}ms; stopping without a final pass.`);
+        exitCode = 1;
+      }
     }
     console.log(`${linkedSidecarFile === undefined && noteLinked ? "Meeting note linked" : "Meeting note left unchanged"}: ${note}`);
     console.log(`Sidecar written: ${sidecarPath}`);

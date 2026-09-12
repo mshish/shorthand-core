@@ -657,6 +657,14 @@ describe("shorthand-notes CLI", () => {
       // the enhancement pass hangs on its first http.fetch. That is enough: the tier is
       // decided before the request is ever sent (runner.ts:189-191), so
       // runUntilStderrContains kills the child the moment "started (tick)" appears.
+      //
+      // Killing the child sends a real SIGTERM on Linux/macOS (Windows has no such signal,
+      // so `.kill()` there terminates the process directly), which runs the CLI's own
+      // graceful-shutdown path: it now bounds the wait for that stuck pass by
+      // DEFAULT_CONFIG.shutdownTimeoutMs before aborting it (bin/shorthand-notes.ts's
+      // runCapture), rather than the pass's own much larger timeoutMs. The 15s bun-level
+      // timeout below has to clear that bound plus its own overhead, so it is set above it
+      // rather than pared to the minimum this one assertion needs.
       const app = await startStandInApp(configDirectory);
       try {
         const fixture = join(process.cwd(), "test", "fixtures", "fake-stream.mjs");
@@ -670,7 +678,7 @@ describe("shorthand-notes CLI", () => {
       } finally {
         await app.close();
       }
-    }, 15_000);
+    }, 20_000);
 
     test("capture --backend llm stops with the app's own message when Shorthand is not running", async () => {
       const vault = await mkdtemp(join(tmpdir(), ".cli-capture-llm-noapp-test-"));
@@ -885,6 +893,14 @@ async function startStandInApp(
   const server: Server = createServer((socket) => {
     socket.write(`${JSON.stringify({ t: "hello", protocol: 1, version: "0.5.0", capabilities: ["credential", "http-fetch", "ws-relay"] })}\n`);
     socket.on("error", () => {});
+    // A Readable with no "data" listener stays paused, so the peer's FIN is buffered rather
+    // than delivered — this socket never emits "end"/"close" on its own. On Windows a killed
+    // pipe client still tears the connection down at the transport layer regardless, but on
+    // Linux/macOS the CLI child holds this Unix socket open until its own graceful-shutdown
+    // path finishes (bounded by DEFAULT_CONFIG.shutdownTimeoutMs, not instant): resuming the
+    // stream is what lets this socket's own "close" fire once that happens, which is what
+    // `close()` below is waiting on — otherwise `server.close()`'s callback never runs.
+    socket.resume();
   });
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);

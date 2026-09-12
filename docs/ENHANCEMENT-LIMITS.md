@@ -113,7 +113,7 @@ the app request timeout, which is the app's.
 | --- | --- | --- |
 | `reconnect.maxAttempts` / `backoffMs` | 4, `[250, 500, 1000, 2000]` | Reconnecting to the Shorthand stream |
 | `drainTimeoutMs` | 10_000 | Waiting for the follow-stream child on a graceful stop |
-| `shutdownTimeoutMs` | 12_000 | Whole-process shutdown before force-stopping the child |
+| `shutdownTimeoutMs` | 12_000 | Whole-process shutdown before force-stopping the child. On a signalled shutdown (SIGTERM/SIGHUP, or a second Ctrl+C) `runCapture` also races it against `enhancer.waitForIdle()`, so a pass stuck on an unresponsive backend cannot hold the process open for its own much larger `timeoutMs` after the user has already asked it to stop; the timeout aborts the pass via `enhancer.stop()` and skips the final enhancement pass. A capture ending normally (no signal) still waits for the in-flight pass unbounded, the same as always. |
 | `sidecarFlushIntervalMs` | 250 | Transcript sidecar write batching |
 | app request timeout | 15 min | One `http.fetch` or `ws.open` on the app request socket, **enforced by the Shorthand app**. `ShorthandAppClient` mirrors it so a connected-but-silent app cannot leave a promise pending forever. It sits outside `timeoutMs`: a pass whose provider call is still in flight is abandoned by the runner's own deadline long before this one fires, and this exists only to bound a request no runner is waiting on. Not configurable from core — the app is the enforcer. |
 

@@ -49,6 +49,7 @@ note" command is the reason it exists.
 | `timeoutMs` | `DEFAULT_CONFIG.enhancement.timeoutMs` | 240_000 | 600_000 | The whole pass: sink read, both model attempts, and sink write |
 | `maxTurns` | 75 | same | same | Agent tool-loop runaway. Deliberately far above legitimate vault exploration, because hitting it ends the query with no structured output and the pass loses its work entirely |
 | `maxAttempts` | 2 | same | same | One corrective retry, inside the same `timeoutMs` |
+| `shutdownGraceMs` | `DEFAULT_CONFIG.enhancement.shutdownGraceMs` | 12_000 | not applicable — no signal handling | Only once `capture --enhance`'s shutdown stops being graceful: SIGTERM/SIGHUP, or a second Ctrl+C. `runCapture` races this against `enhancer.waitForIdle()` instead of waiting for the pass unbounded, so a backend that never answers cannot hold the process open for the much larger `timeoutMs` after the user has already asked it to stop; the timeout aborts the pass via `enhancer.stop()` and skips the closing pass. A first Ctrl+C, or a capture ending with no signal at all, still waits for the in-flight pass unbounded, same as `enhance` always does |
 
 `HANDY_NOTES_AGENT_TIMEOUT_MS` overrides `timeoutMs` for both commands.
 
@@ -113,7 +114,7 @@ the app request timeout, which is the app's.
 | --- | --- | --- |
 | `reconnect.maxAttempts` / `backoffMs` | 4, `[250, 500, 1000, 2000]` | Reconnecting to the Shorthand stream |
 | `drainTimeoutMs` | 10_000 | Waiting for the follow-stream child on a graceful stop |
-| `shutdownTimeoutMs` | 12_000 | Whole-process shutdown before force-stopping the child. On a signalled shutdown (SIGTERM/SIGHUP, or a second Ctrl+C) `runCapture` also races it against `enhancer.waitForIdle()`, so a pass stuck on an unresponsive backend cannot hold the process open for its own much larger `timeoutMs` after the user has already asked it to stop; the timeout aborts the pass via `enhancer.stop()` and skips the final enhancement pass. A capture ending normally (no signal) still waits for the in-flight pass unbounded, the same as always. |
+| `shutdownTimeoutMs` | 12_000 | Whole-process shutdown before force-stopping the follow-stream child. Not the bound on a stuck enhancement pass — see `enhancement.shutdownGraceMs` in the "Bounds while a pass runs" table above. |
 | `sidecarFlushIntervalMs` | 250 | Transcript sidecar write batching |
 | app request timeout | 15 min | One `http.fetch` or `ws.open` on the app request socket, **enforced by the Shorthand app**. `ShorthandAppClient` mirrors it so a connected-but-silent app cannot leave a promise pending forever. It sits outside `timeoutMs`: a pass whose provider call is still in flight is abandoned by the runner's own deadline long before this one fires, and this exists only to bound a request no runner is waiting on. Not configurable from core — the app is the enforcer. |
 

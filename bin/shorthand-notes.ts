@@ -194,6 +194,11 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   let exitCode = 0;
   let interruptCount = 0;
   let shutdownRequested = false;
+  // Set only by the paths that mean "stop now, don't wait": a second Ctrl+C, or
+  // SIGTERM/SIGHUP. A first Ctrl+C sets `shutdownRequested` but not this — it still means
+  // "wind down the current session and finish normally", so the enhancement wait below must
+  // stay unbounded for it, the same as a capture that ends without any signal at all.
+  let forcedStop = false;
 
   client.on("event", ({ generation, record }) => {
     const update = transcript.ingest(generation, record);
@@ -291,11 +296,13 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       console.error("Stopping after the active session's terminal event; press Ctrl+C again to force.");
       client.stopAfterDrain();
     } else {
+      forcedStop = true;
       client.forceStop();
     }
   };
   const forcedShutdown = () => {
     shutdownRequested = true;
+    forcedStop = true;
     armShutdownTimeout();
     client.forceStop();
   };
@@ -319,22 +326,32 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       // An in-flight pass is otherwise bounded only by its own per-pass timeoutMs — up to
       // DEFAULT_CONFIG.enhancement.timeoutMs (four minutes for a live capture) — because
       // that is the deadline the runner's state machine enforces regardless of why capture
-      // is ending. On a signalled shutdown that is the wrong bound: a backend that never
-      // answers (an app that accepted the connection but never replies to an in-flight
-      // http.fetch, say) would keep this process alive for minutes after SIGTERM/SIGHUP or a
-      // second Ctrl+C, which defeats the point of asking it to stop. Racing the wait against
-      // the same shutdownTimeoutMs already used to force-stop the stream's child keeps the
-      // whole shutdown bounded end to end; `enhancer.stop()` on a timeout aborts the pass the
-      // same way the outer `finally` already does on every other exit path.
+      // is ending. That is the wrong bound only once shutdown has stopped being graceful: a
+      // backend that never answers (an app that accepted the connection but never replies to
+      // an in-flight http.fetch, say) would keep this process alive for minutes after
+      // SIGTERM/SIGHUP or a second Ctrl+C, which defeats the point of asking it to stop. A
+      // first Ctrl+C, and a capture ending with no signal at all, both still mean "let the
+      // current pass finish and run the closing one" — gating on `shutdownRequested` instead
+      // of `forcedStop` here would abort that first-Ctrl+C pass too, which is the normal way
+      // to end a capture. Racing the wait against `shutdownGraceMs` (its own constant, not
+      // the follow-stream child's `shutdownTimeoutMs`) keeps a *forced* shutdown bounded end
+      // to end; `enhancer.stop()` on a timeout aborts the pass the same way the outer
+      // `finally` already does on every other exit path.
       let idleInTime = true;
-      if (shutdownRequested) {
+      if (forcedStop) {
+        let graceTimer: ReturnType<typeof setTimeout> | undefined;
         idleInTime = await Promise.race([
           enhancer.waitForIdle().then(() => true),
           new Promise<boolean>((resolveTimeout) => {
-            const timer = setTimeout(() => resolveTimeout(false), DEFAULT_CONFIG.shutdownTimeoutMs);
-            timer.unref?.();
+            graceTimer = setTimeout(() => resolveTimeout(false), DEFAULT_CONFIG.enhancement.shutdownGraceMs);
           }),
-        ]);
+        ]).finally(() => {
+          // Whichever side lost the race leaves something pending: a timer still waiting to
+          // fire, or (if the timer fired first) nothing, since clearTimeout on an already-
+          // fired timer is a no-op. Clearing it either way stops it from outliving this
+          // decision instead of leaving it to the next event-loop turn.
+          if (graceTimer !== undefined) clearTimeout(graceTimer);
+        });
         if (!idleInTime) enhancer.stop();
       } else {
         await enhancer.waitForIdle();
@@ -343,7 +360,9 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
         const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
         if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
       } else {
-        console.error(`Enhancement pass still in flight after ${DEFAULT_CONFIG.shutdownTimeoutMs}ms; stopping without a final pass.`);
+        console.error(`Enhancement pass still in flight after ${DEFAULT_CONFIG.enhancement.shutdownGraceMs}ms; stopping without a final pass.`);
+        // Mirrors the drainTimeout handler above: a shutdown that had to force a still-running
+        // operation to stop is reported as a non-zero exit rather than swallowed.
         exitCode = 1;
       }
     }

@@ -747,6 +747,81 @@ process.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","emi
   }, 10_000);
 
   /**
+   * The CRITICAL regression this guards: `gracefulInterrupt`'s first Ctrl+C sets
+   * `shutdownRequested`, same as SIGTERM/SIGHUP and a second Ctrl+C do. Gating the
+   * enhancement-wait bound on that flag instead of `forcedStop` would abort a first
+   * Ctrl+C's in-flight pass at `shutdownGraceMs` too — the normal way a user ends a capture —
+   * instead of only on a forced stop. `slow-agent.mjs` holds the tick pass open past
+   * `shutdownGraceMs`; only an unbounded wait lets the closing `link` pass still run.
+   *
+   * `process.emit("SIGINT")` (not a real OS signal) is deliberate, not a shortcut: per the
+   * comment on the SIGTERM-based test above, a killed child process on Windows tears down
+   * directly rather than delivering a signal a handler can observe, so a real signal cannot
+   * exercise `gracefulInterrupt` cross-platform. Emitting it directly on this process invokes
+   * whatever `runCli` (executing in-process here, unlike the subprocess tests around it)
+   * registered via `process.on("SIGINT", ...)`, without any real signal involved.
+   *
+   * The stream fixture below is custom, not the shared fake-stream.mjs: that one closes its
+   * only session in ~450ms, which left too small a window to reliably land the synthetic
+   * SIGINT before runCapture's own `finally` deregisters its signal listeners on `settled`.
+   * Holding the session open for 1500ms first gives the poll loop below room to observe
+   * "started (tick)" and emit the interrupt while the listener is still attached.
+   */
+  test("capture's first Ctrl+C still waits for an in-flight pass past shutdownGraceMs and runs the closing pass", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-sigint-wait-test-"));
+    scratchDirectories.push(vault);
+    const note = join(vault, "meeting.md");
+    const sidecar = join(vault, "transcript.md");
+    const fixture = join(vault, "hold-open-stream.mjs");
+    await writeFile(
+      note,
+      "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->",
+      "utf8",
+    );
+    await writeFile(
+      fixture,
+      `process.stdout.write('{"t":"hello","protocol":1,"version":"test","emitted_at":"now"}\\n');
+process.stdout.write('{"t":"begin","session":1,"streaming":true,"emitted_at":"now","session_elapsed_ms":0}\\n');
+process.stdout.write(JSON.stringify({t:"partial",session:1,speaker:"me",committed:"a".repeat(200),tentative:"",emitted_at:"now",session_elapsed_ms:1})+"\\n");
+await new Promise((resolve) => setTimeout(resolve, 1500));
+process.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","emitted_at":"now","session_elapsed_ms":2}\\n');`,
+      "utf8",
+    );
+    const agentStub = join(process.cwd(), "test", "fixtures", "slow-agent.mjs");
+    const marker = join(vault, ".slow-agent-marker");
+    // Comfortably longer than DEFAULT_CONFIG.enhancement.shutdownGraceMs (12s): if the first
+    // Ctrl+C below ever regressed to bounding the wait the way a forced stop does, the pass
+    // would be aborted at the grace bound and the process would exit (with "stopping without
+    // a final pass" and no rendered section) well before this delay elapses.
+    const delayMs = DEFAULT_CONFIG.enhancement.shutdownGraceMs + 3_000;
+    // ExecutableAgentStub spawns the stub with no explicit `env`, so it inherits this
+    // process's environment directly — there is no other way to hand it these two values.
+    process.env.SLOW_AGENT_MARKER = marker;
+    process.env.SLOW_AGENT_DELAY_MS = String(delayMs);
+    const errorSpy = spyOn(console, "error");
+    try {
+      const runPromise = runCli([
+        "capture", "--vault", vault, "--note", note, "--sidecar", sidecar,
+        "--fake-stream", fixture, "--no-reconnect", "--enhance", "--agent-stub", agentStub,
+      ]);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (errorSpy.mock.calls.some((call) => String(call[0]).includes("started (tick)"))) break;
+        await new Promise((resolveTurn) => setTimeout(resolveTurn, 20));
+      }
+      expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("started (tick)"))).toBe(true);
+      process.emit("SIGINT");
+      const code = await runPromise;
+      expect(code).toBe(0);
+      expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("stopping without a final pass"))).toBe(false);
+      expect(await readFile(note, "utf8")).toContain("## Stub summary\nOffline result");
+    } finally {
+      errorSpy.mockRestore();
+      delete process.env.SLOW_AGENT_MARKER;
+      delete process.env.SLOW_AGENT_DELAY_MS;
+    }
+  }, 25_000);
+
+  /**
    * `createEnhanceRunner` is shared by `capture` and `enhance`, so which of
    * DEFAULT_CONFIG.enhancement.timeoutMs / standaloneTimeoutMs applies is entirely down to
    * which constant each command's call site passes in — see the comment above

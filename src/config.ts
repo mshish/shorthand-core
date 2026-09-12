@@ -104,6 +104,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     backoffMs: [250, 500, 1_000, 2_000] as readonly number[],
   },
   drainTimeoutMs: 10_000,
+  // Whole-process shutdown before force-stopping the follow-stream child. This is a
+  // different wait than `enhancement.shutdownGraceMs` below — that one bounds a stuck
+  // enhancement pass, not the child process — kept as two constants so the two can move
+  // independently. See docs/ENHANCEMENT-LIMITS.md.
   shutdownTimeoutMs: 12_000,
   // Effective values, and how these interact with the EnhanceRunner fallbacks they override:
   // docs/ENHANCEMENT-LIMITS.md. Change a number here and that table goes stale.
@@ -130,6 +134,14 @@ export const DEFAULT_CONFIG = Object.freeze({
     // structured output, so a capped pass loses its work entirely — the cap has to sit
     // far above any legitimate vault exploration rather than near it.
     maxTurns: 75,
+    // How long a forced stop (SIGTERM/SIGHUP, or a second Ctrl+C) waits for an in-flight
+    // pass before `runCapture` aborts it via `enhancer.stop()` and skips the closing pass.
+    // A first Ctrl+C, or a capture ending without any signal, still waits unbounded — see
+    // the comment on `runCapture`'s shutdown path. Deliberately its own constant rather
+    // than reusing the top-level `shutdownTimeoutMs`: that one bounds the follow-stream
+    // child, an unrelated wait, and coupling them made a signalled shutdown take up to
+    // twice `shutdownTimeoutMs` (once per wait) instead of once.
+    shutdownGraceMs: 12_000,
   },
 });
 

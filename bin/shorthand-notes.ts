@@ -11,25 +11,31 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ExecutableAgentStub } from "../src/agent/client.js";
 import { readCurrentBlock, writeSections } from "../src/note/writer.js";
 import {
+  AppUnavailableError,
   ClaudeAgentClient,
   CodexAgentClient,
+  createAppFetch,
   DEFAULT_CONFIG,
   detectClaudeExecutable,
   detectCodexExecutable,
   detectShorthandExecutable,
   EnhanceRunner,
   LlmAgentClient,
-  llmCredentialsPath,
-  readLlmCredentials,
+  llmEndpointOrigin,
   resolveCodexBaseUrl,
   resolveCodexModel,
+  ShorthandAppClient,
   SidecarWriter,
   StreamClient,
   TranscriptStore,
   enhancementDelta,
   type AgentClient,
   type AgentTier,
+  type AppClientLike,
+  type AppCredentialSlot,
   type ExitDiagnosis,
+  type LlmProfile,
+  type LlmProviderId,
   type NoteSink,
   type PassOutcome,
   type Section,
@@ -44,7 +50,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
   );
   return 2;
 }
@@ -58,7 +64,7 @@ const KNOWN_FLAGS = new Set([
   "--note", "--vault", "--sidecar", "--shorthand", "--fake-stream", "--no-reconnect",
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
-  "--codex-model", "--codex-base-url",
+  "--codex-model", "--codex-base-url", "--llm-provider", "--llm-model", "--llm-base-url",
 ]);
 
 class ArgumentError extends Error {}
@@ -156,6 +162,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     noteLinked = true;
   }
   let enhancer: EnhanceRunner | undefined;
+  let closeApp: (() => void) | undefined;
   if (args.includes("--enhance")) {
     const sinkArg = argumentValue(args, "--sink") ?? "markdown";
     if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
@@ -167,6 +174,7 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       return 1;
     }
     enhancer = resolved.runner;
+    closeApp = resolved.closeApp;
   }
   const fake = args.some((argument) => argument === "--fake-stream" || argument.startsWith("--fake-stream="));
   const suppliedFixture = fake ? argumentValue(args, "--fake-stream", true) : undefined;
@@ -186,6 +194,11 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   let exitCode = 0;
   let interruptCount = 0;
   let shutdownRequested = false;
+  // Set only by the paths that mean "stop now, don't wait": a second Ctrl+C, or
+  // SIGTERM/SIGHUP. A first Ctrl+C sets `shutdownRequested` but not this — it still means
+  // "wind down the current session and finish normally", so the enhancement wait below must
+  // stay unbounded for it, the same as a capture that ends without any signal at all.
+  let forcedStop = false;
 
   client.on("event", ({ generation, record }) => {
     const update = transcript.ingest(generation, record);
@@ -283,11 +296,13 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       console.error("Stopping after the active session's terminal event; press Ctrl+C again to force.");
       client.stopAfterDrain();
     } else {
+      forcedStop = true;
       client.forceStop();
     }
   };
   const forcedShutdown = () => {
     shutdownRequested = true;
+    forcedStop = true;
     armShutdownTimeout();
     client.forceStop();
   };
@@ -308,9 +323,48 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       await sidecar.close();
     }
     if (enhancer !== undefined) {
-      await enhancer.waitForIdle();
-      const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
-      if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+      // An in-flight pass is otherwise bounded only by its own per-pass timeoutMs — up to
+      // DEFAULT_CONFIG.enhancement.timeoutMs (four minutes for a live capture) — because
+      // that is the deadline the runner's state machine enforces regardless of why capture
+      // is ending. That is the wrong bound only once shutdown has stopped being graceful: a
+      // backend that never answers (an app that accepted the connection but never replies to
+      // an in-flight http.fetch, say) would keep this process alive for minutes after
+      // SIGTERM/SIGHUP or a second Ctrl+C, which defeats the point of asking it to stop. A
+      // first Ctrl+C, and a capture ending with no signal at all, both still mean "let the
+      // current pass finish and run the closing one" — gating on `shutdownRequested` instead
+      // of `forcedStop` here would abort that first-Ctrl+C pass too, which is the normal way
+      // to end a capture. Racing the wait against `shutdownGraceMs` (its own constant, not
+      // the follow-stream child's `shutdownTimeoutMs`) keeps a *forced* shutdown bounded end
+      // to end; `enhancer.stop()` on a timeout aborts the pass the same way the outer
+      // `finally` already does on every other exit path.
+      let idleInTime = true;
+      if (forcedStop) {
+        let graceTimer: ReturnType<typeof setTimeout> | undefined;
+        idleInTime = await Promise.race([
+          enhancer.waitForIdle().then(() => true),
+          new Promise<boolean>((resolveTimeout) => {
+            graceTimer = setTimeout(() => resolveTimeout(false), DEFAULT_CONFIG.enhancement.shutdownGraceMs);
+          }),
+        ]).finally(() => {
+          // Whichever side lost the race leaves something pending: a timer still waiting to
+          // fire, or (if the timer fired first) nothing, since clearTimeout on an already-
+          // fired timer is a no-op. Clearing it either way stops it from outliving this
+          // decision instead of leaving it to the next event-loop turn.
+          if (graceTimer !== undefined) clearTimeout(graceTimer);
+        });
+        if (!idleInTime) enhancer.stop();
+      } else {
+        await enhancer.waitForIdle();
+      }
+      if (idleInTime) {
+        const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
+        if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+      } else {
+        console.error(`Enhancement pass still in flight after ${DEFAULT_CONFIG.enhancement.shutdownGraceMs}ms; stopping without a final pass.`);
+        // Mirrors the drainTimeout handler above: a shutdown that had to force a still-running
+        // operation to stop is reported as a non-zero exit rather than swallowed.
+        exitCode = 1;
+      }
     }
     console.log(`${linkedSidecarFile === undefined && noteLinked ? "Meeting note linked" : "Meeting note left unchanged"}: ${note}`);
     console.log(`Sidecar written: ${sidecarPath}`);
@@ -319,6 +373,9 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     // XState's clock uses referenced timers. Stopping the actor is the teardown guarantee
     // even when sidecar close or the final pass throws before normal CLI completion.
     enhancer?.stop();
+    // Same reason, one layer out: the request socket keeps the event loop alive, so a
+    // capture that threw would otherwise hang instead of exiting.
+    closeApp?.();
   }
 }
 
@@ -361,12 +418,23 @@ async function runEnhance(args: readonly string[], environment: NodeJS.ProcessEn
     return outcome.status === "requeued" ? 3 : 1;
   } finally {
     await runner.dispose();
+    resolved.closeApp?.();
   }
 }
 
 type SelectAgentResult =
-  | Readonly<{ ok: true; agent: AgentClient }>
+  // `closeApp` releases the request socket the LLM backend opened, and is absent for every
+  // backend that never opened one. The agent itself cannot own it: `AgentClient.dispose` is
+  // about the agent session, and the Claude and Codex backends must not grow a no-op for a
+  // connection they do not have.
+  | Readonly<{ ok: true; agent: AgentClient; closeApp?: () => void }>
   | Readonly<{ ok: false; message: string }>;
+
+const LLM_PROVIDER_IDS: readonly LlmProviderId[] = ["openai", "anthropic", "ollama", "openai-compatible"];
+
+function isLlmProviderId(value: string): value is LlmProviderId {
+  return (LLM_PROVIDER_IDS as readonly string[]).includes(value);
+}
 
 /**
  * The single place backend precedence is decided, so it cannot drift into three separately
@@ -379,10 +447,17 @@ type SelectAgentResult =
  * `--backend` does, and silently honouring `--claude` would teach them it worked.
  *
  * Exported for testing (see runFinalEnhancementWithRetries below for the same reason).
+ *
+ * `connectApp` is injectable for the same reason: the LLM backend now requires a running
+ * Shorthand app, and a test cannot start one. The default connects through the discovery
+ * file under `environment`'s config directory rather than `process.env`'s, so a test that
+ * redirects the config directory redirects this too — `runCli` already threads `environment`
+ * everywhere else, and a default that ignored it would reach the real user's app.
  */
 export async function selectAgent(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
+  connectApp: () => Promise<AppClientLike> = () => ShorthandAppClient.connect({ environment }),
 ): Promise<SelectAgentResult> {
   const stubPath = argumentValue(args, "--agent-stub") ?? environment.HANDY_NOTES_AGENT_STUB;
   if (stubPath !== undefined) {
@@ -414,23 +489,75 @@ export async function selectAgent(
   if (argumentValue(args, "--claude") !== undefined) {
     throw new ArgumentError("--claude cannot be combined with --backend llm; the LLM backend never launches a Claude Code executable.");
   }
-  const credentialsPath = llmCredentialsPath(environment);
-  const credentialsResult = await readLlmCredentials(credentialsPath);
-  if (!credentialsResult.ok) return { ok: false, message: credentialsResult.message };
+  const providerArg = argumentValue(args, "--llm-provider") ?? environment.HANDY_NOTES_LLM_PROVIDER;
+  const modelArg = argumentValue(args, "--llm-model") ?? environment.HANDY_NOTES_LLM_MODEL;
+  const baseUrlArg = argumentValue(args, "--llm-base-url") ?? environment.HANDY_NOTES_LLM_BASE_URL;
+  if (providerArg === undefined || modelArg === undefined) {
+    return { ok: false, message: "--backend llm needs --llm-provider and --llm-model." };
+  }
+  // A value outside the union is the same class of mistake as an unknown --backend, so it
+  // gets the same treatment: usage text and exit 2, not a message about a run that started.
+  if (!isLlmProviderId(providerArg)) {
+    throw new ArgumentError("--llm-provider must be openai, anthropic, ollama, or openai-compatible.");
+  }
+  const profile: LlmProfile = {
+    provider: providerArg,
+    model: modelArg,
+    ...(baseUrlArg === undefined ? {} : { base_url: baseUrlArg }),
+  };
+  // Before connecting, not after: the origin is what the slot is registered under, and a
+  // base_url that names none is a settings mistake to report rather than a socket to open
+  // and immediately close again.
+  let origin: string;
   try {
-    return { ok: true, agent: new LlmAgentClient({ credentials: credentialsResult.value, credentialsPath }) };
+    origin = llmEndpointOrigin(profile);
   } catch (error) {
-    // Construction throws when the profile has no API key for a provider that needs one.
-    // Routed through the same ok:false + console.error(message) path a credential-read
-    // failure takes, rather than rethrown, so runCli's catch-all (which reformats anything
-    // that is not an ArgumentError) does not print a different message for the same
-    // underlying user mistake.
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+
+  let client: AppClientLike;
+  try {
+    client = await connectApp();
+  } catch (error) {
+    if (!(error instanceof AppUnavailableError)) throw error;
+    return { ok: false, message: appUnavailableMessage(error) };
+  }
+
+  // No secret here or anywhere else in this process: the slot names which keyring entry the
+  // app should attach, and `createAppFetch` is the only way out to the provider.
+  const slot: AppCredentialSlot = { kind: "notes-llm", provider: providerArg, origin };
+  try {
+    return {
+      ok: true,
+      agent: new LlmAgentClient({ profile, fetch: createAppFetch(client, slot) }),
+      closeApp: () => client.close(),
+    };
+  } catch (error) {
+    // Routed through the same ok:false + console.error(message) path an unreachable app
+    // takes, rather than rethrown, so runCli's catch-all (which reformats anything that is
+    // not an ArgumentError) does not print a different message for the same class of
+    // mistake. The socket goes with it; nothing else will ever close it.
+    client.close();
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
 }
 
+/**
+ * What a user can do about an app that cannot serve requests.
+ *
+ * `protocol` keeps the client's own message on purpose: it means the app is NEWER than this
+ * build, so "update Shorthand" would send the user the wrong way.
+ */
+function appUnavailableMessage(error: AppUnavailableError): string {
+  if (error.reason === "not-running") return "Shorthand is not running. Open the Shorthand app, then retry.";
+  if (error.reason === "too-old") return "Update Shorthand to 0.5.0 or newer.";
+  return error.message;
+}
+
 type CreateEnhanceRunnerResult =
-  | Readonly<{ ok: true; runner: EnhanceRunner; sinkDescribe: string }>
+  // `closeApp` is selectAgent's, passed straight through: the runner disposes the agent, but
+  // the request socket the agent borrows outlives it and belongs to whoever built it.
+  | Readonly<{ ok: true; runner: EnhanceRunner; sinkDescribe: string; closeApp?: () => void }>
   | Readonly<{ ok: false; message: string }>;
 
 // `sink` arrives already validated by the caller (runCapture / runEnhance both check
@@ -458,6 +585,7 @@ export async function createEnhanceRunner(
   const selected = await selectAgent(args, environment);
   if (!selected.ok) return { ok: false, message: selected.message };
   const agent = selected.agent;
+  const closeApp = selected.closeApp;
   let resolvedSink: NoteSink;
   if (sink === "google") {
     // Loaded dynamically, not as a top-level import: src/google/docs-client.ts pulls in
@@ -466,7 +594,12 @@ export async function createEnhanceRunner(
     // default --sink markdown — bloating dist/shorthand-notes.mjs from ~700KB to ~32MB.
     const { resolveGoogleDocsSink } = await import("shorthand-core/google");
     const resolved = await resolveGoogleDocsSink(note, environment);
-    if (!resolved.ok) return { ok: false, message: resolved.message };
+    if (!resolved.ok) {
+      // The agent was built first, so the request socket is already open on this path and
+      // there is no runner about to be returned that would carry it out to a caller.
+      closeApp?.();
+      return { ok: false, message: resolved.message };
+    }
     resolvedSink = resolved.sink;
   } else {
     resolvedSink = new MarkdownNoteSink({ notePath: note, vaultRoot: vault });
@@ -476,6 +609,7 @@ export async function createEnhanceRunner(
   return {
     ok: true,
     sinkDescribe: resolvedSink.describe,
+    ...(closeApp === undefined ? {} : { closeApp }),
     runner: new EnhanceRunner({
       sink: resolvedSink,
       agent,

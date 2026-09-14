@@ -25,7 +25,7 @@ Public entry points:
 | `shorthand-core` | Capture, enhancement, and sink interfaces |
 | `shorthand-core/markdown` | Markdown note and scaffold support |
 | `shorthand-core/google` | Google Docs support and credential loading |
-| `shorthand-core/testing` | Conformance tests for new sinks and credential writers |
+| `shorthand-core/testing` | Conformance tests for new sinks and the Google credentials writer |
 
 See [CONTRACT.md](docs/CONTRACT.md) before adding a new output target.
 
@@ -67,6 +67,25 @@ The default enhancement backend uses a logged-in Claude CLI. You can also select
 - `--backend llm` for OpenAI, Anthropic, Ollama, or another OpenAI-compatible endpoint
 
 The Claude backend can look up related notes in the vault. Codex and LLM provider backends only receive the current note and transcript.
+
+### `--backend llm`
+
+This backend needs Shorthand 0.5.0 or newer running. Core never holds the provider key: Shorthand keeps it in the operating system keyring and makes the request on core's behalf, so no key is passed on the command line, set in the environment, or stored in a file core reads. Add the key in Shorthand's settings before capture.
+
+Name the provider and model on the command line:
+
+```sh
+node dist/shorthand-notes.mjs capture --vault "/path/to/vault" --note "Meetings/Standup.md" --enhance \
+  --backend llm --llm-provider openai --llm-model gpt-5
+```
+
+| Flag | Environment fallback | Notes |
+| --- | --- | --- |
+| `--llm-provider` | `HANDY_NOTES_LLM_PROVIDER` | `openai`, `anthropic`, `ollama`, or `openai-compatible` |
+| `--llm-model` | `HANDY_NOTES_LLM_MODEL` | Required |
+| `--llm-base-url` | `HANDY_NOTES_LLM_BASE_URL` | Optional override for a gateway or proxy. Required for `openai-compatible`, which names no endpoint of its own. `http` or `https` only |
+
+If Shorthand is not running, capture stops with `Shorthand is not running. Open the Shorthand app, then retry.` rather than falling back to an unauthenticated call.
 
 ## How notes are protected
 

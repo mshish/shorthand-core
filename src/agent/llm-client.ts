@@ -5,12 +5,17 @@ import { createOllama } from "ai-sdk-ollama";
 import { NoObjectGeneratedError, NoOutputGeneratedError, Output, generateText, jsonSchema } from "ai";
 import type { CallWarning, LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
-import { llmCredentialsPath, type LlmCredentials, type LlmProviderId } from "./llm-credentials.js";
+import type { LlmProfile, LlmProviderId } from "./llm-credentials.js";
 
 /**
  * The second enhancement backend: ordinary LLM provider APIs through the Vercel AI SDK,
  * for users who have an OpenAI/Anthropic key or a local OpenAI-compatible endpoint but no
  * Claude Code install.
+ *
+ * No secret reaches this process. The caller supplies a `fetch` that performs the request
+ * inside the Shorthand app (`createAppFetch`), and the app strips whatever authorization
+ * header the SDK built before injecting the real key from its keyring. That is why the
+ * profile carries no `api_key` and why the placeholder below is not a credential.
  *
  * Every `ai` / `@ai-sdk/*` import in the repository lives in this file alone, and that is
  * load-bearing in two directions: `mock.module` in one test suite cannot disturb another,
@@ -27,22 +32,26 @@ import { llmCredentialsPath, type LlmCredentials, type LlmProviderId } from "./l
  */
 export const DEFAULT_MAX_HISTORY_CHARACTERS = 120_000;
 
+/**
+ * NOT a credential, and not a secret: the OpenAI and Anthropic factories refuse to build
+ * without an `apiKey` string, and the app strips the authorization header this produces
+ * before injecting the real key. A recognisable placeholder is what makes it obvious in a
+ * captured request that nothing here was ever supposed to authenticate.
+ */
+export const APP_MANAGED_API_KEY = "managed-by-shorthand";
+
 export type LlmAgentClientOptions = Readonly<{
-  credentials: LlmCredentials;
-  /** Injection point for Obsidian's requestUrl and for tests. */
-  fetch?: typeof globalThis.fetch;
+  profile: LlmProfile;
+  /**
+   * Required, and the only way out of this process: `createAppFetch(client, slot)` sends
+   * the request through the Shorthand app, which holds the key. A default of
+   * `globalThis.fetch` would silently make unauthenticated calls straight to the provider.
+   */
+  fetch: typeof globalThis.fetch;
   /** Character budget for retained history pairs. See `#commit` and `trimHistory`. */
   maxHistoryCharacters?: number;
   /** Per-request bound. The runner also races its own timeout around the whole contract. */
   timeoutMs?: number;
-  /**
-   * Only ever used to compose the no-API-key error, so a user is told which file to fix.
-   * This client never reads the file; whoever read it passes the path it came from. It
-   * defaults to `llmCredentialsPath()` only when omitted — calling that argless as the
-   * primary source would name the default location to a caller that redirected the config
-   * directory via an `environment`, i.e. a file the profile never came from.
-   */
-  credentialsPath?: string;
 }>;
 
 export class LlmAgentClient implements AgentClient {
@@ -56,7 +65,6 @@ export class LlmAgentClient implements AgentClient {
   readonly #model: LanguageModel;
   readonly #providerId: LlmProviderId;
   readonly #modelId: string;
-  readonly #apiKey: string | undefined;
   readonly #maxHistoryCharacters: number;
   readonly #timeoutMs: number | undefined;
   /**
@@ -76,7 +84,7 @@ export class LlmAgentClient implements AgentClient {
   #generation = 0;
 
   constructor(options: LlmAgentClientOptions) {
-    const { credentials } = options;
+    const { profile } = options;
     // Rejected at construction, not at first use: a bad budget is a wiring mistake, and
     // discovering it forty minutes into a capture costs the pass that discovers it.
     // `Number.isInteger` covers NaN, both infinities, fractions and non-numbers at once.
@@ -86,10 +94,9 @@ export class LlmAgentClient implements AgentClient {
     }
     this.#maxHistoryCharacters = options.maxHistoryCharacters ?? DEFAULT_MAX_HISTORY_CHARACTERS;
     this.#timeoutMs = options.timeoutMs;
-    this.#providerId = credentials.provider;
-    this.#modelId = credentials.model;
-    this.#apiKey = credentials.api_key;
-    this.#model = buildModel(credentials, options.fetch, options.credentialsPath ?? llmCredentialsPath());
+    this.#providerId = profile.provider;
+    this.#modelId = profile.model;
+    this.#model = buildModel(profile, options.fetch);
   }
 
   async query(request: AgentQueryRequest): Promise<AgentQueryResponse> {
@@ -158,11 +165,11 @@ export class LlmAgentClient implements AgentClient {
         return { structuredOutput: undefined, sessionId: this.#sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
       }
       // Everything else genuinely ends the pass, so the message has to be actionable: the
-      // provider and model are what a user changes in response, and the key is scrubbed
-      // because some providers echo the Authorization header back in a 401 body and this
-      // string reaches an operator log and the note's status line.
+      // provider and model are what a user changes in response. The provider's own text is
+      // forwarded unedited — this process holds no secret that could be echoed back in a
+      // 401 body, so there is nothing here to scrub out of it.
       throw new AgentQueryError(
-        this.#redact(`LLM provider "${this.#providerId}" (model "${this.#modelId}") failed: ${errorMessage(error)}`),
+        `LLM provider "${this.#providerId}" (model "${this.#modelId}") failed: ${errorMessage(error)}`,
       );
     }
 
@@ -213,7 +220,7 @@ export class LlmAgentClient implements AgentClient {
   #diagnostics(detail: string | undefined, warnings: readonly CallWarning[]): readonly string[] {
     const entries = detail === undefined ? [] : [detail];
     for (const warning of warnings) entries.push(`provider warning: ${describeWarning(warning)}`);
-    return entries.map((entry) => this.#redact(entry)).filter((entry) => entry.length > 0);
+    return entries.filter((entry) => entry.length > 0);
   }
 
   /**
@@ -224,46 +231,90 @@ export class LlmAgentClient implements AgentClient {
    */
   #reportWarnings(warnings: readonly CallWarning[]): void {
     for (const warning of warnings) {
-      const text = this.#redact(describeWarning(warning));
+      const text = describeWarning(warning);
       if (this.#warnedOnce.has(text)) continue;
       this.#warnedOnce.add(text);
       try { console.warn(`[enhance] LLM provider warning: ${text}`); } catch { /* Logging must not kill capture. */ }
     }
   }
+}
 
-  #redact(text: string): string {
-    return isUsableKey(this.#apiKey) ? text.replaceAll(this.#apiKey, "[REDACTED]") : text;
+/** The endpoint each provider talks to when the profile does not override it. */
+const OPENAI_ORIGIN = "https://api.openai.com";
+const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
+/**
+ * Ollama's own default, and the one `buildModel` passes the factory. `llmEndpointOrigin`
+ * reads the same constant on purpose: the app compares each request URL's origin against
+ * the slot origin the caller registered, so two constants naming this endpoint separately
+ * would drift into rejecting every call as an origin mismatch.
+ */
+const OLLAMA_BASE_URL = "http://127.0.0.1:11434";
+
+const MISSING_COMPATIBLE_BASE_URL =
+  `Provider "openai-compatible" needs a base_url; the endpoint is unknowable without one.`;
+
+/**
+ * The `origin` of the credential slot this profile's requests belong to: `scheme://host`
+ * with a port when the URL carries one, and never a path. The app rejects any request whose
+ * URL origin differs from the slot's, so this has to be derived the same way the app
+ * derives it — `URL.origin`, which also lower-cases the scheme and host for us.
+ */
+export function llmEndpointOrigin(profile: LlmProfile): string {
+  const baseUrl = profile.base_url;
+  switch (profile.provider) {
+    case "openai":
+      return originOf(baseUrl ?? OPENAI_ORIGIN);
+    case "anthropic":
+      return originOf(baseUrl ?? ANTHROPIC_ORIGIN);
+    case "ollama":
+      return originOf(baseUrl ?? OLLAMA_BASE_URL);
+    case "openai-compatible":
+      if (baseUrl === undefined) throw new Error(MISSING_COMPATIBLE_BASE_URL);
+      return originOf(baseUrl);
   }
+}
+
+function originOf(baseUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error(`base_url ${JSON.stringify(baseUrl)} is not an absolute URL, so it names no endpoint to authorise.`);
+  }
+  // An allowlist, not a check for the literal "null" `URL.origin` gives a scheme with no
+  // origin of its own. `file:` and `data:` are caught either way, but `ws:` and `ftp:` have
+  // real origins and would otherwise pass — and the app only ever performs `http.fetch`, so
+  // a slot registered under one of those authorises a request that can never be made. The
+  // failure belongs here, at the setting the user got wrong, not one layer further on.
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`base_url ${JSON.stringify(baseUrl)} uses scheme ${JSON.stringify(url.protocol)}; use an http or https URL.`);
+  }
+  return url.origin;
 }
 
 /**
  * `base_url` is honoured for all three providers, not only the compatible one: OpenAI and
  * Anthropic both accept a base URL for gateways, proxies and Azure-style deployments, and a
- * credentials file that accepts the field then ignores it for two of three providers is
- * worse than one that never accepted it. It stays *required* only for `openai-compatible`,
- * where the endpoint is unknowable without it.
+ * profile that accepts the field then ignores it for two of three providers is worse than
+ * one that never accepted it. It stays *required* only for `openai-compatible`, where the
+ * endpoint is unknowable without it.
  */
-function buildModel(
-  credentials: LlmCredentials,
-  fetch: typeof globalThis.fetch | undefined,
-  credentialsPath: string,
-): LanguageModel {
-  const baseUrl = credentials.base_url;
+function buildModel(profile: LlmProfile, fetch: typeof globalThis.fetch): LanguageModel {
+  const baseUrl = profile.base_url;
   const transport = {
     ...(baseUrl === undefined ? {} : { baseURL: baseUrl }),
-    ...(fetch === undefined ? {} : { fetch }),
+    fetch,
   };
-  switch (credentials.provider) {
+  switch (profile.provider) {
+    // APP_MANAGED_API_KEY, not a real key: these two factories throw without an `apiKey`
+    // string, and the app replaces the header it produces with the secret from its keyring.
     case "openai":
-      return createOpenAI({ apiKey: requireApiKey(credentials, credentialsPath), ...transport })(credentials.model);
+      return createOpenAI({ apiKey: APP_MANAGED_API_KEY, ...transport })(profile.model);
     case "anthropic":
-      return createAnthropic({ apiKey: requireApiKey(credentials, credentialsPath), ...transport })(credentials.model);
+      return createAnthropic({ apiKey: APP_MANAGED_API_KEY, ...transport })(profile.model);
     case "openai-compatible": {
-      // The reader already rejects this profile, so reaching here means a caller built the
-      // credentials object by hand. Failing loudly beats posting to `undefined/chat/completions`.
-      if (baseUrl === undefined) {
-        throw new Error(`Provider "openai-compatible" needs a base_url; the endpoint is unknowable without one.`);
-      }
+      // Failing loudly beats posting to `undefined/chat/completions`.
+      if (baseUrl === undefined) throw new Error(MISSING_COMPATIBLE_BASE_URL);
       return createOpenAICompatible({
         name: "openai-compatible",
         baseURL: baseUrl,
@@ -276,36 +327,15 @@ function buildModel(
         // honour `json_schema` cannot serve a backend whose entire contract is a validated
         // section object, and failing its way is clearer than degrading into that ladder.
         supportsStructuredOutputs: true,
-        // No key at all is legitimate here: a local Ollama endpoint authenticates nothing.
-        ...(credentials.api_key === undefined ? {} : { apiKey: credentials.api_key }),
-        ...(fetch === undefined ? {} : { fetch }),
-      })(credentials.model);
+        // No apiKey at all, unlike the two above: this factory is happy without one, and a
+        // local endpoint often authenticates nothing. When the slot does hold a secret the
+        // app adds the header, so sending a placeholder here would buy nothing.
+        fetch,
+      })(profile.model);
     }
-    case "ollama": {
-      const endpoint = baseUrl ?? "http://127.0.0.1:11434";
-      return createOllama({
-        baseURL: endpoint,
-        ...(credentials.api_key === undefined ? {} : { apiKey: credentials.api_key }),
-        ...(fetch === undefined ? {} : { fetch }),
-      })(credentials.model);
-    }
+    case "ollama":
+      return createOllama({ baseURL: baseUrl ?? OLLAMA_BASE_URL, fetch })(profile.model);
   }
-}
-
-/**
- * The credentials reader accepts an absent `api_key` for every provider so that "clear my
- * key" preserves the rest of the profile. The requirement lives here instead, and the
- * message has to be actionable: a bare "API key required" is a dead end for a user who does
- * not know the file exists, so it names the provider, the file the profile came from, and
- * both ways out.
- */
-function requireApiKey(credentials: LlmCredentials, credentialsPath: string): string {
-  if (!isUsableKey(credentials.api_key)) {
-    throw new Error(
-      `No API key for "${credentials.provider}" in ${credentialsPath}. Add one in Shorthand's settings, or switch to a provider that does not need one.`,
-    );
-  }
-  return credentials.api_key;
 }
 
 function systemMessage(systemPrompt: string): SystemModelMessage {
@@ -366,18 +396,6 @@ function describeWarning(warning: CallWarning): string {
     default:
       return JSON.stringify(warning);
   }
-}
-
-/**
- * Trimmed, because the credentials reader's `nonEmptyString` does not trim and so lets a
- * whitespace-only `api_key` through as a present value. Untrimmed, `"   "` would both count
- * as a usable key for `requireApiKey` and drive `replaceAll("   ", "[REDACTED]")` across
- * every diagnostic, warning and error message — rewriting every run of three spaces in
- * operator output. Not a leak, but unreadable, and the reader's tolerance is settled
- * behaviour that belongs to another file.
- */
-function isUsableKey(apiKey: string | undefined): apiKey is string {
-  return apiKey !== undefined && apiKey.trim().length > 0;
 }
 
 function errorMessage(error: unknown): string {

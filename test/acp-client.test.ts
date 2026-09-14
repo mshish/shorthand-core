@@ -1,15 +1,47 @@
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { PassThrough } from "node:stream";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import type { ChildProcess, spawn } from "node:child_process";
+import type { HttpStreamOptions } from "@agentclientprotocol/sdk/experimental/http-client";
+import type { WebSocketLike, WebSocketStreamOptions } from "@agentclientprotocol/sdk/experimental/ws-client";
 import { AgentQueryError, type AgentQueryRequest } from "../src/agent/contract.js";
-import {
-  AcpAgentClient,
-  extractJsonFromText,
-  type AcpAgentClientOptions,
-} from "../src/agent/acp-client.js";
+import type { AcpAgentClientOptions } from "../src/agent/acp-client.js";
+import { CORE_VERSION } from "../src/config.js";
 import { Utf8LineReader } from "../src/ndjson.js";
+
+/**
+ * The SDK transports are wrapped, not replaced: the WebSocket test below drives a real
+ * `Bun.serve` through the SDK's own stream, and only the options the client hands the SDK
+ * need to be observable. The real functions are captured BEFORE `mock.module` because bun
+ * mutates the live module namespace in place — reading them back through the namespace
+ * inside the wrapper would recurse.
+ */
+const actualWsClient = await import("@agentclientprotocol/sdk/experimental/ws-client");
+const realCreateWebSocketStream = actualWsClient.createWebSocketStream;
+const actualHttpClient = await import("@agentclientprotocol/sdk/experimental/http-client");
+const realCreateHttpStream = actualHttpClient.createHttpStream;
+
+const webSocketStreams: { url: string; options: WebSocketStreamOptions | undefined }[] = [];
+const httpStreams: { url: string; options: HttpStreamOptions | undefined }[] = [];
+
+mock.module("@agentclientprotocol/sdk/experimental/ws-client", () => ({
+  ...actualWsClient,
+  createWebSocketStream: (url: string, options?: WebSocketStreamOptions) => {
+    webSocketStreams.push({ url, options });
+    return realCreateWebSocketStream(url, options);
+  },
+}));
+
+mock.module("@agentclientprotocol/sdk/experimental/http-client", () => ({
+  ...actualHttpClient,
+  createHttpStream: (url: string, options?: HttpStreamOptions) => {
+    httpStreams.push({ url, options });
+    return realCreateHttpStream(url, options);
+  },
+}));
+
+const { AcpAgentClient, extractJsonFromText } = await import("../src/agent/acp-client.js");
 
 type MockChild = Omit<ChildProcess, "exitCode"> & {
   stdin: PassThrough;
@@ -146,7 +178,101 @@ function makeDummyRequest(overrides: Partial<AgentQueryRequest> = {}): AgentQuer
   };
 }
 
+type Section = Readonly<{ heading: string; markdown: string }>;
+
+/** The frames an ACP agent sends back over a network transport for one full query. */
+function acpNetworkReplies(raw: string, sessionId: string, sections: readonly Section[]): string[] {
+  const msg = JSON.parse(raw) as Record<string, unknown>;
+  if (msg.method === "initialize") {
+    return [JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1 } })];
+  }
+  if (msg.method === "session/new") {
+    return [JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { sessionId } })];
+  }
+  if (msg.method === "session/prompt") {
+    return [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: JSON.stringify({ sections }) },
+          },
+        },
+      }),
+      JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } }),
+    ];
+  }
+  return [];
+}
+
+/**
+ * A `WebSocket` class that answers the ACP handshake in-process, standing in for the shim
+ * `createAppWebSocketConstructor` returns. Nothing dials the URL, so a transport that
+ * ignored the injected constructor could not complete a query through it.
+ */
+function fakeWebSocketConstructor(
+  dialled: string[],
+  sessionId: string,
+  sections: readonly Section[],
+) {
+  const CONNECTING = 0;
+  const OPEN = 1;
+  const CLOSED = 3;
+
+  return class FakeWebSocket implements WebSocketLike {
+    readyState = CONNECTING;
+    readonly #listeners = new Map<string, Set<(event: unknown) => void>>();
+
+    constructor(url: string, _protocols?: string | string[]) {
+      dialled.push(url);
+      // Opens a turn later, as a real socket does, so the SDK's wait-for-open path runs.
+      queueMicrotask(() => {
+        this.readyState = OPEN;
+        this.#dispatch("open", { type: "open" });
+      });
+    }
+
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      const listeners = this.#listeners.get(type) ?? new Set<(event: unknown) => void>();
+      listeners.add(listener);
+      this.#listeners.set(type, listeners);
+    }
+
+    removeEventListener(type: string, listener: (event: unknown) => void): void {
+      this.#listeners.get(type)?.delete(listener);
+    }
+
+    send(data: string): void {
+      // Asynchronous because a real socket never answers inside `send`, and the SDK enqueues
+      // onto the readable it is still returning from when the write happens.
+      queueMicrotask(() => {
+        for (const reply of acpNetworkReplies(data, sessionId, sections)) {
+          this.#dispatch("message", { data: reply });
+        }
+      });
+    }
+
+    close(code?: number, reason?: string): void {
+      if (this.readyState === CLOSED) return;
+      this.readyState = CLOSED;
+      this.#dispatch("close", { type: "close", code: code ?? 1000, reason: reason ?? "" });
+    }
+
+    #dispatch(type: string, event: unknown): void {
+      for (const listener of [...(this.#listeners.get(type) ?? [])]) listener(event);
+    }
+  };
+}
+
 describe("AcpAgentClient", () => {
+  beforeEach(() => {
+    webSocketStreams.length = 0;
+    httpStreams.length = 0;
+  });
+
   it("enforces supportsVaultTools === false", () => {
     const client = new AcpAgentClient({
       transport: { type: "stdio", command: "agent" },
@@ -182,7 +308,12 @@ describe("AcpAgentClient", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
-      params: { protocolVersion: 1 },
+      params: {
+        protocolVersion: 1,
+        // Read from the constant, not repeated: a literal here is what let the shipped value
+        // sit at 0.20.0 while the package moved on.
+        clientInfo: { name: "shorthand-core", version: CORE_VERSION },
+      },
     });
     expect(sentMessages[1]).toMatchObject({
       jsonrpc: "2.0",
@@ -395,24 +526,8 @@ describe("AcpAgentClient", () => {
       },
       websocket: {
         message(ws, raw) {
-          const msg = JSON.parse(raw.toString());
-          if (msg.method === "initialize") {
-            ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1 } }));
-          } else if (msg.method === "session/new") {
-            ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "net-session-123" } }));
-          } else if (msg.method === "session/prompt") {
-            ws.send(JSON.stringify({
-              jsonrpc: "2.0",
-              method: "session/update",
-              params: {
-                sessionId: "net-session-123",
-                update: {
-                  sessionUpdate: "agent_message_chunk",
-                  content: { type: "text", text: JSON.stringify({ sections: expectedSections }) },
-                },
-              },
-            }));
-            ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } }));
+          for (const reply of acpNetworkReplies(raw.toString(), "net-session-123", expectedSections)) {
+            ws.send(reply);
           }
         },
       },
@@ -420,16 +535,57 @@ describe("AcpAgentClient", () => {
 
     try {
       const client = new AcpAgentClient({
-        transport: { type: "network", url: `ws://localhost:${server.port}` },
+        transport: {
+          type: "network",
+          url: `ws://localhost:${server.port}`,
+          WebSocket: globalThis.WebSocket,
+        },
       });
 
       const response = await client.query(makeDummyRequest());
       expect(response.sessionId).toBe("net-session-123");
       expect(response.structuredOutput).toEqual({ sections: expectedSections });
+      expect(webSocketStreams).toEqual([
+        { url: `ws://localhost:${server.port}`, options: { WebSocket: globalThis.WebSocket } },
+      ]);
       await client.dispose();
     } finally {
       server.stop(true);
     }
+  });
+
+  it("dials wss:// through the injected WebSocket constructor", async () => {
+    const expectedSections = [{ heading: "Relayed", markdown: "* Through the app" }];
+    const dialled: string[] = [];
+    const AppWebSocket = fakeWebSocketConstructor(dialled, "relay-session-1", expectedSections);
+
+    const client = new AcpAgentClient({
+      transport: { type: "network", url: "wss://agent.example/acp", WebSocket: AppWebSocket },
+    });
+
+    const response = await client.query(makeDummyRequest());
+    expect(response.sessionId).toBe("relay-session-1");
+    expect(response.structuredOutput).toEqual({ sections: expectedSections });
+    expect(dialled).toEqual(["wss://agent.example/acp"]);
+    expect(webSocketStreams.at(-1)?.options?.WebSocket).toBe(AppWebSocket);
+    await client.dispose();
+  });
+
+  it("passes the injected fetch to the HTTP transport for https://", async () => {
+    const fetched: string[] = [];
+    const appFetch = (async (input: unknown) => {
+      fetched.push(String(input));
+      return new Response("no relay", { status: 502 });
+    }) as typeof globalThis.fetch;
+
+    const client = new AcpAgentClient({
+      transport: { type: "network", url: "https://agent.example/acp", fetch: appFetch },
+    });
+
+    await expect(client.query(makeDummyRequest())).rejects.toThrow();
+    expect(fetched).toEqual(["https://agent.example/acp"]);
+    expect(httpStreams).toEqual([{ url: "https://agent.example/acp", options: { fetch: appFetch } }]);
+    await client.dispose();
   });
 
   it("throws AgentQueryError when no executable can be discovered", async () => {

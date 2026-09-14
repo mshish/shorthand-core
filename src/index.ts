@@ -88,11 +88,42 @@ export type {
   AcpTransportConfig,
 } from "./agent/acp-client.js";
 
-export { LlmAgentClient } from "./agent/llm-client.js";
+export { APP_MANAGED_API_KEY, LlmAgentClient, llmEndpointOrigin } from "./agent/llm-client.js";
 export type { LlmAgentClientOptions } from "./agent/llm-client.js";
 
+export type { LlmProfile, LlmProviderId } from "./agent/llm-credentials.js";
+
+/**
+ * Legacy file, read once by the plugin's migration; removed in 0.23. Nothing in core reads
+ * it: the key lives in the Shorthand app's keyring and `createAppFetch` is the only path to
+ * an authenticated request.
+ */
 export { llmCredentialsPath, readLlmCredentials } from "./agent/llm-credentials.js";
-export type { LlmCredentials, LlmCredentialsReadResult, LlmProviderId } from "./agent/llm-credentials.js";
+export type { LlmCredentials, LlmCredentialsReadResult } from "./agent/llm-credentials.js";
+
+/**
+ * The Shorthand app's request socket: the channel core uses to make an authenticated call
+ * without ever holding the secret it needs. `createAppFetch` and
+ * `createAppWebSocketConstructor` are what an `LlmAgentClient` or an ACP network transport
+ * is built on; `ShorthandAppClient.connect` is what produces the client they take.
+ */
+export { APP_PROTOCOL_VERSION, AppUnavailableError, ShorthandAppClient } from "./app/client.js";
+export type {
+  AppClientLike,
+  AppCredentialSlot,
+  AppCredentialStatus,
+  AppEvent,
+  AppUnavailableReason,
+  ShorthandAppClientOptions,
+} from "./app/client.js";
+
+export { readDiscovery } from "./app/discovery.js";
+export type { RequestSocketDiscovery } from "./app/discovery.js";
+
+export { createAppFetch } from "./app/fetch.js";
+
+export { createAppWebSocketConstructor } from "./app/websocket.js";
+export type { AppWebSocketConstructor, AppWebSocketEvent, AppWebSocketLike } from "./app/websocket.js";
 
 export {
   DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
@@ -116,5 +147,5 @@ export type {
 
 export type { NoteTakingContext } from "./agent/runner.js";
 
-export { DEFAULT_CONFIG, detectShorthandExecutable } from "./config.js";
+export { CORE_VERSION, DEFAULT_CONFIG, detectShorthandExecutable, requestSocketDiscoveryPath } from "./config.js";
 export type { ShorthandConfig } from "./config.js";

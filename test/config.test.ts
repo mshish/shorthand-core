@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { chmod } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { detectShorthandExecutable, shorthandConfigDirectory } from "../src/config.js";
+import { CORE_VERSION, detectShorthandExecutable, shorthandConfigDirectory } from "../src/config.js";
 
 const binaryName = process.platform === "win32" ? "shorthand.exe" : "shorthand";
 
@@ -97,5 +97,16 @@ describe("shorthandConfigDirectory", () => {
   test("falls back to os.homedir() when neither USERPROFILE nor HOME is set", () => {
     const detected = shorthandConfigDirectory({});
     expect(detected.startsWith(homedir()) || detected.includes(homedir())).toBe(true);
+  });
+});
+
+describe("CORE_VERSION", () => {
+  test("matches the version in package.json", async () => {
+    // CORE_VERSION is a literal because resolveJsonModule is off, so the manifest cannot be
+    // imported into library code. That leaves two places holding one number, and they were
+    // already two releases apart once — hence reading the file here rather than trusting a
+    // release checklist.
+    const manifest = JSON.parse(await readFile(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string };
+    expect(CORE_VERSION).toBe(manifest.version);
   });
 });

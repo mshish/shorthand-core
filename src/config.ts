@@ -87,7 +87,7 @@ export function requestSocketDiscoveryPath(environment: NodeJS.ProcessEnv = proc
  * larger change than this needs. Bump it together with `package.json` — `test/config.test.ts`
  * reads the manifest and fails if the two ever disagree again.
  */
-export const CORE_VERSION = "0.22.0";
+export const CORE_VERSION = "0.22.1";
 
 export const DEFAULT_CONFIG = Object.freeze({
   shorthandBinaryPath: "shorthand",

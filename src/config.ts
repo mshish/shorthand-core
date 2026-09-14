@@ -88,9 +88,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   thresholds: {
     // Tuned against a real run: ~40s of ordinary speech produced ~130 committed characters,
     // so a 600-char gate meant the first update landed minutes in — the note looked dead.
-    // ~180 chars is roughly two spoken sentences, which keeps passes bounded while making
-    // the note visibly track the meeting.
-    enhancementNewCharacters: 180,
+    // 180 still left a sparser talker — someone typing notes rather than narrating — with a
+    // long wait before a first update, so this halves to ~90: roughly one spoken sentence,
+    // trading a shorter per-pass budget for passes that start sooner.
+    enhancementNewCharacters: 90,
     enhancementIntervalMs: 25_000,
   },
   enhancement: {

@@ -45,7 +45,7 @@ exactly those labels when platform speaker tags are unavailable) and uses the sa
 idea: your rough bullets steer the AI. That much is deliberately copied.
 
 **Granola enhances once, after the meeting ends.** This enhances continuously *during* the
-meeting — roughly every 180 characters of speech, plus a final vault-linking pass on stop.
+meeting — roughly every 90 characters of speech, plus a final vault-linking pass on stop.
 That was an explicit requirement ("as the meeting evolved the notes should evolve") and it is
 the reason for machinery Granola never needs: a summariser that runs once over a finished
 transcript never has to retract a decision it already recorded. This one does.

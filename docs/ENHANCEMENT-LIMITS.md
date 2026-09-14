@@ -32,7 +32,7 @@ The state machine rejects requests from `running`, `expired`, or
 | `running` state | 1 concurrent pass | same | — | Two overlapping queries. Correctness, not tuning — a second pass would re-send a transcript the first already took |
 | `disabledForReadFailures` state | after 3 failures | same | — | Repeated calls against a note that cannot be read. Never resets for the rest of the session |
 | `maxDurationMs` | 4h | 4h, `HANDY_NOTES_MAX_DURATION_MS` | — | A capture left running overnight still calling the model |
-| `minNewChars` | 600 | **180** | ~55s | A pass with nothing new to say |
+| `minNewChars` | 600 | **90** | ~28s | A pass with nothing new to say |
 | `minIntervalMs` | 60_000 | **25_000** | — | Passes firing back-to-back. This is the real rate bound — even a failing pass respects it |
 | empty `link` transcript | declines unless waived | same | — | A paid `link` pass that re-sends a note core has already summarised. Checked in `#runPass` after `sink.read()`, not by a machine guard, because it needs the note's current sections |
 

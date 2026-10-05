@@ -31,7 +31,7 @@
     "@ai-sdk/openai-compatible": "^3.0.63",
     "@anthropic-ai/claude-agent-sdk": "^0.3.289",
     "@googleapis/docs": "^14.1.0",
-    "@openai/codex-sdk": "^0.149.1",
+    "@openai/codex-sdk": "^0.160.0",
     "ai": "^7.0.128",
     "ai-sdk-ollama": "^4.4.0",
     "google-auth-library": "11.1.0",

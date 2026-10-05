@@ -527,13 +527,26 @@ describe("CodexAgentClient happy path", () => {
     expect(startThreadCalls[1]!.options.workingDirectory).toBe(startThreadCalls[0]!.options.workingDirectory);
   });
 
-  test("passes the system prompt as base_instructions on the underlying Codex client's config, once, reused across calls", async () => {
+  // Regression: the prompt was once passed as `base_instructions`, a key the Codex CLI does not
+  // read, so the safety preamble never reached the model. The honoured key is
+  // `model_instructions_file`, which points at a file holding the prompt.
+  test("delivers the system prompt through model_instructions_file, once, reused across calls", async () => {
     const client = newClient();
-    await client.query(baseRequest({ systemPrompt: "SAFE PREAMBLE\n\nGuidance." }));
-    await client.query(baseRequest({ systemPrompt: "SAFE PREAMBLE\n\nGuidance." }));
+    const systemPrompt = "SAFE PREAMBLE\n\nGuidance.";
+    await client.query(baseRequest({ systemPrompt }));
+    await client.query(baseRequest({ systemPrompt }));
     expect(constructedWith).toHaveLength(1);
-    const config = constructedWith[0]!.config as { base_instructions: string };
-    expect(config.base_instructions).toBe("SAFE PREAMBLE\n\nGuidance.");
+    const config = constructedWith[0]!.config as { model_instructions_file: string };
+    expect(config).not.toHaveProperty("base_instructions");
+    expect(readFileSync(config.model_instructions_file, "utf8")).toBe(systemPrompt);
+    await client.dispose();
+  });
+
+  test("disables multi-agent tools through agents.enabled", async () => {
+    const client = newClient();
+    await client.query(baseRequest());
+    const config = constructedWith[0]!.config as { agents: unknown };
+    expect(config.agents).toEqual({ enabled: false });
   });
 
   // Defence in depth, not a boundary: a live probe executed a shell command through an
@@ -549,6 +562,16 @@ describe("CodexAgentClient happy path", () => {
     await client.query(baseRequest());
     const config = constructedWith[0]!.config as { features: Record<string, boolean> };
     expect(config.features).toEqual({
+      multi_agent: false,
+      goals: false,
+      computer_use: false,
+      in_app_browser: false,
+      plugins: false,
+      remote_plugin: false,
+      image_generation: false,
+      memories: false,
+      hooks: false,
+      view_image: false,
       shell_tool: false,
       unified_exec: false,
       apps: false,

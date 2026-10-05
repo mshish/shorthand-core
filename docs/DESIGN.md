@@ -324,9 +324,7 @@ The original form of this invariant was a `0600` file in `shorthandConfigDirecto
 because an Obsidian settings field lands in `data.json`, which is plaintext and travels with
 vault sync — copying a billable key to every synced machine and every vault backup. The
 keyring is the same invariant carried further: a file on disk is still readable by anything
-running as the user, and still ends up in a backup. `llm-credentials.json` and
-`readLlmCredentials` survive for one caller, the plugin's one-time migration that moves an
-existing key into the app, and are removed in 0.23.
+running as the user, and still ends up in a backup.
 
 **The meeting-end signal is a report, not a capability.** The structured output carries
 `meetingStatus: { ended, reason }` beside the sections, and the agent gains no tool or MCP to

@@ -458,10 +458,6 @@ a credential, and the app replaces the header it produces.
 `protocol` — so a consumer can tell the user which of "open the app", "update the app" or
 "update this build" applies without matching prose.
 
-`llmCredentialsPath` / `readLlmCredentials` / `LlmCredentials` / `LlmCredentialsReadResult`
-remain exported for one caller only: the plugin's one-time migration, which reads the old
-`llm-credentials.json` to move an existing key into the app. They are removed in 0.23.
-
 #### The Google credentials file
 
 Google is one exception, and the reason is Google's: `google-auth-library` refreshes an

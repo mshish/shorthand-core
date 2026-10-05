@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { connect as connectSocket, type Socket } from "node:net";
-import type { LlmProviderId } from "../agent/llm-credentials.js";
+import type { LlmProviderId } from "../agent/llm-profile.js";
 import { Utf8LineReader } from "../ndjson.js";
 import { readDiscovery } from "./discovery.js";
 

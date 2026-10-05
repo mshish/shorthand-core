@@ -266,7 +266,8 @@ export class CodexAgentClient implements AgentClient {
         //
         // multi_agent, goals: sub-agents and persisted goals with automatic continuation let
         // injected transcript text drive further turns (see agents.enabled above). goals exposes
-        // create_goal/get_goal/update_goal inside code mode.
+        // create_goal/get_goal/update_goal as ordinary function tools on current models (observed
+        // on codex 0.160 with gpt-5.5), so nothing about them depends on code mode being on.
         //
         // computer_use, in_app_browser, plugins, remote_plugin: stable and on by default. Not
         // reachable under API-key auth in a captured request, but unverified under ChatGPT auth,
@@ -280,6 +281,21 @@ export class CodexAgentClient implements AgentClient {
         //
         // view_image can read any local image into the model context, from where it could leak
         // into note output. apply_patch is left to sandboxMode "read-only", which blocks writes.
+        //
+        // skill_mcp_dependency_install: a skill can declare MCP server dependencies, and Codex
+        // installs them when the skill is used. Skills are reachable from injected transcript
+        // text (see skills.include_instructions below), so this would let that text add an MCP
+        // server to the session. Not exercised live; pinned because it is stable and defaults on.
+        //
+        // tool_suggest: surfaces a tool that offers to install or enable connectors and plugins,
+        // i.e. a route from model output to new capabilities. Stable and on by default.
+        //
+        // in_app_local_automation, realtime_conversation, code_mode_host: stable and on by
+        // default, none reachable through `codex exec` today. Pinned as defence in depth for the
+        // same reason as computer_use and in_app_browser: they are first-party surfaces that do
+        // not go through the isolated CODEX_HOME, and a default can flip. code_mode_host
+        // controls whether code mode, which can call other tools from inside a script, is
+        // hosted at all.
         features: {
           multi_agent: false,
           goals: false,
@@ -297,7 +313,23 @@ export class CodexAgentClient implements AgentClient {
           browser_use: false,
           browser_use_external: false,
           browser_use_full_cdp_access: false,
+          skill_mcp_dependency_install: false,
+          tool_suggest: false,
+          in_app_local_automation: false,
+          realtime_conversation: false,
+          code_mode_host: false,
         },
+        // Removes the available-skills listing from every request. It does NOT stop skills
+        // being pulled into context: a `$<skill-name>` in the prompt, which here is untrusted
+        // transcript text, still injects that skill's SKILL.md, from ~/.agents/skills (not hidden
+        // by the isolated CODEX_HOME) and from the working directory's .agents/skills. Checked
+        // against codex 0.160 with a mock Responses endpoint: no documented switch turns off
+        // mention resolution. skills.config entries disable one skill by name or path, so they
+        // cannot cover skills this code does not know about; skills.bundled.enabled=false,
+        // features.skill_search=false, features.mentions_v2=false,
+        // features.skip_host_skill_discovery=true and skills.max_context_tokens each left the
+        // injection in place, and max_context_tokens rejects 0.
+        skills: { include_instructions: false },
       },
     });
     return this.#codex;

@@ -578,7 +578,21 @@ describe("CodexAgentClient happy path", () => {
       browser_use: false,
       browser_use_external: false,
       browser_use_full_cdp_access: false,
+      skill_mcp_dependency_install: false,
+      tool_suggest: false,
+      in_app_local_automation: false,
+      realtime_conversation: false,
+      code_mode_host: false,
     });
+  });
+
+  // Removes the skills listing only. `$<skill>` mention injection is not closed by any
+  // documented setting in codex 0.160, so this test must not be read as covering it.
+  test("pins skills.include_instructions off so requests carry no skills listing", async () => {
+    const client = newClient();
+    await client.query(baseRequest());
+    const config = constructedWith[0]!.config as { skills: unknown };
+    expect(config.skills).toEqual({ include_instructions: false });
   });
 
   // Model moved to the SDK's typed ThreadOptions.model (per-thread), not

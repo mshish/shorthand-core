@@ -5,7 +5,7 @@ import { createOllama } from "ai-sdk-ollama";
 import { NoObjectGeneratedError, NoOutputGeneratedError, Output, generateText, jsonSchema } from "ai";
 import type { CallWarning, LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 import { AgentQueryError, type AgentClient, type AgentQueryRequest, type AgentQueryResponse } from "./contract.js";
-import type { LlmProfile, LlmProviderId } from "./llm-credentials.js";
+import type { LlmProfile, LlmProviderId } from "./llm-profile.js";
 
 /**
  * The second enhancement backend: ordinary LLM provider APIs through the Vercel AI SDK,

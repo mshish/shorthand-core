@@ -6,7 +6,7 @@ import {
   queryForSections,
   type AgentQueryRequest,
 } from "../src/agent/contract.js";
-import type { LlmProfile } from "../src/agent/llm-credentials.js";
+import type { LlmProfile } from "../src/agent/llm-profile.js";
 
 type CallOptions = Record<string, unknown>;
 type ModelMessageLike = Readonly<{ role: string; content: unknown; providerOptions?: unknown }>;

@@ -91,15 +91,7 @@ export type {
 export { APP_MANAGED_API_KEY, LlmAgentClient, llmEndpointOrigin } from "./agent/llm-client.js";
 export type { LlmAgentClientOptions } from "./agent/llm-client.js";
 
-export type { LlmProfile, LlmProviderId } from "./agent/llm-credentials.js";
-
-/**
- * Legacy file, read once by the plugin's migration; removed in 0.23. Nothing in core reads
- * it: the key lives in the Shorthand app's keyring and `createAppFetch` is the only path to
- * an authenticated request.
- */
-export { llmCredentialsPath, readLlmCredentials } from "./agent/llm-credentials.js";
-export type { LlmCredentials, LlmCredentialsReadResult } from "./agent/llm-credentials.js";
+export type { LlmProfile, LlmProviderId } from "./agent/llm-profile.js";
 
 /**
  * The Shorthand app's request socket: the channel core uses to make an authenticated call

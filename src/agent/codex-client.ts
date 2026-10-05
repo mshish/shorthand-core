@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readdirSync, readFileSync, rmSync, statSync, type Dirent } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { copyFile, cp, link, mkdir, mkdtemp, realpath, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
@@ -87,7 +87,7 @@ export class CodexAgentClient implements AgentClient {
   async query(request: AgentQueryRequest): Promise<AgentQueryResponse> {
     if (request.signal?.aborted === true) throw new AgentQueryError("Agent query aborted.");
     const { root, workingDirectory, codexHome } = await this.#ensureRuntimeDirs();
-    const codex = this.#ensureCodex(request.systemPrompt, codexHome);
+    const codex = this.#ensureCodex(request.systemPrompt, codexHome, root);
     const threadOptions = {
       // Always the scratch directory this client owns, never request.cwd: this backend is
       // never handed vault content (supportsVaultTools = false), and this field is not read
@@ -188,8 +188,8 @@ export class CodexAgentClient implements AgentClient {
     return { structuredOutput, sessionId, ...(diagnostics.length > 0 ? { diagnostics } : {}) };
   }
 
-  #ensureCodex(systemPrompt: string, codexHome: string): Codex {
-    // Lazy: CodexOptions.config (which carries base_instructions, replacing Codex's default
+  #ensureCodex(systemPrompt: string, codexHome: string, root: string): Codex {
+    // Lazy: CodexOptions.config (which carries model_instructions_file, replacing Codex's default
     // system prompt — see docs/superpowers/specs/2026-08-25-codex-agent-backend-design.md) is
     // constructor-level, not per-thread, so the Codex instance can't be built until the first
     // call's systemPrompt is known. Built once and reused after that, which relies on
@@ -197,6 +197,18 @@ export class CodexAgentClient implements AgentClient {
     // true today (EnhanceRunnerOptions.guidance is fixed at construction — see AGENTS.md "the
     // enhancement prompt is split, deliberately"). If that ever stops being true, this
     // silently keeps serving the FIRST call's instructions to every later call.
+    //
+    // The prompt is delivered as a file because `model_instructions_file` is the key the Codex
+    // CLI honours as a replacement for its built-in instructions. This code previously set
+    // `base_instructions`, which the CLI's config schema does not have: it was silently ignored,
+    // so the injection guard in the system prompt never reached the model, which instead got
+    // Codex's default "You are Codex" prompt (confirmed by capturing requests against a mock
+    // Responses endpoint on codex 0.149.1 and 0.160.0). `developer_instructions` is read too but
+    // is appended after the default prompt rather than replacing it, so it is not used.
+    const instructionsFile = join(root, "instructions.md");
+    if (this.#codex === undefined) {
+      writeFileSync(instructionsFile, systemPrompt, "utf8");
+    }
     this.#codex ??= new Codex({
       ...(this.#options.codexPathOverride === undefined ? {} : { codexPathOverride: this.#options.codexPathOverride }),
       ...(this.#options.apiKey === undefined ? {} : { apiKey: this.#options.apiKey }),
@@ -207,7 +219,13 @@ export class CodexAgentClient implements AgentClient {
       // child's environment instead of implicitly inheriting the operator's original value.
       env: isolatedCodexEnvironment(codexHome),
       config: {
-        base_instructions: systemPrompt,
+        model_instructions_file: instructionsFile,
+        // Multi-agent tools stay reachable on current models even with features.multi_agent
+        // off, because the model catalog sets multi_agent_version per model. That flag only
+        // removes the agent tool_search on some models. agents.enabled is the documented switch
+        // that removes the whole collaboration namespace (spawn_agent, send_message, ...), so
+        // both are pinned.
+        agents: { enabled: false },
         // Defence in depth, explicitly NOT a boundary. A turn run this way does report that it
         // has no shell-command tool, but that proves nothing about what it can execute: with
         // both of these disabled under sandboxMode "read-only", a live probe still ran a shell
@@ -245,7 +263,34 @@ export class CodexAgentClient implements AgentClient {
         // sandbox_workspace_write.network_access=...`, two config keys unrelated to
         // `features.browser_use*`, which `codex features list` reports as separate stable
         // flags defaulting to enabled.
+        //
+        // multi_agent, goals: sub-agents and persisted goals with automatic continuation let
+        // injected transcript text drive further turns (see agents.enabled above). goals exposes
+        // create_goal/get_goal/update_goal inside code mode.
+        //
+        // computer_use, in_app_browser, plugins, remote_plugin: stable and on by default. Not
+        // reachable under API-key auth in a captured request, but unverified under ChatGPT auth,
+        // which is the default path here (the ambient auth.json is linked in). Pinned as
+        // defence in depth. Plugins bundle MCP servers, apps and hooks, and the isolated
+        // CODEX_HOME does not isolate user-level ~/.agents.
+        //
+        // image_generation, memories, hooks: not reachable today (no tool under API-key auth;
+        // memories off by default; hooks are lifecycle commands, not model-callable). Pinned
+        // because a default can flip and hooks run commands.
+        //
+        // view_image can read any local image into the model context, from where it could leak
+        // into note output. apply_patch is left to sandboxMode "read-only", which blocks writes.
         features: {
+          multi_agent: false,
+          goals: false,
+          computer_use: false,
+          in_app_browser: false,
+          plugins: false,
+          remote_plugin: false,
+          image_generation: false,
+          memories: false,
+          hooks: false,
+          view_image: false,
           shell_tool: false,
           unified_exec: false,
           apps: false,

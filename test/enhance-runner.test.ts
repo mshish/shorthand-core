@@ -52,6 +52,28 @@ describe("EnhanceRunner trigger and transcript cutoff policy", () => {
     expect(agent.requests[1]).toMatchObject({ cwd: "C:\\vault", tools: ["Read", "Glob", "Grep"], settingSources: [], maxTurns: 4 });
   });
 
+  test("surfaces the agent's meeting-end signal on both the pass outcome and the finished status", async () => {
+    const ended = { sections: OUTPUT.sections, meetingStatus: { ended: true, reason: "Everyone said goodbye." } };
+    const agent = new FakeAgent([
+      Promise.resolve({ structuredOutput: ended, sessionId: "session-end" }),
+      Promise.resolve(response()),
+    ]);
+    const statuses: EnhanceStatus[] = [];
+    const runner = makeRunner({ agent, onStatus: (status) => statuses.push(status) });
+    runner.appendTranscript("bye everyone");
+    expect(await runner.enhanceNow("tick")).toMatchObject({
+      status: "completed", meetingStatus: { ended: true, reason: "Everyone said goodbye." },
+    });
+    expect(statuses.find((status) => status.kind === "finished")).toMatchObject({
+      meetingStatus: { ended: true, reason: "Everyone said goodbye." },
+    });
+    // The fixture omits the signal entirely; a pass with valid sections must still complete.
+    runner.appendTranscript(" more");
+    expect(await runner.enhanceNow("tick")).toMatchObject({
+      status: "completed", meetingStatus: { ended: false, reason: "" },
+    });
+  });
+
   test("a client that cannot use vault tools runs the tick tier even when the sink offers agent context", async () => {
     const agent = new FakeAgent([Promise.resolve(response())], { supportsVaultTools: false });
     const statuses: EnhanceStatus[] = [];

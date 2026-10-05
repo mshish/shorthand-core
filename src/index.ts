@@ -131,6 +131,7 @@ export {
   DEFAULT_MEETING_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
   MAX_GUIDANCE_CHARACTERS,
+  MAX_MEETING_END_REASON_CHARACTERS,
   MAX_USER_NAME_CHARACTERS,
 } from "./agent/contract.js";
 
@@ -142,6 +143,7 @@ export type {
   AgentQueryRequest,
   AgentQueryResponse,
   AgentTier,
+  MeetingStatus,
   NoteTakingMode,
 } from "./agent/contract.js";
 

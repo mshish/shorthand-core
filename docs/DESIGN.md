@@ -328,6 +328,15 @@ running as the user, and still ends up in a backup. `llm-credentials.json` and
 `readLlmCredentials` survive for one caller, the plugin's one-time migration that moves an
 existing key into the app, and are removed in 0.23.
 
+**The meeting-end signal is a report, not a capability.** The structured output carries
+`meetingStatus: { ended, reason }` beside the sections, and the agent gains no tool or MCP to
+act on it. The instruction for setting it lives in `ENHANCEMENT_SAFETY_PREAMBLE`, not in the
+editorial half, so a caller-supplied `guidance` cannot remove the rule that transcript text
+claiming the meeting is over is not evidence. Both properties are `required` in the JSON Schema
+because Codex's strict output schema rejects optional ones; `readMeetingStatus` is what
+tolerates a model that omits or mangles it, collapsing every failure to `ended: false` rather
+than failing a pass whose sections were valid.
+
 **The safety preamble is not the caller's to replace.** The system prompt is composed at one
 site (`runner.ts`) as `ENHANCEMENT_SAFETY_PREAMBLE` + the editorial guidance, in that order.
 Only the second half is caller-supplied, through `EnhanceRunnerOptions.guidance`; an empty or

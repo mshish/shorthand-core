@@ -74,7 +74,7 @@ describe("shorthand-notes CLI", () => {
     const outcomes: PassOutcome[] = [
       { status: "requeued", reason: "busy" },
       { status: "timed-out" },
-      { status: "completed", tier: "link", sections: [], written: true },
+      { status: "completed", tier: "link", sections: [], written: true, meetingStatus: { ended: false, reason: "" } },
     ];
     const delays: number[] = [];
     const outcome = await runFinalEnhancementWithRetries(
@@ -89,7 +89,7 @@ describe("shorthand-notes CLI", () => {
     const outcomes: PassOutcome[] = [
       { status: "requeued", reason: "busy", retryAfterMs: 1_500 },
       { status: "requeued", reason: "busy" },
-      { status: "completed", tier: "link", sections: [], written: true },
+      { status: "completed", tier: "link", sections: [], written: true, meetingStatus: { ended: false, reason: "" } },
     ];
     const delays: number[] = [];
     const outcome = await runFinalEnhancementWithRetries(

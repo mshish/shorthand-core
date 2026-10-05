@@ -13,6 +13,7 @@ import {
   type AgentQueryResponse,
   type AgentTier,
   type ContractLogger,
+  type MeetingStatus,
   type NoteTakingMode,
 } from "./contract.js";
 
@@ -49,7 +50,7 @@ type TerminalStatusBase<K extends string> = TierStatusBase<K> & Readonly<{ durat
 /** Status fields are available only on the variants for which they have meaning. */
 export type EnhanceStatus =
   | TierStatusBase<"started">
-  | TerminalStatusBase<"finished">
+  | (TerminalStatusBase<"finished"> & Readonly<{ meetingStatus: MeetingStatus }>)
   | TerminalStatusBase<"skipped">
   | (TerminalStatusBase<"requeued"> & Readonly<{ retryAfterMs?: number }>)
   | TerminalStatusBase<"timed-out">
@@ -59,7 +60,7 @@ export type EnhanceStatus =
   | StatusBase<"disabled-for-read-failures">;
 
 export type PassOutcome =
-  | Readonly<{ status: "completed"; tier: AgentTier; sections: readonly Section[]; written: boolean }>
+  | Readonly<{ status: "completed"; tier: AgentTier; sections: readonly Section[]; written: boolean; meetingStatus: MeetingStatus }>
   | Readonly<{ status: "skipped"; reason: "invalid-output" | "agent-error" }>
   | Readonly<{ status: "not-ready"; reason: "characters" | "interval" }>
   | Readonly<{ status: "in-flight" }>
@@ -88,7 +89,7 @@ type PassRequest = Readonly<{
 }>;
 
 type PassResult =
-  | Readonly<{ kind: "completed"; tier: AgentTier; sections: readonly Section[]; written: boolean; attempts: number; sessionId?: string }>
+  | Readonly<{ kind: "completed"; tier: AgentTier; sections: readonly Section[]; written: boolean; meetingStatus: MeetingStatus; attempts: number; sessionId?: string }>
   | Readonly<{ kind: "skipped"; tier: AgentTier; reason: "invalid-output" | "agent-error"; error?: string; attempts: number; sessionId?: string }>
   | Readonly<{ kind: "not-ready"; tier: AgentTier; reason: "characters"; attempts: 0 }>
   | Readonly<{ kind: "requeued"; tier: AgentTier; reason: "stale" | "busy"; message: string; retryAfterMs?: number; attempts: number; sessionId?: string }>
@@ -511,8 +512,8 @@ export class EnhanceRunner {
       outcome = { status: "failed", error: message };
     } else if (result.kind === "completed") {
       const finish = result.written ? "written" : this.#options.dryRun ? "dry run" : "unchanged";
-      this.#emit({ kind: "finished", message: `Enhancement pass ${passCount} finished (${finish}).`, tier: result.tier, durationMs, passCount });
-      outcome = { status: "completed", tier: result.tier, sections: result.sections, written: result.written };
+      this.#emit({ kind: "finished", message: `Enhancement pass ${passCount} finished (${finish}).`, tier: result.tier, durationMs, passCount, meetingStatus: result.meetingStatus });
+      outcome = { status: "completed", tier: result.tier, sections: result.sections, written: result.written, meetingStatus: result.meetingStatus };
     } else if (result.kind === "not-ready") {
       if (context.lastDecline !== result.reason) {
         this.#emit({
@@ -688,7 +689,7 @@ export class EnhanceRunner {
       attempts: result.attempts,
       ...(isResumableSessionId(result.sessionId) ? { sessionId: result.sessionId } : {}),
     };
-    if (this.#options.dryRun) return { kind: "completed", tier, sections: result.sections, written: false, ...shared };
+    if (this.#options.dryRun) return { kind: "completed", tier, sections: result.sections, written: false, meetingStatus: result.meetingStatus, ...shared };
     // NoteSink has no signal parameter, so this is the last point at which the runner can
     // prevent an already-timed-out pass from initiating an orphaned external write.
     throwIfAborted(signal);
@@ -715,7 +716,7 @@ export class EnhanceRunner {
     if (writeResult.status === "error") {
       return { kind: "failed", tier, message: writeResult.error.message, readFailure: false, ...shared };
     }
-    return { kind: "completed", tier, sections: result.sections, written: writeResult.status === "written", ...shared };
+    return { kind: "completed", tier, sections: result.sections, written: writeResult.status === "written", meetingStatus: result.meetingStatus, ...shared };
   }
 
   #emit(status: EnhanceStatus): void {

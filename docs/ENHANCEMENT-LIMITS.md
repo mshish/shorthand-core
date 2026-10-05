@@ -80,6 +80,14 @@ outcome, so a dropped delta cannot be reported as re-queued.
 | `failed` | read or write error, or the delta was dropped | `error`, or `disabled-for-read-failures` at the kill switch | `maxRequeuesPerDelta`, and read errors toward `maxConsecutiveReadFailures` |
 | `expired` | past `maxDurationMs` | `expired`, once | — |
 
+A `completed` outcome and its `finished` status carry `meetingStatus: { ended, reason }`, the
+agent's report that the conversation has clearly concluded. It is never a limit and never fails
+a pass: a missing or malformed signal reads as `ended: false`, and `reason` is flattened to one
+line and cut at `MAX_MEETING_END_REASON_CHARACTERS` (200). The agent has no tools for acting on
+it; the host decides, and the transcript it was judged from is untrusted, so a consumer should
+offer a cancelable prompt rather than act irreversibly. The signal is meaningful in meeting mode
+only; the prompt tells the model to report `ended: false` when the user is dictating alone.
+
 A `busy` read resets `maxConsecutiveReadFailures` rather than advancing it: a target that is
 merely contended will come back, and marching it into a kill switch that never resets would
 disable enhancement for the rest of the session.

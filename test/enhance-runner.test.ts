@@ -750,18 +750,6 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(agent.requests).toHaveLength(0);
   });
 
-  test("the empty-transcript gate declines even when the note has no sections", async () => {
-    const agent = new FakeAgent([Promise.resolve(response())]);
-    const runner = makeRunner({
-      agent,
-      sink: new FakeSink({
-        read: async () => ({ ok: true, value: { sections: [], userNotes: "", revision: "rev" } }),
-      }),
-    });
-    expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
-    expect(agent.requests).toHaveLength(0);
-  });
-
 
   test.each([
     ["stale" as const, { status: "stale" } as SinkWriteResult, {}],

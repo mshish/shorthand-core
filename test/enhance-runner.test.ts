@@ -742,6 +742,22 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(agent.requests).toHaveLength(1);
   });
 
+  test("the empty-transcript gate treats whitespace-only transcripts as empty and declines without invoking agent", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const runner = makeRunner({ agent });
+    runner.appendTranscript("   \n\t  \n");
+    expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
+    expect(agent.requests).toHaveLength(0);
+  });
+
+  test("the empty-transcript gate declines even when the note has no sections", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const runner = makeRunner({ agent, sink: new FakeSink({ sections: [] }) });
+    expect(await runner.enhanceNow("link")).toEqual({ status: "not-ready", reason: "characters" });
+    expect(agent.requests).toHaveLength(0);
+  });
+
+
   test.each([
     ["stale" as const, { status: "stale" } as SinkWriteResult, {}],
     ["busy" as const, { status: "busy", retryAfterMs: 250 } as SinkWriteResult, { retryAfterMs: 250 }],

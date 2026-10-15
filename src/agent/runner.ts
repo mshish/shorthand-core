@@ -627,7 +627,7 @@ export class EnhanceRunner {
     // an empty transcript means the closing pass would be paid for and change nothing.
     if (!request.allowEmptyTranscript
       && request.requestedTier === "link"
-      && request.input.transcript.length === 0
+      && request.input.transcript.trim().length === 0
       && observed.sections.length > 0) {
       return { kind: "not-ready", tier, reason: "characters", attempts: 0 };
     }

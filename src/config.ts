@@ -37,7 +37,9 @@ export function detectShorthandExecutable(
   const home = environment.USERPROFILE ?? environment.HOME ?? homedir();
   const conventional = windows
     ? [
-      join(environment.LOCALAPPDATA ?? join(home, "AppData", "Local"), "Programs", "Shorthand", "shorthand.exe"),
+      // Per-user install (the app's `*-setup.exe`): Tauri's NSIS installer uses
+      // %LOCALAPPDATA%\<productName>. The per-machine `.msi` goes to Program Files.
+      join(environment.LOCALAPPDATA ?? join(home, "AppData", "Local"), "Shorthand", "shorthand.exe"),
       join(environment.PROGRAMFILES ?? "C:\\Program Files", "Shorthand", "shorthand.exe"),
     ]
     : process.platform === "darwin"
@@ -87,7 +89,7 @@ export function requestSocketDiscoveryPath(environment: NodeJS.ProcessEnv = proc
  * larger change than this needs. Bump it together with `package.json` — `test/config.test.ts`
  * reads the manifest and fails if the two ever disagree again.
  */
-export const CORE_VERSION = "0.24.2";
+export const CORE_VERSION = "0.24.3";
 
 export const DEFAULT_CONFIG = Object.freeze({
   shorthandBinaryPath: "shorthand",

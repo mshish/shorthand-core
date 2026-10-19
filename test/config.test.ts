@@ -54,6 +54,20 @@ describe("detectShorthandExecutable", () => {
     expect(detected).toBe(probed[0]!);
   });
 
+  // Tauri's per-user NSIS installer (the app's `*-setup.exe`) installs to
+  // %LOCALAPPDATA%\Shorthand, with no `Programs` segment; that is Electron's layout.
+  test("finds a per-user Windows install under LOCALAPPDATA", () => {
+    if (process.platform !== "win32") return;
+    const localAppData = "C:\\Users\\me\\AppData\\Local";
+    const installed = join(localAppData, "Shorthand", "shorthand.exe");
+    const detected = detectShorthandExecutable(
+      undefined,
+      { PATH: "", LOCALAPPDATA: localAppData },
+      (candidate) => candidate === installed,
+    );
+    expect(detected).toBe(installed);
+  });
+
   // These two stub the probe rather than trusting the real filesystem: on a machine with
   // Shorthand installed a conventional location exists, so the not-found case is
   // unreachable and the assertions below fail for a reason that has nothing to do with them.

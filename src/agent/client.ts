@@ -132,10 +132,11 @@ export class ClaudeAgentClient implements AgentClient {
  * The SDK builds its own controllers with the global `AbortController` and passes each signal
  * to `setMaxListeners` from `node:events`: once as the `query()` default, and again for the
  * transport's `forwardedAbort` on every call, so an `abortController` option cannot avoid it.
- * In Obsidian's Electron renderer the global is the browser's while `node:events` is Node's,
- * and Node rejects a signal from the other realm. Every Claude catalog fetch and every
- * enhancement pass then failed before Claude Code was spawned, however correct the executable
- * path and login were.
+ * In Obsidian's Electron renderer the global is the browser's while `node:events` is Node's.
+ * Node normally accepts that signal (checked on Electron 43.7.7 and 43.8.9), but on at least
+ * one user's Obsidian it rejected it with ERR_INVALID_ARG_TYPE (shorthand#50, cause not yet
+ * known). There every Claude catalog fetch and every enhancement pass failed before Claude
+ * Code was spawned, however correct the executable path and login were.
  *
  * Node calls a target's own `setMaxListeners` method when the target is not a Node
  * `EventTarget`, so the swapped-in controller gives its signal a no-op one. A no-op is the

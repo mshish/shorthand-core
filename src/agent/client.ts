@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { setMaxListeners } from "node:events";
 import { existsSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -54,7 +55,7 @@ export class ClaudeAgentClient implements AgentClient {
     // Transcript and vault content are untrusted. The structural boundary is deliberate:
     // read-only/no tools here, schema validation in contract.ts, and no agent-owned writes.
     const options = buildClaudeAgentOptions(request, this.#options);
-    const stream = query({ prompt: request.prompt, options });
+    const stream = withRealmSafeAbortController(() => query({ prompt: request.prompt, options }));
     const interrupt = () => { void stream.interrupt().catch(() => {}); };
     request.signal?.addEventListener("abort", interrupt, { once: true });
     let structuredOutput: unknown;
@@ -121,6 +122,51 @@ export class ClaudeAgentClient implements AgentClient {
     if (failures.length > 0) {
       throw new AggregateError(failures, `Failed to delete ${failures.length} Claude session transcript(s).`);
     }
+  }
+}
+
+/**
+ * Runs `start` (a synchronous SDK `query()` call) with a global `AbortController` whose signals
+ * Node's `events.setMaxListeners` accepts.
+ *
+ * The SDK builds its own controllers with the global `AbortController` and passes each signal
+ * to `setMaxListeners` from `node:events`: once as the `query()` default, and again for the
+ * transport's `forwardedAbort` on every call, so an `abortController` option cannot avoid it.
+ * In Obsidian's Electron renderer the global is the browser's while `node:events` is Node's.
+ * Node normally accepts that signal (checked on Electron 43.7.7 and 43.8.9), but on at least
+ * one user's Obsidian it rejected it with ERR_INVALID_ARG_TYPE (shorthand#50, cause not yet
+ * known). There every Claude catalog fetch and every enhancement pass failed before Claude
+ * Code was spawned, however correct the executable path and login were.
+ *
+ * Node calls a target's own `setMaxListeners` method when the target is not a Node
+ * `EventTarget`, so the swapped-in controller gives its signal a no-op one. A no-op is the
+ * whole of what the call means there: a browser `EventTarget` has no listener cap to raise.
+ * The swap holds only for the synchronous `query()` call, which is where 0.3.x creates both
+ * controllers; test/foreign-realm-claude.test.ts fails if an SDK bump moves either of them
+ * out of that window. Where Node accepts the signal (the CLI, tests), nothing is swapped.
+ */
+function withRealmSafeAbortController<T>(start: () => T): T {
+  const Native = globalThis.AbortController;
+  if (acceptsMaxListeners(new Native().signal)) return start();
+  globalThis.AbortController = class extends Native {
+    constructor() {
+      super();
+      Object.defineProperty(this.signal, "setMaxListeners", { value: () => {} });
+    }
+  };
+  try {
+    return start();
+  } finally {
+    globalThis.AbortController = Native;
+  }
+}
+
+function acceptsMaxListeners(signal: AbortSignal): boolean {
+  try {
+    setMaxListeners(1, signal);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -314,7 +360,7 @@ export async function listClaudeModels(options: ListClaudeModelsOptions = {}): P
   // path below rather than escaping the function before `finally` ever runs.
   let stream: ReturnType<typeof query> | undefined;
   try {
-    stream = query({
+    stream = withRealmSafeAbortController(() => query({
       prompt: "",
       options: {
         settingSources: [],
@@ -322,7 +368,7 @@ export async function listClaudeModels(options: ListClaudeModelsOptions = {}): P
         strictMcpConfig: true,
         ...(executable === undefined ? {} : { pathToClaudeCodeExecutable: executable }),
       },
-    });
+    }));
     // The timeout itself is an AgentCatalogError so the catch block below can pass it straight
     // through: only a raw SDK failure (a spawn that never reached the handshake) still needs
     // reclassifying there.

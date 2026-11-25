@@ -31,7 +31,12 @@ export interface GoogleDocsApi {
     requests: readonly docs_v1.Schema$Request[],
     targetRevisionId?: string,
   ): Promise<DocsApiResult<BatchUpdateValue>>;
-  addDocumentTab(documentId: string, title: string): Promise<DocsApiResult<{ tabId: string }>>;
+  /** `parentTabId` nests the new tab under that one; without it the tab is top-level. */
+  addDocumentTab(
+    documentId: string,
+    title: string,
+    options?: Readonly<{ parentTabId?: string }>,
+  ): Promise<DocsApiResult<{ tabId: string }>>;
 }
 
 type DocsResource = Pick<docs_v1.Docs, "documents">;
@@ -137,11 +142,16 @@ export class GoogleApiDocsClient implements GoogleDocsApi {
     }
   }
 
-  async addDocumentTab(documentId: string, title: string): Promise<DocsApiResult<{ tabId: string }>> {
+  async addDocumentTab(
+    documentId: string,
+    title: string,
+    options: Readonly<{ parentTabId?: string }> = {},
+  ): Promise<DocsApiResult<{ tabId: string }>> {
+    const tabProperties = options.parentTabId === undefined ? { title } : { title, parentTabId: options.parentTabId };
     try {
       const response = await this.#documents.batchUpdate({
         documentId,
-        requestBody: { requests: [{ addDocumentTab: { tabProperties: { title } } }] },
+        requestBody: { requests: [{ addDocumentTab: { tabProperties } }] },
       });
       const tabId = response.data.replies?.[0]?.addDocumentTab?.tabProperties?.tabId;
       if (tabId === undefined || tabId === null || tabId.length === 0) {

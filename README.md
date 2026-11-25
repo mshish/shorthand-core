@@ -63,6 +63,8 @@ Capture keeps following the app across recordings until you stop it. Add `--exit
 
 With `--sink google`, each meeting gets a new tab in the doc named in `google-credentials.json`. Pass `--google-document <id>` to write into the first tab of that document instead; the Shorthand app does this when it makes a doc for each meeting.
 
+Add `--google-transcript` to capture to keep a copy of the transcript in the same doc: a **Transcript** tab nested under the meeting's tab, or a top-level **Transcript** tab with `--google-document`. The sidecar file is still written; the tab is rewritten from it every 10 seconds and once more when capture ends.
+
 Run `node dist/shorthand-notes.mjs` to see every command and option.
 
 The default enhancement backend uses a logged-in Claude CLI. You can also select:

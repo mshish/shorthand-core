@@ -49,11 +49,12 @@ import {
   MarkdownNoteSink,
   transcriptWikilink,
 } from "shorthand-core/markdown";
+import type { GoogleTranscriptMirror } from "shorthand-core/google";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--sink markdown|google] [--google-document <id>] [--backend claude|llm|codex|cursor|acp] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--google-document <id>] [--backend claude|llm|codex|cursor|acp] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--sink markdown|google] [--google-document <id>] [--google-transcript] [--backend claude|llm|codex|cursor|acp] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--google-document <id>] [--backend claude|llm|codex|cursor|acp] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
   );
   return 2;
 }
@@ -69,7 +70,7 @@ const KNOWN_FLAGS = new Set([
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
   "--codex-model", "--codex-base-url", "--llm-provider", "--llm-model", "--llm-base-url",
   "--exit-after-session", "--cursor-exe", "--cursor-model", "--acp-exe", "--acp-args", "--acp-model",
-  "--google-document",
+  "--google-document", "--google-transcript",
 ]);
 
 class ArgumentError extends Error {}
@@ -195,7 +196,31 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     drainTimeoutMs: DEFAULT_CONFIG.drainTimeoutMs,
   });
   const transcript = new TranscriptStore();
-  const sidecar = new SidecarWriter(sidecarPath, { flushIntervalMs: DEFAULT_CONFIG.sidecarFlushIntervalMs });
+  // `--google-transcript`: keep a copy of the transcript in its own tab of the Google Doc
+  // the notes go to (a child tab of the meeting's tab, or a top-level tab in a meeting's
+  // own `--google-document`). The sidecar file is still written as usual.
+  let transcriptMirror: GoogleTranscriptMirror | undefined;
+  if (args.includes("--google-transcript")) {
+    // Loaded dynamically for the same reason as the Google sink in createEnhanceRunner.
+    const { resolveGoogleTranscriptMirror } = await import("shorthand-core/google");
+    const ownDocument = argumentValue(args, "--google-document");
+    const resolvedMirror = await resolveGoogleTranscriptMirror(note, environment, {
+      ...(ownDocument === undefined ? {} : { documentId: ownDocument }),
+      intervalMs: DEFAULT_CONFIG.googleTranscriptIntervalMs,
+      onError: (message) => console.error(message),
+    });
+    if (!resolvedMirror.ok) {
+      enhancer?.stop();
+      closeApp?.();
+      console.error(resolvedMirror.message);
+      return 1;
+    }
+    transcriptMirror = resolvedMirror.mirror;
+  }
+  const sidecar = new SidecarWriter(sidecarPath, {
+    flushIntervalMs: DEFAULT_CONFIG.sidecarFlushIntervalMs,
+    ...(transcriptMirror === undefined ? {} : { onCommit: (content: string) => transcriptMirror.offer(content) }),
+  });
   let exitCode = 0;
   let interruptCount = 0;
   let shutdownRequested = false;
@@ -354,7 +379,11 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       process.off("SIGHUP", forcedShutdown);
       if (shutdownTimer !== undefined) clearTimeout(shutdownTimer);
       enhancer?.stopLiveTicks();
-      await sidecar.close();
+      try {
+        await sidecar.close();
+      } finally {
+        await transcriptMirror?.close();
+      }
     }
     if (enhancer !== undefined) {
       // An in-flight pass is otherwise bounded only by its own per-pass timeoutMs — up to

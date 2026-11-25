@@ -38,6 +38,11 @@ export type SidecarWriterOptions = Readonly<{
   now?: () => Date;
   store?: SidecarStore;
   fileSystem?: Partial<SidecarFileSystem>;
+  /**
+   * Called with the full sidecar text after each write the store commits, so a host can
+   * mirror the transcript somewhere else (a Google Docs tab, say). It must not throw.
+   */
+  onCommit?: (content: string) => void;
 }>;
 
 type TimelineEntry =
@@ -117,6 +122,7 @@ export class SidecarWriter extends EventEmitter<SidecarWriterEvents> {
   #writeChain: Promise<void> = Promise.resolve();
   #targetEstablished = false;
   #gapId = 0;
+  readonly #onCommit: ((content: string) => void) | undefined;
 
   constructor(path: string, options: SidecarWriterOptions = {}) {
     super();
@@ -126,6 +132,7 @@ export class SidecarWriter extends EventEmitter<SidecarWriterEvents> {
     this.#flushIntervalMs = options.flushIntervalMs ?? 250;
     this.#resumeTimestamp = (options.now ?? (() => new Date()))().toISOString();
     this.#store = options.store ?? new FileSystemSidecarStore(path, options.fileSystem);
+    this.#onCommit = options.onCommit;
   }
 
   get path(): string {
@@ -211,6 +218,7 @@ export class SidecarWriter extends EventEmitter<SidecarWriterEvents> {
     this.#base = committed.base;
     this.#persisted = committed.persisted;
     this.#targetEstablished = committed.targetEstablished;
+    this.#onCommit?.(committed.persisted);
   }
 
   #candidateState(current: string | undefined): Readonly<{ base: string; targetEstablished: boolean }> {

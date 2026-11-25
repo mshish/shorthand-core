@@ -96,6 +96,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   followStreamArgs: ["--follow-stream", "json"] as readonly string[],
   sidecarDirectory: join("Meetings", "Transcripts"),
   sidecarFlushIntervalMs: 250,
+  // How long a change to the transcript waits before it is copied into its Google Docs
+  // tab (--google-transcript). Each copy rewrites the tab whole, so this stays well inside
+  // the Docs API's per-user write quota.
+  googleTranscriptIntervalMs: 10_000,
   templateSections: [
     { heading: "Summary", markdown: "" },
     { heading: "Decisions", markdown: "" },

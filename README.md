@@ -67,8 +67,10 @@ The default enhancement backend uses a logged-in Claude CLI. You can also select
 
 - `--backend codex` for a logged-in Codex CLI
 - `--backend llm` for OpenAI, Anthropic, Ollama, or another OpenAI-compatible endpoint
+- `--backend cursor` for a logged-in Cursor command line tool (`--cursor-exe`, `--cursor-model`)
+- `--backend acp` for any other program that speaks the Agent Client Protocol over standard I/O (`--acp-exe`, required; `--acp-args`, split on spaces; `--acp-model`)
 
-The Claude backend can look up related notes in the vault. Codex and LLM provider backends only receive the current note and transcript.
+The Claude backend can look up related notes in the vault. The other backends only receive the current note and transcript.
 
 ### `--backend llm`
 

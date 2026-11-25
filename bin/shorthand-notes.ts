@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ExecutableAgentStub } from "../src/agent/client.js";
 import { readCurrentBlock, writeSections } from "../src/note/writer.js";
 import {
+  AcpAgentClient,
   AppUnavailableError,
   ClaudeAgentClient,
   CodexAgentClient,
@@ -18,6 +20,7 @@ import {
   DEFAULT_CONFIG,
   detectClaudeExecutable,
   detectCodexExecutable,
+  detectCursorExecutable,
   detectShorthandExecutable,
   EnhanceRunner,
   LlmAgentClient,
@@ -50,7 +53,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--sink markdown|google] [--backend claude|llm|codex|cursor|acp] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex|cursor|acp] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
   );
   return 2;
 }
@@ -65,7 +68,7 @@ const KNOWN_FLAGS = new Set([
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
   "--codex-model", "--codex-base-url", "--llm-provider", "--llm-model", "--llm-base-url",
-  "--exit-after-session",
+  "--exit-after-session", "--cursor-exe", "--cursor-model", "--acp-exe", "--acp-args", "--acp-model",
 ]);
 
 class ArgumentError extends Error {}
@@ -462,6 +465,67 @@ type SelectAgentResult =
 
 const LLM_PROVIDER_IDS: readonly LlmProviderId[] = ["openai", "anthropic", "ollama", "openai-compatible"];
 
+const BACKEND_IDS = ["claude", "llm", "codex", "cursor", "acp"] as const;
+type BackendId = (typeof BACKEND_IDS)[number];
+
+function isBackendId(value: string): value is BackendId {
+  return (BACKEND_IDS as readonly string[]).includes(value);
+}
+
+export type AcpLaunch =
+  | Readonly<{ ok: true; command: string; args: readonly string[]; model?: string }>
+  | Readonly<{ ok: false; message: string }>;
+
+/**
+ * What the Cursor and "another app" backends spawn, decided from the flags alone so a test
+ * can check it without starting an agent. Both speak ACP over standard I/O; they differ only
+ * in how the program is found. Cursor is found the way the Obsidian plugin finds it
+ * (`detectCursorExecutable`, then `agent acp`). Another app has no default, because there is
+ * no program to guess: `--acp-exe` is required and `--acp-args` is split on whitespace, as
+ * the plugin's "Another app arguments" field is.
+ *
+ * Network ACP is not offered here. The plugin keys that agent's token by vault, and this
+ * command has no vault identity to key it by.
+ */
+export function acpLaunchFromArgs(
+  backend: "cursor" | "acp",
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): AcpLaunch {
+  if (backend === "cursor") {
+    const command = detectCursorExecutable(argumentValue(args, "--cursor-exe"), environment);
+    if (command === undefined) {
+      return { ok: false, message: "Could not find the Cursor command line tool. Install it, or pass --cursor-exe." };
+    }
+    if (!existsSync(command)) {
+      return { ok: false, message: `The Cursor command line tool was not found at "${command}".` };
+    }
+    const model = nonBlank(argumentValue(args, "--cursor-model"));
+    return { ok: true, command, args: ["acp"], ...(model === undefined ? {} : { model }) };
+  }
+  const configured = nonBlank(argumentValue(args, "--acp-exe") ?? environment.SHORTHAND_ACP_EXE);
+  if (configured === undefined) {
+    return { ok: false, message: "--backend acp needs --acp-exe." };
+  }
+  const command = resolve(configured);
+  if (!existsSync(command)) {
+    return { ok: false, message: `The ACP program was not found at "${command}".` };
+  }
+  const rawArgs = argumentValue(args, "--acp-args", true)?.trim() ?? "";
+  const model = nonBlank(argumentValue(args, "--acp-model"));
+  return {
+    ok: true,
+    command,
+    args: rawArgs.length === 0 ? [] : rawArgs.split(/\s+/),
+    ...(model === undefined ? {} : { model }),
+  };
+}
+
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
 function isLlmProviderId(value: string): value is LlmProviderId {
   return (LLM_PROVIDER_IDS as readonly string[]).includes(value);
 }
@@ -494,11 +558,25 @@ export async function selectAgent(
     return { ok: true, agent: new ExecutableAgentStub(resolveFrom(process.cwd(), stubPath)) };
   }
   const backendArg = argumentValue(args, "--backend") ?? "claude";
-  if (backendArg !== "claude" && backendArg !== "llm" && backendArg !== "codex") {
-    throw new ArgumentError("--backend must be claude, llm, or codex.");
+  if (!isBackendId(backendArg)) {
+    throw new ArgumentError("--backend must be claude, llm, codex, cursor, or acp.");
   }
   if (backendArg === "claude") {
     return { ok: true, agent: new ClaudeAgentClient() };
+  }
+  if (backendArg === "cursor" || backendArg === "acp") {
+    if (argumentValue(args, "--claude") !== undefined) {
+      throw new ArgumentError(`--claude cannot be combined with --backend ${backendArg}; that backend never launches a Claude Code executable.`);
+    }
+    const launch = acpLaunchFromArgs(backendArg, args, environment);
+    if (!launch.ok) return launch;
+    return {
+      ok: true,
+      agent: new AcpAgentClient({
+        transport: { type: "stdio", command: launch.command, args: launch.args },
+        ...(launch.model === undefined ? {} : { model: launch.model }),
+      }),
+    };
   }
   if (backendArg === "codex") {
     if (argumentValue(args, "--claude") !== undefined) {

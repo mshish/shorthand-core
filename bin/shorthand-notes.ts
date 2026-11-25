@@ -39,6 +39,7 @@ import {
   type ExitDiagnosis,
   type LlmProfile,
   type LlmProviderId,
+  type NoteCaptureOutcome,
   type NoteSink,
   type PassOutcome,
   type Section,
@@ -168,18 +169,20 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     noteLinked = true;
   }
   let enhancer: EnhanceRunner | undefined;
+  let notesSink: NoteSink | undefined;
   let closeApp: (() => void) | undefined;
   if (args.includes("--enhance")) {
     const sinkArg = argumentValue(args, "--sink") ?? "markdown";
     if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
     const resolved = await createEnhanceRunner(
-      note, vault, sinkArg, args, environment, false, DEFAULT_CONFIG.enhancement.timeoutMs,
+      note, vault, sinkArg, args, environment, false, DEFAULT_CONFIG.enhancement.timeoutMs, new Date(),
     );
     if (!resolved.ok) {
       console.error(resolved.message);
       return 1;
     }
     enhancer = resolved.runner;
+    notesSink = resolved.sink;
     closeApp = resolved.closeApp;
   }
   const fake = args.some((argument) => argument === "--fake-stream" || argument.startsWith("--fake-stream="));
@@ -369,7 +372,26 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   process.on("SIGTERM", forcedShutdown);
   process.on("SIGHUP", forcedShutdown);
 
+  let notesBegun = false;
+  let notesFinished = false;
+  const finishNotes = async (sinkToFinish: NoteSink | undefined, outcome: NoteCaptureOutcome) => {
+    if (sinkToFinish?.finish === undefined || !notesBegun || notesFinished) return;
+    notesFinished = true;
+    try {
+      await sinkToFinish.finish(outcome);
+    } catch (error) {
+      console.error(`Could not update the notes' status line: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   try {
+    if (notesSink?.begin !== undefined) {
+      try {
+        await notesSink.begin();
+        notesBegun = true;
+      } catch (error) {
+        console.error(`Could not add the notes' status line: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     try {
       client.start();
       await Promise.race([settled, shutdownTimeout]);
@@ -421,8 +443,11 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       }
       if (idleInTime) {
         const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
-        if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+        const finished = finalEnhancement.status === "completed" || finalEnhancement.status === "not-ready";
+        if (!finished) exitCode = 1;
+        await finishNotes(notesSink, finished && !forcedStop ? "complete" : "stopped");
       } else {
+        await finishNotes(notesSink, "stopped");
         console.error(`Enhancement pass still in flight after ${DEFAULT_CONFIG.enhancement.shutdownGraceMs}ms; stopping without a final pass.`);
         // Mirrors the drainTimeout handler above: a shutdown that had to force a still-running
         // operation to stop is reported as a non-zero exit rather than swallowed.
@@ -433,6 +458,8 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     console.log(`Sidecar written: ${sidecarPath}`);
     return exitCode;
   } finally {
+    // A capture that threw before its final pass still says so at the top of the notes.
+    await finishNotes(notesSink, "stopped");
     // XState's clock uses referenced timers. Stopping the actor is the teardown guarantee
     // even when sidecar close or the final pass throws before normal CLI completion.
     enhancer?.stop();
@@ -695,7 +722,7 @@ function appUnavailableMessage(error: AppUnavailableError): string {
 type CreateEnhanceRunnerResult =
   // `closeApp` is selectAgent's, passed straight through: the runner disposes the agent, but
   // the request socket the agent borrows outlives it and belongs to whoever built it.
-  | Readonly<{ ok: true; runner: EnhanceRunner; sinkDescribe: string; closeApp?: () => void }>
+  | Readonly<{ ok: true; runner: EnhanceRunner; sink: NoteSink; sinkDescribe: string; closeApp?: () => void }>
   | Readonly<{ ok: false; message: string }>;
 
 // `sink` arrives already validated by the caller (runCapture / runEnhance both check
@@ -711,6 +738,9 @@ type CreateEnhanceRunnerResult =
 // it) — and HANDY_NOTES_AGENT_TIMEOUT_MS still overrides whichever default was passed in.
 //
 // Exported for testing (see selectAgent's comment above for the same reason).
+/** The stderr line that names the notes, read by the Shorthand app: `notes-title: 2026-11-25 - Q1 pricing review`. */
+export const NOTES_TITLE_PREFIX = "notes-title: ";
+
 export async function createEnhanceRunner(
   note: string,
   vault: string,
@@ -719,6 +749,8 @@ export async function createEnhanceRunner(
   environment: NodeJS.ProcessEnv,
   dryRun: boolean,
   timeoutMs: number,
+  /** Set by `capture`: tells the agent when the session began, and dates the notes' name. */
+  startedAt?: Date,
 ): Promise<CreateEnhanceRunnerResult> {
   const selected = await selectAgent(args, environment);
   if (!selected.ok) return { ok: false, message: selected.message };
@@ -735,9 +767,13 @@ export async function createEnhanceRunner(
     // meeting" setting), so the notes go in its first tab rather than a new tab in the
     // shared doc the credentials file names.
     const ownDocument = argumentValue(args, "--google-document");
-    const resolved = await resolveGoogleDocsSink(
-      note, environment, ownDocument === undefined ? {} : { documentId: ownDocument },
-    );
+    const resolved = await resolveGoogleDocsSink(note, environment, {
+      ...(ownDocument === undefined ? {} : { documentId: ownDocument }),
+      ...(startedAt === undefined ? {} : { startedAt }),
+      // A line the host reads to rename what it shows for the notes (the Shorthand app
+      // renames a doc made for one meeting, and its overlay link). The prefix is fixed.
+      onRenamed: (name) => console.error(`${NOTES_TITLE_PREFIX}${name}`),
+    });
     if (!resolved.ok) {
       // The agent was built first, so the request socket is already open on this path and
       // there is no runner about to be returned that would carry it out to a caller.
@@ -752,6 +788,7 @@ export async function createEnhanceRunner(
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
   return {
     ok: true,
+    sink: resolvedSink,
     sinkDescribe: resolvedSink.describe,
     ...(closeApp === undefined ? {} : { closeApp }),
     runner: new EnhanceRunner({
@@ -766,6 +803,7 @@ export async function createEnhanceRunner(
       timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, timeoutMs),
       maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
       dryRun,
+      ...(startedAt === undefined ? {} : { startedAt }),
       // `--assisted-notes`: the recording is one person thinking out loud (Shorthand's
       // Assisted notes mode), so the agent gets the assisted-notes guidance, not the
       // meeting guidance.

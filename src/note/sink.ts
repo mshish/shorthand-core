@@ -81,7 +81,21 @@ export interface NoteSink {
    * Absent means `"obsidian"`.
    */
   readonly noteFormat?: NoteFormat;
+  /**
+   * Names the note after the agent's title for the session. Optional: a sink whose name the
+   * user owns (an Obsidian file, say) leaves it out. Throwing is reported, never fatal.
+   */
+  setTitle?(title: string): Promise<void>;
+  /**
+   * Live-capture lifecycle, for a sink that shows the capture's state in the note itself.
+   * `begin` runs once before the first pass; `finish` once after the last, saying whether
+   * the notes were finished or the capture stopped early. Both are best effort.
+   */
+  begin?(): Promise<void>;
+  finish?(outcome: NoteCaptureOutcome): Promise<void>;
 }
+
+export type NoteCaptureOutcome = "complete" | "stopped";
 
 export function sinkError(code: SinkErrorCode, message: string, cause?: unknown): SinkError {
   return { code, message, ...(cause === undefined ? {} : { cause }) };

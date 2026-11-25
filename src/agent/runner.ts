@@ -26,6 +26,11 @@ export type EnhanceRunnerOptions = Readonly<{
   mode?: NoteTakingMode;
   /** Optional display name used only as untrusted note context. */
   userName?: string;
+  /**
+   * When the recording began. Given, it goes in the session context as the local date and
+   * time, so the agent can date the notes.
+   */
+  startedAt?: Date;
   minNewChars?: number;
   minIntervalMs?: number;
   maxDurationMs?: number;
@@ -134,6 +139,8 @@ export class EnhanceRunner {
   readonly #actor;
   #stopped = false;
   readonly #activeQueries = new Set<Promise<AgentQueryResponse>>();
+  /** The last title the sink accepted; sent back so the agent keeps it stable. */
+  #title = "";
   #disposePromise: Promise<void> | undefined;
 
   constructor(options: EnhanceRunnerOptions) {
@@ -642,6 +649,8 @@ export class EnhanceRunner {
       prompt: buildPassPrompt(observed.sections, request.input.transcript, observed.userNotes, tier, {
         mode: this.#options.mode,
         ...(this.#options.userName.length === 0 ? {} : { userName: this.#options.userName }),
+        ...(this.#options.startedAt === undefined ? {} : { startedAt: describeStart(this.#options.startedAt) }),
+        ...(this.#title.length === 0 ? {} : { title: this.#title }),
       }),
       // This is the only composition site. Guidance is replaceable; the safety preamble is
       // not, so no caller-supplied voice can drop the untrusted-data or marker-token rules.
@@ -716,7 +725,23 @@ export class EnhanceRunner {
     if (writeResult.status === "error") {
       return { kind: "failed", tier, message: writeResult.error.message, readFailure: false, ...shared };
     }
+    await this.#applyTitle(result.meetingTitle);
     return { kind: "completed", tier, sections: result.sections, written: writeResult.status === "written", meetingStatus: result.meetingStatus, ...shared };
+  }
+
+  /**
+   * Hands a new title to a sink that can name its note. Best effort: a sink that cannot
+   * rename, or fails to, never costs the pass that produced valid sections.
+   */
+  async #applyTitle(title: string | undefined): Promise<void> {
+    const setTitle = this.#options.sink.setTitle;
+    if (setTitle === undefined || title === undefined || title === this.#title) return;
+    try {
+      await setTitle.call(this.#options.sink, title);
+      this.#title = title;
+    } catch (error) {
+      try { this.#logger.error(`Could not rename the notes: ${errorMessage(error)}`); } catch { /* Logging must not kill capture. */ }
+    }
   }
 
   #emit(status: EnhanceStatus): void {
@@ -747,7 +772,12 @@ export class EnhanceRunner {
   }
 }
 
-export type NoteTakingContext = Readonly<{ mode: NoteTakingMode; userName?: string }>;
+export type NoteTakingContext = Readonly<{ mode: NoteTakingMode; userName?: string; startedAt?: string; title?: string }>;
+
+/** "Wednesday, November 25, 2026, 4:03 PM" in the machine's own locale and time zone. */
+function describeStart(startedAt: Date): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" }).format(startedAt);
+}
 
 export function buildPassPrompt(
   sections: readonly Section[],

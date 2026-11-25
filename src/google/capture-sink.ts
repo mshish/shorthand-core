@@ -38,6 +38,10 @@ export type ResolveGoogleSinkOptions = Readonly<{
   capturesDirectory?: string;
   /** Test seam only; production always builds a GoogleApiDocsClient. */
   api?: GoogleDocsApi;
+  /** When the capture started, for the notes' status lines and the date their name leads with. */
+  startedAt?: Date;
+  /** Called with the notes' new name each time the agent names the meeting. */
+  onRenamed?: (name: string) => void;
 }>;
 
 export type ResolveGoogleSinkResult =
@@ -72,8 +76,19 @@ export async function resolveGoogleDocsSink(
 ): Promise<ResolveGoogleSinkResult> {
   const resolved = await resolveCaptureTarget(notePath, environment, options);
   if (!resolved.ok) return resolved;
-  const { documentId, tabId, api } = resolved.target;
-  return { ok: true, sink: new GoogleDocsNoteSink({ documentId, tabId, api }) };
+  const { documentId, tabId, api, ownDocument } = resolved.target;
+  return {
+    ok: true,
+    sink: new GoogleDocsNoteSink({
+      documentId,
+      tabId,
+      api,
+      // A doc made for this one meeting is named by its file, which the host renames.
+      renameTab: !ownDocument,
+      ...(options.startedAt === undefined ? {} : { startedAt: options.startedAt }),
+      ...(options.onRenamed === undefined ? {} : { onRenamed: options.onRenamed }),
+    }),
+  };
 }
 
 /**

@@ -14,7 +14,9 @@ export type StyleSpanKind =
   | { kind: "bold" }
   | { kind: "italic" }
   | { kind: "strikethrough" }
-  | { kind: "link"; url: string };
+  | { kind: "link"; url: string }
+  /** Small grey text, for the status lines above the notes. */
+  | { kind: "muted" };
 
 export type StyleSpan = Readonly<{
   start: number;
@@ -53,8 +55,22 @@ const CALLOUT_MARKER = /^\s*\[![^\]\n]+\][+-]?[ \t]*/;
  * `[!type]` marker, a table becomes a list of rows, code keeps its text, and
  * `==highlight==` and `[[wikilink]]` lose their markers.
  */
-export function renderSections(sections: readonly Section[]): RenderedSections {
+export function renderSections(
+  sections: readonly Section[],
+  /**
+   * Inline-Markdown lines written muted above the first section. They come before any
+   * level-one or level-two heading, so `parseTabToSections` never reads them back as notes.
+   */
+  preamble: readonly string[] = [],
+): RenderedSections {
   const out = new Output();
+  for (const line of preamble) {
+    const start = out.length;
+    renderInline(marked.lexer(line).flatMap((token) => (token.type === "paragraph" ? (token as Tokens.Paragraph).tokens ?? [] : [])), out);
+    if (out.length === start) continue;
+    out.spans.push({ start, end: out.length, style: { kind: "muted" } });
+    out.append("\n");
+  }
   for (const section of sections) {
     const headingStart = out.length;
     out.append(section.heading);

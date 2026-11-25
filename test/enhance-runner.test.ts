@@ -75,6 +75,42 @@ describe("EnhanceRunner trigger and transcript cutoff policy", () => {
     });
   });
 
+  test("names the notes from the agent's title, then sends that title back so it stays put", async () => {
+    const titled = (meetingTitle: string) => ({ sections: OUTPUT.sections, meetingStatus: { ended: false, reason: "" }, meetingTitle });
+    const agent = new FakeAgent([
+      Promise.resolve({ structuredOutput: titled("Q1 pricing review"), sessionId: "s" }),
+      Promise.resolve({ structuredOutput: titled("Q1 pricing review"), sessionId: "s" }),
+    ]);
+    const titles: string[] = [];
+    const sink = Object.assign(new FakeSink({ cwd: process.cwd() }), {
+      setTitle: async (title: string) => { titles.push(title); },
+    });
+    const startedAt = new Date("2026-11-25T21:00:00Z");
+    const runner = makeRunner({ agent, sink, startedAt });
+    runner.appendTranscript("pricing");
+    await runner.enhanceNow("tick");
+    runner.appendTranscript(" more pricing");
+    await runner.enhanceNow("tick");
+    expect(titles).toEqual(["Q1 pricing review"]);
+    const context = (index: number) => JSON.parse(/<session_context_json>\n([\s\S]*?)\n<\/session_context_json>/.exec(agent.requests[index]!.prompt)![1]!);
+    expect(context(0)).not.toHaveProperty("title");
+    expect(typeof context(0).startedAt).toBe("string");
+    expect(context(0).startedAt).toContain("2026");
+    expect(context(1).title).toBe("Q1 pricing review");
+  });
+
+  test("a sink that fails to rename never costs the pass", async () => {
+    const agent = new FakeAgent([
+      Promise.resolve({ structuredOutput: { sections: OUTPUT.sections, meetingTitle: "Roadmap" }, sessionId: "s" }),
+    ]);
+    const sink = Object.assign(new FakeSink({ cwd: process.cwd() }), {
+      setTitle: async () => { throw new Error("no rename"); },
+    });
+    const runner = makeRunner({ agent, sink });
+    runner.appendTranscript("roadmap");
+    expect(await runner.enhanceNow("tick")).toMatchObject({ status: "completed" });
+  });
+
   test("a client that cannot use vault tools runs the tick tier even when the sink offers agent context", async () => {
     const agent = new FakeAgent([Promise.resolve(response())], { supportsVaultTools: false });
     const statuses: EnhanceStatus[] = [];

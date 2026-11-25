@@ -15,6 +15,11 @@ const NAMED_STYLE_BY_LEVEL: Record<1 | 2 | 3, string> = {
   3: "HEADING_3",
 };
 
+/** Every text style the renderer sets, cleared together (an empty textStyle resets a listed field). */
+const RESET_TEXT_FIELDS = "bold,italic,strikethrough,link,foregroundColor,fontSize";
+
+const MUTED_GREY = { red: 0.4, green: 0.4, blue: 0.4 };
+
 const BULLET_PRESET: Record<ListPreset, string> = {
   bullet: "BULLET_DISC_CIRCLE_SQUARE",
   numbered: "NUMBERED_DECIMAL_ALPHA_ROMAN",
@@ -44,6 +49,15 @@ export function buildWriteRequests(options: BuildWriteRequestsOptions): docs_v1.
   }
   if (text.length > 0) {
     requests.push({ insertText: { location: { tabId, index: 1 }, text } });
+    // Inserted paragraphs take the style of the paragraph they land in: the tab's last
+    // paragraph, which survives every delete. Reset them first, so a last list item or a
+    // muted line can never spread its bullet, heading or grey to the rest of the notes.
+    const range = { tabId, startIndex: 1, endIndex: 1 + text.length };
+    requests.push(
+      { deleteParagraphBullets: { range } },
+      { updateParagraphStyle: { range, paragraphStyle: { namedStyleType: "NORMAL_TEXT" }, fields: "namedStyleType" } },
+      { updateTextStyle: { range, textStyle: {}, fields: RESET_TEXT_FIELDS } },
+    );
   }
   // A zero-length span would become a degenerate startIndex === endIndex
   // request, which the real Docs API rejects with a 400 that fails the entire
@@ -87,6 +101,14 @@ function styleRequest(tabId: string, span: StyleSpan): docs_v1.Schema$Request {
       return { updateTextStyle: { range, textStyle: { strikethrough: true }, fields: "strikethrough" } };
     case "link":
       return { updateTextStyle: { range, textStyle: { link: { url: span.style.url } }, fields: "link" } };
+    case "muted":
+      return {
+        updateTextStyle: {
+          range,
+          textStyle: { foregroundColor: { color: { rgbColor: MUTED_GREY } }, fontSize: { magnitude: 9, unit: "PT" } },
+          fields: "foregroundColor,fontSize",
+        },
+      };
     case "list":
       throw new Error("List spans are built by buildWriteRequests, not styleRequest");
   }
@@ -94,6 +116,7 @@ function styleRequest(tabId: string, span: StyleSpan): docs_v1.Schema$Request {
 
 function assertHasTabId(request: docs_v1.Schema$Request): void {
   const range = request.deleteContentRange?.range
+    ?? request.deleteParagraphBullets?.range
     ?? request.updateParagraphStyle?.range
     ?? request.createParagraphBullets?.range
     ?? request.updateTextStyle?.range;

@@ -2,15 +2,49 @@ import { describe, expect, test } from "bun:test";
 import { buildWriteRequests } from "../src/google/requests.js";
 import type { StyleSpan } from "../src/google/renderer.js";
 
+/** The three requests that clear inherited styles from what was just inserted. */
+const RESET_KEYS = ["deleteParagraphBullets", "updateParagraphStyle", "updateTextStyle"];
+
+/** Drops the style reset that follows every insertText, so a test can look at the span requests alone. */
+function styled(text: string, spans: readonly StyleSpan[], bodyEndIndex = 1) {
+  const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex, text, spans });
+  const insert = requests.findIndex((request) => "insertText" in request);
+  return insert === -1 ? requests : [...requests.slice(0, insert + 1), ...requests.slice(insert + 1 + RESET_KEYS.length)];
+}
+
 describe("buildWriteRequests", () => {
   test("emits delete, then insert, then style requests, in that order", () => {
     const spans: readonly StyleSpan[] = [
       { start: 0, end: 7, style: { kind: "heading", level: 2 } },
     ];
     const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 50, text: "Summary\n", spans });
-    expect(Object.keys(requests[0]!)).toEqual(["deleteContentRange"]);
-    expect(Object.keys(requests[1]!)).toEqual(["insertText"]);
-    expect(Object.keys(requests[2]!)).toEqual(["updateParagraphStyle"]);
+    expect(requests.map((request) => Object.keys(request)[0])).toEqual([
+      "deleteContentRange",
+      "insertText",
+      ...RESET_KEYS,
+      "updateParagraphStyle",
+    ]);
+  });
+
+  test("resets the inserted text to plain paragraphs before styling it", () => {
+    // Inserted paragraphs take the style of the tab's last paragraph, which survives the
+    // delete: a last list item or heading would otherwise spread to all of the notes.
+    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 50, text: "Summary\n", spans: [] });
+    const range = { tabId: "t1", startIndex: 1, endIndex: 9 };
+    expect(requests.slice(2)).toEqual([
+      { deleteParagraphBullets: { range } },
+      { updateParagraphStyle: { range, paragraphStyle: { namedStyleType: "NORMAL_TEXT" }, fields: "namedStyleType" } },
+      { updateTextStyle: { range, textStyle: {}, fields: "bold,italic,strikethrough,link,foregroundColor,fontSize" } },
+    ]);
+  });
+
+  test("a muted span becomes small grey text", () => {
+    const requests = styled("status", [{ start: 0, end: 6, style: { kind: "muted" } }]);
+    expect(requests[1]!.updateTextStyle).toEqual({
+      range: { tabId: "t1", startIndex: 1, endIndex: 7 },
+      textStyle: { foregroundColor: { color: { rgbColor: { red: 0.4, green: 0.4, blue: 0.4 } } }, fontSize: { magnitude: 9, unit: "PT" } },
+      fields: "foregroundColor,fontSize",
+    });
   });
 
   test("deleteContentRange uses bodyEndIndex - 1, never bodyEndIndex", () => {
@@ -52,7 +86,7 @@ describe("buildWriteRequests", () => {
       { start: 4, end: 7, style: { kind: "list", preset: "numbered" } },
       { start: 5, end: 6, style: { kind: "italic" } },
     ];
-    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "\ta\n\tb\n", spans });
+    const requests = styled("\ta\n\tb\n", spans);
     expect(requests.map((request) => Object.keys(request)[0])).toEqual([
       "insertText",
       "updateTextStyle",
@@ -68,13 +102,13 @@ describe("buildWriteRequests", () => {
       { start: 0, end: 1, style: { kind: "italic" } },
       { start: 1, end: 2, style: { kind: "strikethrough" } },
     ];
-    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "ab", spans });
+    const requests = styled("ab", spans);
     expect(requests.slice(1).map((request) => request.updateTextStyle!.fields)).toEqual(["italic", "strikethrough"]);
   });
 
   test("a bold span becomes updateTextStyle with fields=bold over the shifted range", () => {
     const spans: readonly StyleSpan[] = [{ start: 2, end: 6, style: { kind: "bold" } }];
-    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "ok bold ok", spans });
+    const requests = styled("ok bold ok", spans);
     const style = requests.find((request) => "updateTextStyle" in request)!.updateTextStyle;
     expect(style).toMatchObject({
       range: { tabId: "t1", startIndex: 3, endIndex: 7 },
@@ -85,7 +119,7 @@ describe("buildWriteRequests", () => {
 
   test("a link span becomes updateTextStyle with fields=link and the URL", () => {
     const spans: readonly StyleSpan[] = [{ start: 0, end: 3, style: { kind: "link", url: "https://x" } }];
-    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "doc", spans });
+    const requests = styled("doc", spans);
     const style = requests.find((request) => "updateTextStyle" in request)!.updateTextStyle;
     expect(style).toMatchObject({
       textStyle: { link: { url: "https://x" } },

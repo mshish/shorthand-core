@@ -20,6 +20,7 @@ export type { EnhanceRunnerOptions, EnhanceStatus, PassOutcome } from "./agent/r
 
 export { busySinkError, sinkError } from "./note/sink.js";
 export type {
+  NoteCaptureOutcome,
   NoteSink,
   SinkError,
   SinkErrorCode,
@@ -125,6 +126,7 @@ export {
   ENHANCEMENT_SAFETY_PREAMBLE,
   MAX_GUIDANCE_CHARACTERS,
   MAX_MEETING_END_REASON_CHARACTERS,
+  MAX_MEETING_TITLE_CHARACTERS,
   MAX_USER_NAME_CHARACTERS,
 } from "./agent/contract.js";
 

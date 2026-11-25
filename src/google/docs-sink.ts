@@ -2,7 +2,15 @@ import { renderSections } from "./renderer.js";
 import { buildWriteRequests } from "./requests.js";
 import type { DocsApiError, DocsParagraph, DocsTab, GoogleDocsApi } from "./docs-client.js";
 import type { Section } from "../note/markers.js";
-import { busySinkError, sinkError, type NoteSink, type SinkError, type SinkReadResult, type SinkWriteResult } from "../note/sink.js";
+import {
+  busySinkError,
+  sinkError,
+  type NoteCaptureOutcome,
+  type NoteSink,
+  type SinkError,
+  type SinkReadResult,
+  type SinkWriteResult,
+} from "../note/sink.js";
 
 export const GOOGLE_DOCS_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
@@ -11,7 +19,22 @@ export type GoogleDocsNoteSinkOptions = Readonly<{
   tabId: string;
   api: GoogleDocsApi;
   describe?: string;
+  /** When the capture started: the status line's date and start time, and the date a title leads with. */
+  startedAt?: Date;
+  /** Rename the notes tab when the agent names the meeting. Off for a doc made for one meeting, whose file name the host owns. */
+  renameTab?: boolean;
+  /** Called with the full name (date first) each time the agent names or renames the meeting. */
+  onRenamed?: (name: string) => void;
+  /** Injectable for tests. */
+  now?: () => Date;
+  locale?: string;
+  timeZone?: string;
 }>;
+
+/** The site the status line's "by Shorthand" links to. */
+export const SHORTHAND_SITE_URL = "https://shorthand.ing";
+
+type CaptureStatus = { state: "running"; updatedAt: Date } | { state: NoteCaptureOutcome; endedAt: Date };
 
 /**
  * The Google Docs `NoteSink`: an AI-owned tab inside a shared Doc, addressed
@@ -30,12 +53,56 @@ export class GoogleDocsNoteSink implements NoteSink {
   readonly #documentId: string;
   readonly #tabId: string;
   readonly #api: GoogleDocsApi;
+  readonly #startedAt: Date;
+  readonly #renameTab: boolean;
+  readonly #onRenamed: ((name: string) => void) | undefined;
+  readonly #now: () => Date;
+  readonly #locale: string | undefined;
+  readonly #timeZone: string | undefined;
+  /** Set by `begin`: a standalone `enhance` never calls it and so writes no status lines. */
+  #status: CaptureStatus | undefined;
+  #name: string | undefined;
 
   constructor(options: GoogleDocsNoteSinkOptions) {
     this.#documentId = options.documentId;
     this.#tabId = options.tabId;
     this.#api = options.api;
     this.describe = options.describe ?? `Google Doc ${options.documentId} (tab ${options.tabId})`;
+    this.#now = options.now ?? (() => new Date());
+    this.#startedAt = options.startedAt ?? this.#now();
+    this.#renameTab = options.renameTab ?? true;
+    this.#onRenamed = options.onRenamed;
+    this.#locale = options.locale;
+    this.#timeZone = options.timeZone;
+  }
+
+  /** Shows "Taking notes" above the notes as the capture starts. */
+  async begin(): Promise<void> {
+    this.#status = { state: "running", updatedAt: this.#now() };
+    await this.#rewriteStatus();
+  }
+
+  /** Swaps the status line for "Notes complete" or "Notes stopped early", with the length. */
+  async finish(outcome: NoteCaptureOutcome): Promise<void> {
+    if (this.#status === undefined) return;
+    this.#status = { state: outcome, endedAt: this.#now() };
+    await this.#rewriteStatus();
+  }
+
+  /** Names the notes "2026-11-25 - Q1 pricing review": the date first, so they sort by day. */
+  async setTitle(title: string): Promise<void> {
+    const trimmed = title.trim();
+    if (trimmed.length === 0) return;
+    const name = `${isoDate(this.#startedAt, this.#timeZone)} - ${trimmed}`;
+    if (name === this.#name) return;
+    if (this.#renameTab) {
+      const result = await this.#api.batchUpdate(this.#documentId, [
+        { updateDocumentTabProperties: { tabProperties: { tabId: this.#tabId, title: name }, fields: "title" } },
+      ]);
+      if (!result.ok) throw new Error(result.error.message);
+    }
+    this.#name = name;
+    this.#onRenamed?.(name);
   }
 
   async read(): Promise<SinkReadResult> {
@@ -63,7 +130,7 @@ export class GoogleDocsNoteSink implements NoteSink {
     if (tab === undefined) {
       return { status: "error", error: sinkError("invalid-target", `Tab ${this.#tabId} not found in document ${this.#documentId}`) };
     }
-    const { text, spans } = renderSections(sections);
+    const { text } = renderSections(sections);
     // Stale outranks equality (docs/CONTRACT.md §2.2): only short-circuit to
     // "unchanged" when the caller's revision still matches what's stored now.
     // Comparing both sides through the same renderer means the lossy Docs
@@ -77,11 +144,78 @@ export class GoogleDocsNoteSink implements NoteSink {
     if (read.value.revisionId === expectedRevision && text === renderSections(parseTabToSections(tab)).text) {
       return { status: "unchanged", revision: read.value.revisionId };
     }
-    const requests = buildWriteRequests({ tabId: this.#tabId, bodyEndIndex: tab.bodyEndIndex, text, spans });
+    // The notes changed, so the status line's "Updated" time moves with them. The
+    // comparison above leaves the status lines out, so a pass that changes nothing
+    // never rewrites the tab just to move the time.
+    if (this.#status?.state === "running") this.#status = { state: "running", updatedAt: this.#now() };
+    const rendered = renderSections(sections, this.#preamble());
+    const requests = buildWriteRequests({ tabId: this.#tabId, bodyEndIndex: tab.bodyEndIndex, ...rendered });
     const result = await this.#api.batchUpdate(this.#documentId, requests, expectedRevision);
     if (!result.ok) return writeErrorFor(result.error);
     return { status: "written", revision: result.value.revisionId };
   }
+
+  /**
+   * Rewrites the tab with the current status lines over the notes it already holds.
+   * Best effort: the notes are what matter, so a failure here is reported and dropped.
+   */
+  async #rewriteStatus(): Promise<void> {
+    const read = await this.#api.getDocument(this.#documentId);
+    if (!read.ok) throw new Error(read.error.message);
+    const tab = findTab(read.value.tabs, this.#tabId);
+    if (tab === undefined) throw new Error(`Tab ${this.#tabId} not found in document ${this.#documentId}`);
+    const rendered = renderSections(parseTabToSections(tab), this.#preamble());
+    const requests = buildWriteRequests({ tabId: this.#tabId, bodyEndIndex: tab.bodyEndIndex, ...rendered });
+    const result = await this.#api.batchUpdate(this.#documentId, requests, read.value.revisionId);
+    if (!result.ok) throw new Error(result.error.message);
+  }
+
+  #preamble(): readonly string[] {
+    const status = this.#status;
+    if (status === undefined) return [];
+    const time = (date: Date) => formatTime(date, this.#locale, this.#timeZone);
+    const started = `${formatDay(this.#startedAt, this.#locale, this.#timeZone)} · Started ${time(this.#startedAt)}`;
+    if (status.state === "running") {
+      return [`📝 Taking notes · Updated ${time(status.updatedAt)} · by [Shorthand](${SHORTHAND_SITE_URL})`, started];
+    }
+    const length = formatDuration(status.endedAt.getTime() - this.#startedAt.getTime());
+    const headline = status.state === "complete" ? `✅ Notes complete · ${time(status.endedAt)}` : `⚠️ Notes stopped early · ${time(status.endedAt)}`;
+    return [headline, `${started} · ${length}`];
+  }
+}
+
+function formatTime(date: Date, locale: string | undefined, timeZone: string | undefined): string {
+  return new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit", ...(timeZone === undefined ? {} : { timeZone }) }).format(date);
+}
+
+function formatDay(date: Date, locale: string | undefined, timeZone: string | undefined): string {
+  return new Intl.DateTimeFormat(locale, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    ...(timeZone === undefined ? {} : { timeZone }),
+  }).format(date);
+}
+
+/** The local calendar date as YYYY-MM-DD, whatever the locale writes dates as. */
+function isoDate(date: Date, timeZone: string | undefined): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    ...(timeZone === undefined ? {} : { timeZone }),
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function formatDuration(milliseconds: number): string {
+  const minutes = Math.max(1, Math.round(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`;
 }
 
 /**

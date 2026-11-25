@@ -340,3 +340,97 @@ describe("GoogleDocsNoteSink round trip", () => {
     expect(await sink.write(sections, "rev1")).toEqual({ status: "unchanged", revision: "rev1" });
   });
 });
+
+describe("GoogleDocsNoteSink status lines and title", () => {
+  type Batch = { requests: readonly Record<string, any>[]; revision: string | undefined };
+  function recordingApi(paragraphs: DocsParagraph[] = []) {
+    const batches: Batch[] = [];
+    const api = fakeApi({
+      getDocument: async () => ({
+        ok: true,
+        value: { revisionId: "rev1", tabs: [{ tabId: "owned", bodyEndIndex: 1, paragraphs, childTabs: [] }] },
+      }),
+      batchUpdate: async (_id, requests, revision) => {
+        batches.push({ requests: requests as Batch["requests"], revision });
+        return { ok: true, value: { revisionId: "rev2" } };
+      },
+    });
+    return { api, batches };
+  }
+  const insertedText = (batch: Batch) => batch.requests.find((request) => request.insertText)?.insertText.text as string;
+  const startedAt = new Date("2026-11-25T21:00:00Z");
+  const common = { documentId: "d1", tabId: "owned", startedAt, locale: "en-US", timeZone: "America/New_York" } as const;
+
+  test("a standalone enhance, which never calls begin, writes no status lines", async () => {
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api });
+    await sink.write([{ heading: "Summary", markdown: "Hi." }], "rev1");
+    expect(insertedText(batches[0]!)).toBe("Summary\nHi.\n");
+  });
+
+  test("begin shows Taking notes with the start, linked to Shorthand, in small grey text", async () => {
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api, now: () => new Date("2026-11-25T21:00:00Z") });
+    await sink.begin();
+    expect(insertedText(batches[0]!)).toBe("📝 Taking notes · Updated 4:00 PM · by Shorthand\nWed, Nov 25, 2026 · Started 4:00 PM\n");
+    const styles = batches[0]!.requests.filter((request) => request.updateTextStyle).map((request) => request.updateTextStyle);
+    expect(styles.some((style) => style.textStyle.link?.url === "https://shorthand.ing")).toBe(true);
+    expect(styles.filter((style) => style.fields === "foregroundColor,fontSize")).toHaveLength(2);
+  });
+
+  test("the Updated time moves only when the notes change, and finish reports the length", async () => {
+    let now = new Date("2026-11-25T21:00:00Z");
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api, now: () => now });
+    await sink.begin();
+    now = new Date("2026-11-25T21:12:00Z");
+    await sink.write([{ heading: "Summary", markdown: "Pricing." }], "rev1");
+    expect(insertedText(batches[1]!)).toStartWith("📝 Taking notes · Updated 4:12 PM · by Shorthand\n");
+    expect(insertedText(batches[1]!)).toEndWith("Summary\nPricing.\n");
+    now = new Date("2026-11-25T22:05:00Z");
+    await sink.finish("complete");
+    expect(insertedText(batches[2]!)).toStartWith("✅ Notes complete · 5:05 PM\nWed, Nov 25, 2026 · Started 4:00 PM · 1 hr 5 min\n");
+  });
+
+  test("finish says the notes stopped early", async () => {
+    let now = new Date("2026-11-25T21:00:00Z");
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api, now: () => now });
+    await sink.begin();
+    now = new Date("2026-11-25T21:32:00Z");
+    await sink.finish("stopped");
+    expect(insertedText(batches[1]!)).toBe("⚠️ Notes stopped early · 4:32 PM\nWed, Nov 25, 2026 · Started 4:00 PM · 32 min\n");
+  });
+
+  test("the status lines are never read back as notes", async () => {
+    const { text } = renderSections([{ heading: "Summary", markdown: "Hi." }], ["📝 Taking notes", "Started"]);
+    const paragraphs: DocsParagraph[] = text.split("\n").filter((line) => line.length > 0).map((line) => (
+      line === "Summary" ? { text: line, headingLevel: 2, bullet: false } : { text: line, bullet: false }
+    ));
+    const sink = new GoogleDocsNoteSink({ ...common, api: recordingApi(paragraphs).api });
+    const read = await sink.read();
+    expect(read.ok && read.value.sections).toEqual([{ heading: "Summary", markdown: "Hi." }]);
+  });
+
+  test("setTitle renames the tab date first and reports the name once", async () => {
+    const { api, batches } = recordingApi();
+    const names: string[] = [];
+    const sink = new GoogleDocsNoteSink({ ...common, api, onRenamed: (name) => names.push(name) });
+    await sink.setTitle("Q1 pricing review");
+    await sink.setTitle("Q1 pricing review");
+    expect(batches).toHaveLength(1);
+    expect(batches[0]!.requests[0]).toEqual({
+      updateDocumentTabProperties: { tabProperties: { tabId: "owned", title: "2026-11-25 - Q1 pricing review" }, fields: "title" },
+    });
+    expect(names).toEqual(["2026-11-25 - Q1 pricing review"]);
+  });
+
+  test("a doc made for one meeting keeps its tab name and leaves the rename to the host", async () => {
+    const { api, batches } = recordingApi();
+    const names: string[] = [];
+    const sink = new GoogleDocsNoteSink({ ...common, api, renameTab: false, onRenamed: (name) => names.push(name) });
+    await sink.setTitle("Roadmap");
+    expect(batches).toHaveLength(0);
+    expect(names).toEqual(["2026-11-25 - Roadmap"]);
+  });
+});

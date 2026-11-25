@@ -95,7 +95,9 @@ class FakeDocsApi implements GoogleDocsApi {
         lines.push({ text: rawLine, start, end: start + rawLine.length });
         offset += rawLine.length + 1;
       }
-      const headingRequests = typed.filter((request) => request.updateParagraphStyle);
+      // Later requests win, as in the real API: buildWriteRequests resets every inserted
+      // paragraph to NORMAL_TEXT first, then styles the headings.
+      const headingRequests = typed.filter((request) => request.updateParagraphStyle).reverse();
       const bulletRequests = typed.filter((request) => request.createParagraphBullets);
       this.#ownedParagraphs = lines
         .filter((line) => line.text.length > 0)

@@ -10,6 +10,7 @@ import { AppUnavailableError } from "../src/app/client.js";
 import type { AppClientLike } from "../src/app/client.js";
 import type { PassOutcome } from "../src/agent/runner.js";
 import { DEFAULT_CONFIG, requestSocketDiscoveryPath } from "../src/config.js";
+import { defaultEditorialGuidance } from "../src/agent/contract.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
 import { FakeAppClient } from "./fixtures/fake-app-client.js";
 
@@ -41,7 +42,8 @@ mock.module("ai-sdk-ollama", () => ({ createOllama: fakeProviderFactory() }));
 // Imported after the mocks are registered, for the reason test/llm-client.test.ts documents:
 // these modules read the provider factories at call time through live bindings, so the
 // registration has to happen before the module graph that reaches them is evaluated.
-const { createEnhanceRunner, runCli, runFinalEnhancementWithRetries, selectAgent } = await import("../bin/shorthand-notes.js");
+const { acpLaunchFromArgs, createEnhanceRunner, runCli, runFinalEnhancementWithRetries, selectAgent } = await import("../bin/shorthand-notes.js");
+const { AcpAgentClient } = await import("../src/agent/acp-client.js");
 const { LlmAgentClient } = await import("../src/agent/llm-client.js");
 
 const scratchDirectories: string[] = [];
@@ -171,6 +173,36 @@ describe("shorthand-notes CLI", () => {
     expect(await readFile(sidecar, "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
 
+  test("capture --exit-after-session ends after the first recording on a stream that stays open", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-exit-after-session-test-"));
+    scratchDirectories.push(vault);
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    expect((await run(entry, [
+      "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
+    ])).code).toBe(0);
+    const fixture = join(process.cwd(), "test", "fixtures", "fake-stream-single-session.mjs");
+    const result = await run(entry, [
+      "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture, "--exit-after-session",
+    ]);
+    expect(result.code).toBe(0);
+    expect(await readFile(join(vault, "transcript.md"), "utf8")).toContain("Kickoff notes.");
+  }, 10_000);
+
+  test("capture --exit-after-session stops when no recording is in progress", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-exit-after-session-idle-test-"));
+    scratchDirectories.push(vault);
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    expect((await run(entry, [
+      "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
+    ])).code).toBe(0);
+    const fixture = join(process.cwd(), "test", "fixtures", "fake-stream-idle.mjs");
+    const result = await run(entry, [
+      "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture, "--exit-after-session",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("No recording is in progress");
+  }, 10_000);
+
   test("init-note creates a linked scaffold without overwriting an existing note", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-init-test-"));
     scratchDirectories.push(vault);
@@ -265,7 +297,7 @@ describe("shorthand-notes CLI", () => {
     const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const result = await run(entry, ["google-login"], withoutGoogleOAuthEnv());
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain("Expected capture, enhance, init-note, read-block, or set-sections.");
+    expect(result.stderr).toContain("Expected capture, enhance, init-note, read-block, set-sections, or default-guidance.");
     expect(result.stderr).not.toContain("google-login");
     expect(result.stderr).not.toContain("--client-id");
   });
@@ -436,7 +468,7 @@ describe("shorthand-notes CLI", () => {
     });
 
     test("an unknown --backend value is a usage error, not a runtime one", async () => {
-      await expect(selectAgent(["--backend", "bogus"], {})).rejects.toThrow("--backend must be claude, llm, or codex.");
+      await expect(selectAgent(["--backend", "bogus"], {})).rejects.toThrow("--backend must be claude, llm, codex, cursor, or acp.");
     });
 
     test("names the slot the app holds the key under: kind, provider, and the profile's origin", async () => {
@@ -577,6 +609,85 @@ describe("shorthand-notes CLI", () => {
     test("rejects --claude combined with --backend llm instead of silently ignoring one", async () => {
       await expect(selectAgent(["--backend", "llm", "--claude", "C:\\fake\\claude.exe"], {}))
         .rejects.toThrow("--claude cannot be combined with --backend llm");
+    });
+
+    describe("--backend cursor and --backend acp", () => {
+      async function fakeProgram(name: string): Promise<string> {
+        const directory = await mkdtemp(join(tmpdir(), "shorthand-acp-cli-"));
+        scratchDirectories.push(directory);
+        const path = join(directory, name);
+        await writeFile(path, "#!/bin/sh\n", { mode: 0o755 });
+        return path;
+      }
+
+      test("--backend cursor launches the Cursor program as `<cursor> acp`", async () => {
+        const cursor = await fakeProgram("agent");
+        expect(acpLaunchFromArgs("cursor", ["--cursor-exe", cursor], {})).toEqual({ ok: true, command: cursor, args: ["acp"] });
+      });
+
+      test("--cursor-model is passed to the session, and a blank one is not", async () => {
+        const cursor = await fakeProgram("agent");
+        expect(acpLaunchFromArgs("cursor", ["--cursor-exe", cursor, "--cursor-model", "gpt-5"], {}))
+          .toEqual({ ok: true, command: cursor, args: ["acp"], model: "gpt-5" });
+        expect(acpLaunchFromArgs("cursor", ["--cursor-exe", cursor, "--cursor-model=  "], {}))
+          .toEqual({ ok: true, command: cursor, args: ["acp"] });
+      });
+
+      test("--backend cursor finds Cursor on PATH when --cursor-exe is absent", async () => {
+        const cursor = await fakeProgram("agent");
+        const result = acpLaunchFromArgs("cursor", [], { PATH: dirname(cursor), HOME: dirname(cursor) });
+        expect(result.ok && result.command).toBe(cursor);
+      });
+
+      test("--backend cursor says what to do when Cursor is not installed", () => {
+        expect(acpLaunchFromArgs("cursor", [], { PATH: "", HOME: join(tmpdir(), "no-such-home") })).toEqual({
+          ok: false, message: "Could not find the Cursor command line tool. Install it, or pass --cursor-exe.",
+        });
+      });
+
+      test("--backend acp needs a program, and has no default to guess", () => {
+        expect(acpLaunchFromArgs("acp", [], {})).toEqual({ ok: false, message: "--backend acp needs --acp-exe." });
+      });
+
+      test("--backend acp reports a program path that does not exist", () => {
+        const missing = join(tmpdir(), "no-such-acp-program");
+        expect(acpLaunchFromArgs("acp", ["--acp-exe", missing], {}))
+          .toEqual({ ok: false, message: `The ACP program was not found at "${missing}".` });
+      });
+
+      test("--acp-args is split on whitespace, the way the plugin splits its arguments field", async () => {
+        const program = await fakeProgram("gemini");
+        expect(acpLaunchFromArgs("acp", ["--acp-exe", program, "--acp-args=--experimental-acp  --quiet", "--acp-model", "pro"], {}))
+          .toEqual({ ok: true, command: program, args: ["--experimental-acp", "--quiet"], model: "pro" });
+        expect(acpLaunchFromArgs("acp", ["--acp-exe", program], {})).toEqual({ ok: true, command: program, args: [] });
+      });
+
+      test("SHORTHAND_ACP_EXE stands in for --acp-exe", async () => {
+        const program = await fakeProgram("gemini");
+        expect(acpLaunchFromArgs("acp", [], { SHORTHAND_ACP_EXE: program })).toEqual({ ok: true, command: program, args: [] });
+      });
+
+      test("selectAgent builds an ACP client for both, without starting the program", async () => {
+        const program = await fakeProgram("agent");
+        for (const args of [["--backend", "cursor", "--cursor-exe", program], ["--backend", "acp", "--acp-exe", program]]) {
+          const result = await selectAgent(args, {});
+          if (!result.ok) throw new Error(`expected ok, got: ${result.message}`);
+          expect(result.agent).toBeInstanceOf(AcpAgentClient);
+          expect(result.agent.supportsVaultTools).toBe(false);
+          await result.agent.dispose?.();
+        }
+      });
+
+      test("a missing program is reported through selectAgent, not thrown", async () => {
+        const result = await selectAgent(["--backend", "acp"], {});
+        expect(result.ok).toBe(false);
+        expect(!result.ok && result.message).toBe("--backend acp needs --acp-exe.");
+      });
+
+      test.each(["cursor", "acp"])("rejects --claude combined with --backend %s", async (backend) => {
+        await expect(selectAgent(["--backend", backend, "--claude", "/fake/claude"], {}))
+          .rejects.toThrow(`--claude cannot be combined with --backend ${backend}`);
+      });
     });
 
     test("parses --backend codex and selects the Codex backend", async () => {
@@ -831,6 +942,87 @@ process.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","emi
    * bound, to catch the two constants ever being swapped between call sites. The agent stub
    * resolves fast, so the real 4/10-minute timer this schedules is cleared long before it fires.
    */
+  describe("createEnhanceRunner note-taking mode", () => {
+    async function requestFor(extraArgs: readonly string[]): Promise<string> {
+      const vault = await mkdtemp(join(tmpdir(), ".cli-mode-wiring-test-"));
+      scratchDirectories.push(vault);
+      const note = join(vault, "meeting.md");
+      await writeFile(
+        note,
+        "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->",
+        "utf8",
+      );
+      const requestFile = join(vault, "request.json");
+      const agentStub = join(process.cwd(), "test", "fixtures", "recording-agent.mjs");
+      const previous = process.env.SHORTHAND_TEST_AGENT_REQUEST;
+      process.env.SHORTHAND_TEST_AGENT_REQUEST = requestFile;
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub, ...extraArgs], {}, false,
+          DEFAULT_CONFIG.enhancement.timeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+      } finally {
+        if (previous === undefined) delete process.env.SHORTHAND_TEST_AGENT_REQUEST;
+        else process.env.SHORTHAND_TEST_AGENT_REQUEST = previous;
+      }
+      return await readFile(requestFile, "utf8");
+    }
+
+    test("--assisted-notes gives the agent the assisted-notes guidance", async () => {
+      const request = await requestFor(["--assisted-notes"]);
+      expect(request).toContain("thoughtful note-taking partner");
+    }, 10_000);
+
+    test("without it the agent gets the meeting guidance", async () => {
+      const request = await requestFor([]);
+      expect(request).not.toContain("thoughtful note-taking partner");
+    }, 10_000);
+
+    test("--guidance-file replaces the note-taking prompt but never the safety rules", async () => {
+      const directory = await mkdtemp(join(tmpdir(), ".cli-guidance-file-test-"));
+      scratchDirectories.push(directory);
+      const file = join(directory, "prompt.md");
+      await writeFile(file, "Write the notes as a haiku about pricing.", "utf8");
+      const request = await requestFor(["--guidance-file", file]);
+      expect(request).toContain("Write the notes as a haiku about pricing.");
+      expect(request).not.toContain("thoughtful note-taking partner");
+      expect(request).toContain("meetingTitle");
+    }, 10_000);
+
+    test("a missing --guidance-file is an error, not a silent default", async () => {
+      const resolved = await createEnhanceRunner(
+        "meeting.md", tmpdir(), "markdown", ["--guidance-file", join(tmpdir(), "no-such-prompt.md")], {}, false,
+        DEFAULT_CONFIG.enhancement.timeoutMs,
+      );
+      expect(resolved.ok).toBe(false);
+      if (!resolved.ok) expect(resolved.message).toContain("note-taking prompt");
+    });
+  });
+
+  describe("default-guidance", () => {
+    async function printed(args: readonly string[]): Promise<{ code: number; out: string }> {
+      const chunks: string[] = [];
+      const write = process.stdout.write;
+      process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+      try {
+        const code = await runCli(["default-guidance", ...args], {});
+        return { code, out: chunks.join("") };
+      } finally {
+        process.stdout.write = write;
+      }
+    }
+
+    test("prints the meeting prompt, or the assisted-notes one", async () => {
+      const meeting = await printed(["--sink", "google"]);
+      expect(meeting.code).toBe(0);
+      expect(meeting.out.trim()).toBe(defaultEditorialGuidance("meeting", "google-docs"));
+      const assisted = await printed(["--assisted-notes", "--sink", "google"]);
+      expect(assisted.out.trim()).toBe(defaultEditorialGuidance("assisted-notes", "google-docs"));
+    });
+  });
+
   describe("createEnhanceRunner timeout wiring", () => {
     async function scratchNote(): Promise<{ vault: string; note: string }> {
       const vault = await mkdtemp(join(tmpdir(), ".cli-timeout-wiring-test-"));

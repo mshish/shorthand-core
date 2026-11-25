@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,13 +12,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ExecutableAgentStub } from "../src/agent/client.js";
 import { readCurrentBlock, writeSections } from "../src/note/writer.js";
 import {
+  AcpAgentClient,
   AppUnavailableError,
   ClaudeAgentClient,
   CodexAgentClient,
   createAppFetch,
   DEFAULT_CONFIG,
+  defaultEditorialGuidance,
   detectClaudeExecutable,
   detectCodexExecutable,
+  detectCursorExecutable,
   detectShorthandExecutable,
   EnhanceRunner,
   LlmAgentClient,
@@ -36,6 +40,7 @@ import {
   type ExitDiagnosis,
   type LlmProfile,
   type LlmProviderId,
+  type NoteCaptureOutcome,
   type NoteSink,
   type PassOutcome,
   type Section,
@@ -46,11 +51,12 @@ import {
   MarkdownNoteSink,
   transcriptWikilink,
 } from "shorthand-core/markdown";
+import type { GoogleTranscriptMirror } from "shorthand-core/google";
 
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--assisted-notes] [--guidance-file <path>] [--sink markdown|google] [--google-document <id>] [--google-transcript] [--backend claude|llm|codex|cursor|acp] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--google-document <id>] [--backend claude|llm|codex|cursor|acp] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n  shorthand-notes default-guidance [--assisted-notes] [--sink markdown|google]\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
   );
   return 2;
 }
@@ -65,6 +71,8 @@ const KNOWN_FLAGS = new Set([
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
   "--codex-model", "--codex-base-url", "--llm-provider", "--llm-model", "--llm-base-url",
+  "--exit-after-session", "--cursor-exe", "--cursor-model", "--acp-exe", "--acp-args", "--acp-model",
+  "--google-document", "--google-transcript", "--assisted-notes", "--guidance-file",
 ]);
 
 class ArgumentError extends Error {}
@@ -91,6 +99,18 @@ function resolveFrom(base: string, value: string): string {
   return isAbsolute(value) ? resolve(value) : resolve(base, value);
 }
 
+/**
+ * Prints the built-in note-taking prompt, so a host can show it and let someone start their
+ * own from it. The safety rules are not part of it: no `--guidance-file` can replace them.
+ */
+function printDefaultGuidance(args: readonly string[]): number {
+  const sink = argumentValue(args, "--sink") ?? "markdown";
+  if (sink !== "markdown" && sink !== "google") return usage("--sink must be markdown or google.");
+  const mode = args.includes("--assisted-notes") ? "assisted-notes" : "meeting";
+  process.stdout.write(`${defaultEditorialGuidance(mode, sink === "google" ? "google-docs" : "obsidian")}\n`);
+  return 0;
+}
+
 export async function runCli(
   argv: readonly string[] = process.argv.slice(2),
   environment: NodeJS.ProcessEnv = process.env,
@@ -102,7 +122,8 @@ export async function runCli(
     if (command === "init-note") return await initializeNote(args);
     if (command === "read-block") return await readBlock(args);
     if (command === "set-sections") return await setSections(args);
-    return usage("Expected capture, enhance, init-note, read-block, or set-sections.");
+    if (command === "default-guidance") return printDefaultGuidance(args);
+    return usage("Expected capture, enhance, init-note, read-block, set-sections, or default-guidance.");
   } catch (error) {
     if (error instanceof ArgumentError) return usage(error.message);
     throw error;
@@ -162,18 +183,20 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     noteLinked = true;
   }
   let enhancer: EnhanceRunner | undefined;
+  let notesSink: NoteSink | undefined;
   let closeApp: (() => void) | undefined;
   if (args.includes("--enhance")) {
     const sinkArg = argumentValue(args, "--sink") ?? "markdown";
     if (sinkArg !== "markdown" && sinkArg !== "google") return usage("--sink must be markdown or google.");
     const resolved = await createEnhanceRunner(
-      note, vault, sinkArg, args, environment, false, DEFAULT_CONFIG.enhancement.timeoutMs,
+      note, vault, sinkArg, args, environment, false, DEFAULT_CONFIG.enhancement.timeoutMs, new Date(),
     );
     if (!resolved.ok) {
       console.error(resolved.message);
       return 1;
     }
     enhancer = resolved.runner;
+    notesSink = resolved.sink;
     closeApp = resolved.closeApp;
   }
   const fake = args.some((argument) => argument === "--fake-stream" || argument.startsWith("--fake-stream="));
@@ -190,7 +213,31 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     drainTimeoutMs: DEFAULT_CONFIG.drainTimeoutMs,
   });
   const transcript = new TranscriptStore();
-  const sidecar = new SidecarWriter(sidecarPath, { flushIntervalMs: DEFAULT_CONFIG.sidecarFlushIntervalMs });
+  // `--google-transcript`: keep a copy of the transcript in its own tab of the Google Doc
+  // the notes go to (a child tab of the meeting's tab, or a top-level tab in a meeting's
+  // own `--google-document`). The sidecar file is still written as usual.
+  let transcriptMirror: GoogleTranscriptMirror | undefined;
+  if (args.includes("--google-transcript")) {
+    // Loaded dynamically for the same reason as the Google sink in createEnhanceRunner.
+    const { resolveGoogleTranscriptMirror } = await import("shorthand-core/google");
+    const ownDocument = argumentValue(args, "--google-document");
+    const resolvedMirror = await resolveGoogleTranscriptMirror(note, environment, {
+      ...(ownDocument === undefined ? {} : { documentId: ownDocument }),
+      intervalMs: DEFAULT_CONFIG.googleTranscriptIntervalMs,
+      onError: (message) => console.error(message),
+    });
+    if (!resolvedMirror.ok) {
+      enhancer?.stop();
+      closeApp?.();
+      console.error(resolvedMirror.message);
+      return 1;
+    }
+    transcriptMirror = resolvedMirror.mirror;
+  }
+  const sidecar = new SidecarWriter(sidecarPath, {
+    flushIntervalMs: DEFAULT_CONFIG.sidecarFlushIntervalMs,
+    ...(transcriptMirror === undefined ? {} : { onCommit: (content: string) => transcriptMirror.offer(content) }),
+  });
   let exitCode = 0;
   let interruptCount = 0;
   let shutdownRequested = false;
@@ -199,6 +246,20 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   // "wind down the current session and finish normally", so the enhancement wait below must
   // stay unbounded for it, the same as a capture that ends without any signal at all.
   let forcedStop = false;
+  // `--exit-after-session`: a host that starts one capture per recording (the Shorthand
+  // app filling a Google Doc for one meeting, say) wants this process to end when that
+  // recording does, not to wait for the next one. The first session's terminal event asks
+  // the client to drain and stop; so does an idle `capture_state` seen before any session,
+  // which means the recording this capture was started for already ended.
+  const exitAfterSession = args.includes("--exit-after-session");
+  let sessionSeen = false;
+  let exitAfterSessionRequested = false;
+  const requestExitAfterSession = () => {
+    if (exitAfterSessionRequested) return;
+    exitAfterSessionRequested = true;
+    shutdownRequested = true;
+    client.stopAfterDrain();
+  };
 
   client.on("event", ({ generation, record }) => {
     const update = transcript.ingest(generation, record);
@@ -235,6 +296,21 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       );
     } else if (record.t !== "hello") {
       console.log(`[generation ${generation}] ${record.t} session=${record.session}`);
+    }
+    if (exitAfterSession) {
+      if (record.t === "begin") sessionSeen = true;
+      if (record.t === "capture_state" && record.session !== undefined) sessionSeen = true;
+      const terminal = record.t === "final" || record.t === "no_speech" || record.t === "cancel" ||
+        record.t === "error";
+      if (terminal) {
+        sessionSeen = true;
+        // Deferred a turn so the client records the terminal event (and drops the session
+        // from its active set) before it is asked to drain.
+        queueMicrotask(requestExitAfterSession);
+      } else if (record.t === "capture_state" && record.session === undefined && !sessionSeen) {
+        console.error("No recording is in progress; --exit-after-session is stopping.");
+        queueMicrotask(requestExitAfterSession);
+      }
     }
   });
   client.on("connectionError", ({ record }) => {
@@ -310,7 +386,26 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   process.on("SIGTERM", forcedShutdown);
   process.on("SIGHUP", forcedShutdown);
 
+  let notesBegun = false;
+  let notesFinished = false;
+  const finishNotes = async (sinkToFinish: NoteSink | undefined, outcome: NoteCaptureOutcome) => {
+    if (sinkToFinish?.finish === undefined || !notesBegun || notesFinished) return;
+    notesFinished = true;
+    try {
+      await sinkToFinish.finish(outcome);
+    } catch (error) {
+      console.error(`Could not update the notes' status line: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   try {
+    if (notesSink?.begin !== undefined) {
+      try {
+        await notesSink.begin();
+        notesBegun = true;
+      } catch (error) {
+        console.error(`Could not add the notes' status line: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     try {
       client.start();
       await Promise.race([settled, shutdownTimeout]);
@@ -320,7 +415,11 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       process.off("SIGHUP", forcedShutdown);
       if (shutdownTimer !== undefined) clearTimeout(shutdownTimer);
       enhancer?.stopLiveTicks();
-      await sidecar.close();
+      try {
+        await sidecar.close();
+      } finally {
+        await transcriptMirror?.close();
+      }
     }
     if (enhancer !== undefined) {
       // An in-flight pass is otherwise bounded only by its own per-pass timeoutMs — up to
@@ -358,8 +457,11 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       }
       if (idleInTime) {
         const finalEnhancement = await runFinalEnhancementWithRetries(enhancer);
-        if (finalEnhancement.status !== "completed" && finalEnhancement.status !== "not-ready") exitCode = 1;
+        const finished = finalEnhancement.status === "completed" || finalEnhancement.status === "not-ready";
+        if (!finished) exitCode = 1;
+        await finishNotes(notesSink, finished && !forcedStop ? "complete" : "stopped");
       } else {
+        await finishNotes(notesSink, "stopped");
         console.error(`Enhancement pass still in flight after ${DEFAULT_CONFIG.enhancement.shutdownGraceMs}ms; stopping without a final pass.`);
         // Mirrors the drainTimeout handler above: a shutdown that had to force a still-running
         // operation to stop is reported as a non-zero exit rather than swallowed.
@@ -370,6 +472,8 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
     console.log(`Sidecar written: ${sidecarPath}`);
     return exitCode;
   } finally {
+    // A capture that threw before its final pass still says so at the top of the notes.
+    await finishNotes(notesSink, "stopped");
     // XState's clock uses referenced timers. Stopping the actor is the teardown guarantee
     // even when sidecar close or the final pass throws before normal CLI completion.
     enhancer?.stop();
@@ -432,6 +536,67 @@ type SelectAgentResult =
 
 const LLM_PROVIDER_IDS: readonly LlmProviderId[] = ["openai", "anthropic", "ollama", "openai-compatible"];
 
+const BACKEND_IDS = ["claude", "llm", "codex", "cursor", "acp"] as const;
+type BackendId = (typeof BACKEND_IDS)[number];
+
+function isBackendId(value: string): value is BackendId {
+  return (BACKEND_IDS as readonly string[]).includes(value);
+}
+
+export type AcpLaunch =
+  | Readonly<{ ok: true; command: string; args: readonly string[]; model?: string }>
+  | Readonly<{ ok: false; message: string }>;
+
+/**
+ * What the Cursor and "another app" backends spawn, decided from the flags alone so a test
+ * can check it without starting an agent. Both speak ACP over standard I/O; they differ only
+ * in how the program is found. Cursor is found the way the Obsidian plugin finds it
+ * (`detectCursorExecutable`, then `agent acp`). Another app has no default, because there is
+ * no program to guess: `--acp-exe` is required and `--acp-args` is split on whitespace, as
+ * the plugin's "Another app arguments" field is.
+ *
+ * Network ACP is not offered here. The plugin keys that agent's token by vault, and this
+ * command has no vault identity to key it by.
+ */
+export function acpLaunchFromArgs(
+  backend: "cursor" | "acp",
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): AcpLaunch {
+  if (backend === "cursor") {
+    const command = detectCursorExecutable(argumentValue(args, "--cursor-exe"), environment);
+    if (command === undefined) {
+      return { ok: false, message: "Could not find the Cursor command line tool. Install it, or pass --cursor-exe." };
+    }
+    if (!existsSync(command)) {
+      return { ok: false, message: `The Cursor command line tool was not found at "${command}".` };
+    }
+    const model = nonBlank(argumentValue(args, "--cursor-model"));
+    return { ok: true, command, args: ["acp"], ...(model === undefined ? {} : { model }) };
+  }
+  const configured = nonBlank(argumentValue(args, "--acp-exe") ?? environment.SHORTHAND_ACP_EXE);
+  if (configured === undefined) {
+    return { ok: false, message: "--backend acp needs --acp-exe." };
+  }
+  const command = resolve(configured);
+  if (!existsSync(command)) {
+    return { ok: false, message: `The ACP program was not found at "${command}".` };
+  }
+  const rawArgs = argumentValue(args, "--acp-args", true)?.trim() ?? "";
+  const model = nonBlank(argumentValue(args, "--acp-model"));
+  return {
+    ok: true,
+    command,
+    args: rawArgs.length === 0 ? [] : rawArgs.split(/\s+/),
+    ...(model === undefined ? {} : { model }),
+  };
+}
+
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
 function isLlmProviderId(value: string): value is LlmProviderId {
   return (LLM_PROVIDER_IDS as readonly string[]).includes(value);
 }
@@ -464,11 +629,25 @@ export async function selectAgent(
     return { ok: true, agent: new ExecutableAgentStub(resolveFrom(process.cwd(), stubPath)) };
   }
   const backendArg = argumentValue(args, "--backend") ?? "claude";
-  if (backendArg !== "claude" && backendArg !== "llm" && backendArg !== "codex") {
-    throw new ArgumentError("--backend must be claude, llm, or codex.");
+  if (!isBackendId(backendArg)) {
+    throw new ArgumentError("--backend must be claude, llm, codex, cursor, or acp.");
   }
   if (backendArg === "claude") {
     return { ok: true, agent: new ClaudeAgentClient() };
+  }
+  if (backendArg === "cursor" || backendArg === "acp") {
+    if (argumentValue(args, "--claude") !== undefined) {
+      throw new ArgumentError(`--claude cannot be combined with --backend ${backendArg}; that backend never launches a Claude Code executable.`);
+    }
+    const launch = acpLaunchFromArgs(backendArg, args, environment);
+    if (!launch.ok) return launch;
+    return {
+      ok: true,
+      agent: new AcpAgentClient({
+        transport: { type: "stdio", command: launch.command, args: launch.args },
+        ...(launch.model === undefined ? {} : { model: launch.model }),
+      }),
+    };
   }
   if (backendArg === "codex") {
     if (argumentValue(args, "--claude") !== undefined) {
@@ -557,7 +736,7 @@ function appUnavailableMessage(error: AppUnavailableError): string {
 type CreateEnhanceRunnerResult =
   // `closeApp` is selectAgent's, passed straight through: the runner disposes the agent, but
   // the request socket the agent borrows outlives it and belongs to whoever built it.
-  | Readonly<{ ok: true; runner: EnhanceRunner; sinkDescribe: string; closeApp?: () => void }>
+  | Readonly<{ ok: true; runner: EnhanceRunner; sink: NoteSink; sinkDescribe: string; closeApp?: () => void }>
   | Readonly<{ ok: false; message: string }>;
 
 // `sink` arrives already validated by the caller (runCapture / runEnhance both check
@@ -573,6 +752,9 @@ type CreateEnhanceRunnerResult =
 // it) — and HANDY_NOTES_AGENT_TIMEOUT_MS still overrides whichever default was passed in.
 //
 // Exported for testing (see selectAgent's comment above for the same reason).
+/** The stderr line that names the notes, read by the Shorthand app: `notes-title: 2026-11-25 - Q1 pricing review`. */
+export const NOTES_TITLE_PREFIX = "notes-title: ";
+
 export async function createEnhanceRunner(
   note: string,
   vault: string,
@@ -581,7 +763,20 @@ export async function createEnhanceRunner(
   environment: NodeJS.ProcessEnv,
   dryRun: boolean,
   timeoutMs: number,
+  /** Set by `capture`: tells the agent when the session began, and dates the notes' name. */
+  startedAt?: Date,
 ): Promise<CreateEnhanceRunnerResult> {
+  // `--guidance-file`: the person's own note-taking prompt, in place of the built-in one.
+  // Read before the agent is built, so a missing file leaves nothing open behind it.
+  const guidanceFile = argumentValue(args, "--guidance-file");
+  let guidance: string | undefined;
+  if (guidanceFile !== undefined) {
+    try {
+      guidance = await readFile(resolveFrom(process.cwd(), guidanceFile), "utf8");
+    } catch (error) {
+      return { ok: false, message: `Could not read the note-taking prompt ${guidanceFile}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
   const selected = await selectAgent(args, environment);
   if (!selected.ok) return { ok: false, message: selected.message };
   const agent = selected.agent;
@@ -593,7 +788,17 @@ export async function createEnhanceRunner(
     // invocation — init-note, read-block, set-sections, and capture/enhance even with the
     // default --sink markdown — bloating dist/shorthand-notes.mjs from ~700KB to ~32MB.
     const { resolveGoogleDocsSink } = await import("shorthand-core/google");
-    const resolved = await resolveGoogleDocsSink(note, environment);
+    // `--google-document`: the host made a doc for this note alone (the app's "a doc per
+    // meeting" setting), so the notes go in its first tab rather than a new tab in the
+    // shared doc the credentials file names.
+    const ownDocument = argumentValue(args, "--google-document");
+    const resolved = await resolveGoogleDocsSink(note, environment, {
+      ...(ownDocument === undefined ? {} : { documentId: ownDocument }),
+      ...(startedAt === undefined ? {} : { startedAt }),
+      // A line the host reads to rename what it shows for the notes (the Shorthand app
+      // renames a doc made for one meeting, and its overlay link). The prefix is fixed.
+      onRenamed: (name) => console.error(`${NOTES_TITLE_PREFIX}${name}`),
+    });
     if (!resolved.ok) {
       // The agent was built first, so the request socket is already open on this path and
       // there is no runner about to be returned that would carry it out to a caller.
@@ -608,6 +813,7 @@ export async function createEnhanceRunner(
   const claudeExecutable = detectClaudeExecutable(claudeOverride, environment);
   return {
     ok: true,
+    sink: resolvedSink,
     sinkDescribe: resolvedSink.describe,
     ...(closeApp === undefined ? {} : { closeApp }),
     runner: new EnhanceRunner({
@@ -622,6 +828,13 @@ export async function createEnhanceRunner(
       timeoutMs: environmentNumber(environment.HANDY_NOTES_AGENT_TIMEOUT_MS, timeoutMs),
       maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
       dryRun,
+      ...(startedAt === undefined ? {} : { startedAt }),
+      // An empty file falls back to the built-in prompt (resolveGuidance in the runner).
+      ...(guidance === undefined ? {} : { guidance }),
+      // `--assisted-notes`: the recording is one person thinking out loud (Shorthand's
+      // Assisted notes mode), so the agent gets the assisted-notes guidance, not the
+      // meeting guidance.
+      ...(args.includes("--assisted-notes") ? { mode: "assisted-notes" as const } : {}),
       ...(claudeExecutable === undefined
         ? {}
         : { pathToClaudeCodeExecutable: claudeExecutable }),

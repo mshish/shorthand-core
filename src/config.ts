@@ -89,13 +89,17 @@ export function requestSocketDiscoveryPath(environment: NodeJS.ProcessEnv = proc
  * larger change than this needs. Bump it together with `package.json` — `test/config.test.ts`
  * reads the manifest and fails if the two ever disagree again.
  */
-export const CORE_VERSION = "0.24.4";
+export const CORE_VERSION = "0.25.0";
 
 export const DEFAULT_CONFIG = Object.freeze({
   shorthandBinaryPath: "shorthand",
   followStreamArgs: ["--follow-stream", "json"] as readonly string[],
   sidecarDirectory: join("Meetings", "Transcripts"),
   sidecarFlushIntervalMs: 250,
+  // How long a change to the transcript waits before it is copied into its Google Docs
+  // tab (--google-transcript). Each copy rewrites the tab whole, so this stays well inside
+  // the Docs API's per-user write quota.
+  googleTranscriptIntervalMs: 10_000,
   templateSections: [
     { heading: "Summary", markdown: "" },
     { heading: "Decisions", markdown: "" },

@@ -3,6 +3,7 @@ import {
   buildSectionOutputSchema,
   DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
   DEFAULT_EDITORIAL_GUIDANCE,
+  defaultEditorialGuidance,
   ENHANCEMENT_SAFETY_PREAMBLE,
   type AgentClient,
   type AgentQueryRequest,
@@ -72,6 +73,42 @@ describe("EnhanceRunner trigger and transcript cutoff policy", () => {
     expect(await runner.enhanceNow("tick")).toMatchObject({
       status: "completed", meetingStatus: { ended: false, reason: "" },
     });
+  });
+
+  test("names the notes from the agent's title, then sends that title back so it stays put", async () => {
+    const titled = (meetingTitle: string) => ({ sections: OUTPUT.sections, meetingStatus: { ended: false, reason: "" }, meetingTitle });
+    const agent = new FakeAgent([
+      Promise.resolve({ structuredOutput: titled("Q1 pricing review"), sessionId: "s" }),
+      Promise.resolve({ structuredOutput: titled("Q1 pricing review"), sessionId: "s" }),
+    ]);
+    const titles: string[] = [];
+    const sink = Object.assign(new FakeSink({ cwd: process.cwd() }), {
+      setTitle: async (title: string) => { titles.push(title); },
+    });
+    const startedAt = new Date("2026-11-25T21:00:00Z");
+    const runner = makeRunner({ agent, sink, startedAt });
+    runner.appendTranscript("pricing");
+    await runner.enhanceNow("tick");
+    runner.appendTranscript(" more pricing");
+    await runner.enhanceNow("tick");
+    expect(titles).toEqual(["Q1 pricing review"]);
+    const context = (index: number) => JSON.parse(/<session_context_json>\n([\s\S]*?)\n<\/session_context_json>/.exec(agent.requests[index]!.prompt)![1]!);
+    expect(context(0)).not.toHaveProperty("title");
+    expect(typeof context(0).startedAt).toBe("string");
+    expect(context(0).startedAt).toContain("2026");
+    expect(context(1).title).toBe("Q1 pricing review");
+  });
+
+  test("a sink that fails to rename never costs the pass", async () => {
+    const agent = new FakeAgent([
+      Promise.resolve({ structuredOutput: { sections: OUTPUT.sections, meetingTitle: "Roadmap" }, sessionId: "s" }),
+    ]);
+    const sink = Object.assign(new FakeSink({ cwd: process.cwd() }), {
+      setTitle: async () => { throw new Error("no rename"); },
+    });
+    const runner = makeRunner({ agent, sink });
+    runner.appendTranscript("roadmap");
+    expect(await runner.enhanceNow("tick")).toMatchObject({ status: "completed" });
   });
 
   test("a client that cannot use vault tools runs the tick tier even when the sink offers agent context", async () => {
@@ -913,6 +950,25 @@ describe("EnhanceRunner wall-clock window and failure isolation", () => {
     expect(agent.requests[0]!.systemPrompt)
       .toBe(`${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE}`);
     expect(agent.requests[0]!.prompt).toContain('<session_context_json>\n{"mode":"assisted-notes","userName":"Mike"}');
+  });
+
+  test("a sink that shows Google Docs gets the Google Docs presentation", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const sink = Object.assign(new FakeSink(), { noteFormat: "google-docs" as const });
+    const runner = makeRunner({ agent, sink });
+    runner.appendTranscript("enough transcript");
+    await runner.enhanceNow("tick");
+    expect(agent.requests[0]!.systemPrompt)
+      .toBe(`${ENHANCEMENT_SAFETY_PREAMBLE}\n\n${defaultEditorialGuidance("meeting", "google-docs")}`);
+  });
+
+  test("a custom guidance still replaces the default for a Google Docs sink", async () => {
+    const agent = new FakeAgent([Promise.resolve(response())]);
+    const sink = Object.assign(new FakeSink(), { noteFormat: "google-docs" as const });
+    const runner = makeRunner({ agent, sink, guidance: "Write terse bullets." });
+    runner.appendTranscript("enough transcript");
+    await runner.enhanceNow("tick");
+    expect(agent.requests[0]!.systemPrompt).toBe(`${ENHANCEMENT_SAFETY_PREAMBLE}\n\nWrite terse bullets.`);
   });
 
   test("a supplied name stays out of the privileged system prompt", async () => {

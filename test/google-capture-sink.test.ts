@@ -160,4 +160,77 @@ describe("resolveGoogleDocsSink", () => {
       expect(mintCount).toBe(1);
     },
   );
+  describe("with a document of the note's own (documentId)", () => {
+    const tab = (tabId: string) => ({ tabId, bodyEndIndex: 1, paragraphs: [], childTabs: [] });
+
+    test("writes into that document's first tab and mints nothing", async () => {
+      const directory = await scratchDir();
+      const credentialsPath = await writeCredentials(directory, VALID);
+      const capturesDirectory = join(directory, "captures");
+      let minted = false;
+      let read: string | undefined;
+      const api = fakeApi({
+        getDocument: async (documentId) => {
+          read = documentId;
+          return { ok: true, value: { revisionId: "r1", tabs: [tab("t.0"), tab("t.1")] } };
+        },
+        addDocumentTab: async () => { minted = true; return { ok: true, value: { tabId: "nope" } }; },
+      });
+      const result = await resolveGoogleDocsSink(
+        join(directory, "meeting.md"), {}, { credentialsPath, capturesDirectory, api, documentId: " meeting-doc " },
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(read).toBe("meeting-doc");
+      expect(minted).toBe(false);
+      expect(result.sink.describe).toBe("Google Doc meeting-doc (tab t.0)");
+      const state = await onlyStateFile(capturesDirectory);
+      expect(state.contents.documentId).toBe("meeting-doc");
+      expect(state.contents.tabId).toBe("t.0");
+    });
+
+    test("needs no document_id in the credentials file", async () => {
+      const directory = await scratchDir();
+      const { document_id: _shared, ...withoutDocument } = VALID;
+      const credentialsPath = await writeCredentials(directory, withoutDocument);
+      const api = fakeApi({ getDocument: async () => ({ ok: true, value: { revisionId: "r1", tabs: [tab("t.0")] } }) });
+      const result = await resolveGoogleDocsSink(
+        join(directory, "meeting.md"), {}, { credentialsPath, capturesDirectory: join(directory, "captures"), api, documentId: "meeting-doc" },
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    test("reuses the stored tab on a second call (crash-resume) without reading again", async () => {
+      const directory = await scratchDir();
+      const credentialsPath = await writeCredentials(directory, VALID);
+      const capturesDirectory = join(directory, "captures");
+      let reads = 0;
+      const api = fakeApi({ getDocument: async () => { reads += 1; return { ok: true, value: { revisionId: "r1", tabs: [tab("t.0")] } }; } });
+      const notePath = join(directory, "meeting.md");
+      const options = { credentialsPath, capturesDirectory, api, documentId: "meeting-doc" };
+      await resolveGoogleDocsSink(notePath, {}, options);
+      await resolveGoogleDocsSink(notePath, {}, options);
+      expect(reads).toBe(1);
+    });
+
+    test("fails clearly when the document can't be read or has no tab", async () => {
+      const directory = await scratchDir();
+      const credentialsPath = await writeCredentials(directory, VALID);
+      const notePath = join(directory, "meeting.md");
+      const unreadable = await resolveGoogleDocsSink(notePath, {}, {
+        credentialsPath,
+        capturesDirectory: join(directory, "a"),
+        documentId: "meeting-doc",
+        api: fakeApi({ getDocument: async () => ({ ok: false, error: { httpStatus: 404, message: "Requested entity was not found." } }) }),
+      });
+      expect(unreadable).toEqual({ ok: false, message: "Could not open the meeting's Google Doc: Requested entity was not found." });
+      const empty = await resolveGoogleDocsSink(notePath, {}, {
+        credentialsPath,
+        capturesDirectory: join(directory, "b"),
+        documentId: "meeting-doc",
+        api: fakeApi(),
+      });
+      expect(empty).toEqual({ ok: false, message: "Google Doc meeting-doc has no tab to write the notes into." });
+    });
+  });
 });

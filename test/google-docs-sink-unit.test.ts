@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { GoogleDocsNoteSink } from "../src/google/docs-sink.js";
 import type { GoogleDocsApi, GetDocumentValue, BatchUpdateValue, DocsApiResult } from "../src/google/docs-client.js";
+import { renderSections } from "../src/google/renderer.js";
+import type { DocsParagraph } from "../src/google/docs-client.js";
+import type { Section } from "../src/note/markers.js";
 
 function fakeApi(overrides: Partial<GoogleDocsApi> = {}): GoogleDocsApi {
   return {
@@ -73,9 +76,43 @@ describe("GoogleDocsNoteSink.read", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.value.sections).toEqual([
       { heading: "Summary", markdown: "Shipped Friday." },
-      { heading: "Decisions", markdown: "- Ship it\n- Skip the retro" },
+      { heading: "Decisions", markdown: "* Ship it\n* Skip the retro" },
     ]);
     expect(result.value.userNotes).toBe("");
+  });
+
+  test("keeps subheadings, list nesting and kind, ticked items, and inline styling", async () => {
+    const api = fakeApi({
+      getDocument: async () => ({
+        ok: true,
+        value: {
+          revisionId: "rev1",
+          tabs: [{
+            tabId: "owned",
+            bodyEndIndex: 1,
+            childTabs: [],
+            paragraphs: [
+              { text: "Plan", headingLevel: 2, bullet: false },
+              { text: "Steps", headingLevel: 3, bullet: false },
+              { text: "Draft", bullet: true, listKind: "numbered" },
+              { text: "Outline", bullet: true, listKind: "numbered", nestingLevel: 1 },
+              { text: "Mike sends it", markdown: "**Mike** sends it", bullet: true, listKind: "checkbox" },
+              { text: "Room booked", bullet: true, listKind: "checkbox", checked: true },
+              { text: "Takeaway: ship", markdown: "**Takeaway:** ship", bullet: false },
+            ],
+          }],
+        },
+      }),
+    });
+    const sink = new GoogleDocsNoteSink({ documentId: "d1", tabId: "owned", api });
+    const result = await sink.read();
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.sections).toEqual([
+      {
+        heading: "Plan",
+        markdown: "### Steps\n\n1. Draft\n    1. Outline\n* [ ] **Mike** sends it\n* [x] Room booked\n\n**Takeaway:** ship",
+      },
+    ]);
   });
 
   test("a missing owned tab reads as invalid-target", async () => {
@@ -248,5 +285,152 @@ describe("GoogleDocsNoteSink.write", () => {
   test("describe defaults to the document id when not supplied", () => {
     const sink = new GoogleDocsNoteSink({ documentId: "d1", tabId: "owned", api: fakeApi() });
     expect(sink.describe).toContain("d1");
+  });
+});
+
+/**
+ * Stores rendered text the way the Docs API leaves it after buildWriteRequests:
+ * one paragraph per line, list paragraphs with their leading tabs turned into a
+ * nesting level, and a struck-through checklist item reading as ticked.
+ */
+function storedParagraphs(sections: readonly Section[]): DocsParagraph[] {
+  const { text, spans } = renderSections(sections);
+  const paragraphs: DocsParagraph[] = [];
+  let offset = 0;
+  for (const line of text.split("\n").slice(0, -1)) {
+    const start = offset;
+    offset += line.length + 1;
+    const heading = spans.find((span) => span.style.kind === "heading" && span.start === start);
+    const list = spans.find((span) => span.style.kind === "list" && span.start <= start && start < span.end);
+    const preset = list?.style.kind === "list" ? list.style.preset : undefined;
+    const depth = /^\t*/.exec(line)![0].length;
+    const struck = spans.some((span) => span.style.kind === "strikethrough" && span.start === start + depth && span.end === start + line.length);
+    paragraphs.push({
+      text: line.slice(depth),
+      ...(heading?.style.kind === "heading" ? { headingLevel: heading.style.level } : {}),
+      bullet: preset !== undefined,
+      ...(depth > 0 ? { nestingLevel: depth } : {}),
+      ...(preset === "numbered" || preset === "checkbox" ? { listKind: preset } : {}),
+      ...(preset === "checkbox" && struck ? { checked: true as const } : {}),
+    });
+  }
+  return paragraphs;
+}
+
+describe("GoogleDocsNoteSink round trip", () => {
+  test("reading back a written note renders the same text, so an unchanged pass stays unchanged", async () => {
+    const sections: readonly Section[] = [
+      { heading: "Summary", markdown: "We agreed to **ship Friday**.\n\nA *second* thought." },
+      {
+        heading: "Plan",
+        markdown: "### Steps\n\n1. Draft\n2. Review\n    * Legal\n        * Contract\n\nThen a paragraph.\n\n* [ ] **Mike** sends the deck\n* [x] Room booked\n\n* An idea\n* [ ] A stray task",
+      },
+    ];
+    const paragraphs = storedParagraphs(sections);
+    const api = fakeApi({
+      getDocument: async () => ({
+        ok: true,
+        value: { revisionId: "rev1", tabs: [{ tabId: "owned", bodyEndIndex: 1, paragraphs, childTabs: [] }] },
+      }),
+    });
+    const sink = new GoogleDocsNoteSink({ documentId: "d1", tabId: "owned", api });
+    const read = await sink.read();
+    if (!read.ok) throw new Error("expected ok");
+    expect(renderSections(read.value.sections).text).toBe(renderSections(sections).text);
+    expect(await sink.write(sections, "rev1")).toEqual({ status: "unchanged", revision: "rev1" });
+  });
+});
+
+describe("GoogleDocsNoteSink status lines and title", () => {
+  type Batch = { requests: readonly Record<string, any>[]; revision: string | undefined };
+  function recordingApi(paragraphs: DocsParagraph[] = []) {
+    const batches: Batch[] = [];
+    const api = fakeApi({
+      getDocument: async () => ({
+        ok: true,
+        value: { revisionId: "rev1", tabs: [{ tabId: "owned", bodyEndIndex: 1, paragraphs, childTabs: [] }] },
+      }),
+      batchUpdate: async (_id, requests, revision) => {
+        batches.push({ requests: requests as Batch["requests"], revision });
+        return { ok: true, value: { revisionId: "rev2" } };
+      },
+    });
+    return { api, batches };
+  }
+  const insertedText = (batch: Batch) => batch.requests.find((request) => request.insertText)?.insertText.text as string;
+  const startedAt = new Date("2026-11-25T21:00:00Z");
+  const common = { documentId: "d1", tabId: "owned", startedAt, locale: "en-US", timeZone: "America/New_York" } as const;
+
+  test("a standalone enhance, which never calls begin, writes no status lines", async () => {
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api });
+    await sink.write([{ heading: "Summary", markdown: "Hi." }], "rev1");
+    expect(insertedText(batches[0]!)).toBe("Summary\nHi.\n");
+  });
+
+  test("begin shows Taking notes with the start, linked to Shorthand, in small grey text", async () => {
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api, now: () => new Date("2026-11-25T21:00:00Z") });
+    await sink.begin();
+    expect(insertedText(batches[0]!)).toBe("📝 Taking notes · Updated 4:00 PM · by Shorthand\nWed, Nov 25, 2026 · Started 4:00 PM\n");
+    const styles = batches[0]!.requests.filter((request) => request.updateTextStyle).map((request) => request.updateTextStyle);
+    expect(styles.some((style) => style.textStyle.link?.url === "https://shorthand.ing")).toBe(true);
+    expect(styles.filter((style) => style.fields === "foregroundColor,fontSize")).toHaveLength(2);
+  });
+
+  test("the Updated time moves only when the notes change, and finish reports the length", async () => {
+    let now = new Date("2026-11-25T21:00:00Z");
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api, now: () => now });
+    await sink.begin();
+    now = new Date("2026-11-25T21:12:00Z");
+    await sink.write([{ heading: "Summary", markdown: "Pricing." }], "rev1");
+    expect(insertedText(batches[1]!)).toStartWith("📝 Taking notes · Updated 4:12 PM · by Shorthand\n");
+    expect(insertedText(batches[1]!)).toEndWith("Summary\nPricing.\n");
+    now = new Date("2026-11-25T22:05:00Z");
+    await sink.finish("complete");
+    expect(insertedText(batches[2]!)).toStartWith("✅ Notes complete · 5:05 PM\nWed, Nov 25, 2026 · Started 4:00 PM · 1 hr 5 min\n");
+  });
+
+  test("finish says the notes stopped early", async () => {
+    let now = new Date("2026-11-25T21:00:00Z");
+    const { api, batches } = recordingApi();
+    const sink = new GoogleDocsNoteSink({ ...common, api, now: () => now });
+    await sink.begin();
+    now = new Date("2026-11-25T21:32:00Z");
+    await sink.finish("stopped");
+    expect(insertedText(batches[1]!)).toBe("⚠️ Notes stopped early · 4:32 PM\nWed, Nov 25, 2026 · Started 4:00 PM · 32 min\n");
+  });
+
+  test("the status lines are never read back as notes", async () => {
+    const { text } = renderSections([{ heading: "Summary", markdown: "Hi." }], ["📝 Taking notes", "Started"]);
+    const paragraphs: DocsParagraph[] = text.split("\n").filter((line) => line.length > 0).map((line) => (
+      line === "Summary" ? { text: line, headingLevel: 2, bullet: false } : { text: line, bullet: false }
+    ));
+    const sink = new GoogleDocsNoteSink({ ...common, api: recordingApi(paragraphs).api });
+    const read = await sink.read();
+    expect(read.ok && read.value.sections).toEqual([{ heading: "Summary", markdown: "Hi." }]);
+  });
+
+  test("setTitle renames the tab date first and reports the name once", async () => {
+    const { api, batches } = recordingApi();
+    const names: string[] = [];
+    const sink = new GoogleDocsNoteSink({ ...common, api, onRenamed: (name) => names.push(name) });
+    await sink.setTitle("Q1 pricing review");
+    await sink.setTitle("Q1 pricing review");
+    expect(batches).toHaveLength(1);
+    expect(batches[0]!.requests[0]).toEqual({
+      updateDocumentTabProperties: { tabProperties: { tabId: "owned", title: "2026-11-25 - Q1 pricing review" }, fields: "title" },
+    });
+    expect(names).toEqual(["2026-11-25 - Q1 pricing review"]);
+  });
+
+  test("a doc made for one meeting keeps its tab name and leaves the rename to the host", async () => {
+    const { api, batches } = recordingApi();
+    const names: string[] = [];
+    const sink = new GoogleDocsNoteSink({ ...common, api, renameTab: false, onRenamed: (name) => names.push(name) });
+    await sink.setTitle("Roadmap");
+    expect(batches).toHaveLength(0);
+    expect(names).toEqual(["2026-11-25 - Roadmap"]);
   });
 });

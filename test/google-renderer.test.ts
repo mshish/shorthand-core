@@ -13,15 +13,14 @@ describe("renderSections", () => {
     expect(text.slice(heading!.start, heading!.end)).toBe("Summary");
   });
 
-  test("renders a bullet list with one bullet span per item", () => {
+  test("renders a bullet list as one bullet list span over one paragraph per item", () => {
     const sections: readonly Section[] = [
       { heading: "Decisions", markdown: "- Ship Friday\n- Skip the retro\n" },
     ];
     const { text, spans } = renderSections(sections);
-    const bullets = spans.filter((span) => span.style.kind === "bullet");
-    expect(bullets).toHaveLength(2);
-    expect(text.slice(bullets[0]!.start, bullets[0]!.end)).toContain("Ship Friday");
-    expect(text.slice(bullets[1]!.start, bullets[1]!.end)).toContain("Skip the retro");
+    expect(text).toBe("Decisions\nShip Friday\nSkip the retro\n");
+    const lists = spans.filter((span) => span.style.kind === "list");
+    expect(lists).toEqual([{ start: 10, end: text.length, style: { kind: "list", preset: "bullet" } }]);
   });
 
   test("renders bold runs located within the plain text", () => {
@@ -76,7 +75,8 @@ describe("renderSections", () => {
     const bold = spans.find((span) => span.style.kind === "bold");
     expect(bold).toBeDefined();
     expect(text.slice(bold!.start, bold!.end)).toBe("Ship");
-    expect(spans.filter((span) => span.style.kind === "bullet")).toHaveLength(2);
+    expect(text).toBe("Decisions\nShip Friday\nSkip the retro\n");
+    expect(spans.filter((span) => span.style.kind === "list")).toHaveLength(1);
   });
 
   test("renders a link inside a loose bullet list item", () => {
@@ -93,7 +93,7 @@ describe("renderSections", () => {
     expect(link).toBeDefined();
     expect(link!.style.kind === "link" && link!.style.url).toBe("https://example.com/x");
     expect(text.slice(link!.start, link!.end)).toBe("the doc");
-    expect(spans.filter((span) => span.style.kind === "bullet")).toHaveLength(2);
+    expect(spans.filter((span) => span.style.kind === "list")).toHaveLength(1);
   });
 
   test("a blank line between paragraphs does not create a spurious empty paragraph", () => {
@@ -107,25 +107,73 @@ describe("renderSections", () => {
     expect(text).toBe("Notes\nOne.\nTwo.\n");
   });
 
-  test("an empty bullet list item produces no bullet span at all, not a zero-length one", () => {
+  test("an empty bullet list item produces no paragraph and no zero-length span", () => {
     const sections: readonly Section[] = [
       { heading: "Decisions", markdown: "- \n- x\n" },
     ];
-    const { spans } = renderSections(sections);
-    const bullets = spans.filter((span) => span.style.kind === "bullet");
-    expect(bullets).toHaveLength(1);
-    expect(bullets[0]!.start).not.toBe(bullets[0]!.end);
+    const { text, spans } = renderSections(sections);
+    expect(text).toBe("Decisions\nx\n");
+    expect(spans.every((span) => span.end > span.start)).toBe(true);
   });
 
-  test("flattens a nested bullet list to same-level bullets, each with its own span", () => {
+  test("nests a nested list one tab deeper inside the same list block", () => {
     const sections: readonly Section[] = [
-      { heading: "Notes", markdown: "- Top item\n  - Nested item\n- Another top\n" },
+      { heading: "Notes", markdown: "* Top item\n  * Nested item\n    * Deeper\n* Another top\n" },
     ];
     const { text, spans } = renderSections(sections);
-    const bullets = spans.filter((span) => span.style.kind === "bullet");
-    expect(bullets).toHaveLength(3);
-    expect(text.slice(bullets[0]!.start, bullets[0]!.end)).toBe("Top item");
-    expect(text.slice(bullets[1]!.start, bullets[1]!.end)).toBe("Nested item");
-    expect(text.slice(bullets[2]!.start, bullets[2]!.end)).toBe("Another top");
+    expect(text).toBe("Notes\nTop item\n\tNested item\n\t\tDeeper\nAnother top\n");
+    expect(spans.filter((span) => span.style.kind === "list")).toHaveLength(1);
   });
+
+  test("an ordered list becomes a numbered list", () => {
+    const { spans } = renderSections([{ heading: "Steps", markdown: "1. One\n2. Two\n" }]);
+    expect(spans.find((span) => span.style.kind === "list")!.style).toEqual({ kind: "list", preset: "numbered" });
+  });
+
+  test("a list of only tasks becomes a checklist, with done tasks struck through", () => {
+    const { text, spans } = renderSections([
+      { heading: "Actions", markdown: "* [ ] **Mike** to send the deck\n* [x] Book the room\n" },
+    ]);
+    expect(text).toBe("Actions\nMike to send the deck\nBook the room\n");
+    expect(spans.find((span) => span.style.kind === "list")!.style).toEqual({ kind: "list", preset: "checkbox" });
+    const struck = spans.filter((span) => span.style.kind === "strikethrough");
+    expect(struck.map((span) => text.slice(span.start, span.end))).toEqual(["Book the room"]);
+  });
+
+  test("a task inside an ordinary list keeps a box glyph instead of its brackets", () => {
+    const { text } = renderSections([{ heading: "Notes", markdown: "* An idea\n* [ ] A task\n* [x] Done\n" }]);
+    expect(text).toBe("Notes\nAn idea\n\u2610 A task\n\u2611 Done\n");
+  });
+
+  test("separate list blocks get separate list spans", () => {
+    const { spans } = renderSections([{ heading: "Notes", markdown: "* a\n\nText.\n\n1. b\n" }]);
+    const presets = spans.flatMap((span) => (span.style.kind === "list" ? [span.style.preset] : []));
+    expect(presets).toEqual(["bullet", "numbered"]);
+  });
+
+  test("italic and strikethrough runs get their own spans", () => {
+    const { text, spans } = renderSections([{ heading: "Notes", markdown: "An *idea* and ~~a plan~~." }]);
+    expect(text).toBe("Notes\nAn idea and a plan.\n");
+    const kinds = spans.map((span) => `${span.style.kind}:${text.slice(span.start, span.end)}`);
+    expect(kinds).toContain("italic:idea");
+    expect(kinds).toContain("strikethrough:a plan");
+  });
+
+  test("a heading inside a section body becomes a level-3 heading", () => {
+    const { text, spans } = renderSections([{ heading: "Notes", markdown: "## Sub\n\nBody." }]);
+    expect(text).toBe("Notes\nSub\nBody.\n");
+    const levels = spans.flatMap((span) => (span.style.kind === "heading" ? [span.style.level] : []));
+    expect(levels).toEqual([2, 3]);
+  });
+
+  test("Obsidian-only syntax degrades to clean text", () => {
+    const { text } = renderSections([
+      {
+        heading: "Notes",
+        markdown: "> [!warning] The **launch** may slip\n\nA ==key== date for [[Project Plan]].\n\n| Owner | Task |\n|---|---|\n| Mike | Deck |\n",
+      },
+    ]);
+    expect(text).toBe("Notes\nThe launch may slip\nA key date for Project Plan.\nOwner: Mike; Task: Deck\n");
+  });
+
 });

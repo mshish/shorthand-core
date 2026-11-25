@@ -335,6 +335,13 @@ because Codex's strict output schema rejects optional ones; `readMeetingStatus` 
 tolerates a model that omits or mangles it, collapsing every failure to `ended: false` rather
 than failing a pass whose sections were valid.
 
+**The meeting title is a name, not an instruction.** `meetingTitle` sits beside
+`meetingStatus` under the same rules: required in the schema, asked for in the safety
+preamble, and read leniently by `readMeetingTitle`, which keeps it to one plain line of at
+most 60 characters. The runner hands a new title to `NoteSink.setTitle` when the sink has
+one, and sends the accepted title back in the session context so the name stays put. The
+Google Docs sink names the notes `YYYY-MM-DD - <title>`, the date first so they sort by day.
+
 **The safety preamble is not the caller's to replace.** The system prompt is composed at one
 site (`runner.ts`) as `ENHANCEMENT_SAFETY_PREAMBLE` + the editorial guidance, in that order.
 Only the second half is caller-supplied, through `EnhanceRunnerOptions.guidance`; an empty or

@@ -59,14 +59,28 @@ Start capture and live enhancement:
 node dist/shorthand-notes.mjs capture --vault "/path/to/vault" --note "Meetings/Standup.md" --enhance
 ```
 
+Capture keeps following the app across recordings until you stop it. Add `--exit-after-session` to end after one recording instead; that is how the Shorthand app runs capture when it fills a Google Doc for a meeting.
+
+With `--sink google`, each meeting gets a new tab in the doc named in `google-credentials.json`. Pass `--google-document <id>` to write into the first tab of that document instead; the Shorthand app does this when it makes a doc for each meeting.
+
+Add `--google-transcript` to capture to keep a copy of the transcript in the same doc: a **Transcript** tab nested under the meeting's tab, or a top-level **Transcript** tab with `--google-document`. The sidecar file is still written; the tab is rewritten from it every 10 seconds and once more when capture ends.
+
+Add `--assisted-notes` to capture when the recording is Shorthand's **Assisted notes** mode (one person thinking out loud rather than a meeting). The agent then follows the assisted-notes guidance instead of the meeting guidance.
+
+During capture with `--sink google`, two small grey lines at the top of the notes tab show that notes are being taken and when they last changed; when capture ends they say whether the notes finished or stopped early, and how long the recording ran. The agent also names the session, and the notes are renamed to the date and that name, like `2026-11-25 - Q1 pricing review`. Capture prints each new name on stderr as `notes-title: <name>`. With `--google-document`, the tab keeps its name and the host renames the file.
+
+Pass `--guidance-file <path>` to capture or enhance to use your own note-taking prompt in place of the built-in one; an empty file means the built-in prompt. The safety rules around it are never replaceable. `shorthand-notes default-guidance [--assisted-notes] [--sink google]` prints the built-in prompt, to start your own from.
+
 Run `node dist/shorthand-notes.mjs` to see every command and option.
 
 The default enhancement backend uses a logged-in Claude CLI. You can also select:
 
 - `--backend codex` for a logged-in Codex CLI
 - `--backend llm` for OpenAI, Anthropic, Ollama, or another OpenAI-compatible endpoint
+- `--backend cursor` for a logged-in Cursor command line tool (`--cursor-exe`, `--cursor-model`)
+- `--backend acp` for any other program that speaks the Agent Client Protocol over standard I/O (`--acp-exe`, required; `--acp-args`, split on spaces; `--acp-model`)
 
-The Claude backend can look up related notes in the vault. Codex and LLM provider backends only receive the current note and transcript.
+The Claude backend can look up related notes in the vault. The other backends only receive the current note and transcript.
 
 ### `--backend llm`
 

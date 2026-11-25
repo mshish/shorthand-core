@@ -14,7 +14,23 @@ import type { TokenProvider } from "../auth/token-provider.js";
 export type DocsApiError = Readonly<{ httpStatus: number; retryAfterMs?: number; message: string; cause?: unknown }>;
 export type DocsApiResult<T> = { ok: true; value: T } | { ok: false; error: DocsApiError };
 
-export type DocsParagraph = Readonly<{ text: string; headingLevel?: 1 | 2 | 3; bullet: boolean }>;
+export type DocsListKind = "numbered" | "checkbox";
+export type DocsParagraph = Readonly<{
+  text: string;
+  headingLevel?: 1 | 2 | 3;
+  bullet: boolean;
+  /** List nesting depth; absent for depth zero and for paragraphs outside a list. */
+  nestingLevel?: number;
+  /** Absent for a plain bulleted list. */
+  listKind?: DocsListKind;
+  /** A checklist item that is struck through, which is how Docs shows a ticked box. */
+  checked?: true;
+  /**
+   * The paragraph as inline Markdown (bold, italic, strikethrough, links), present
+   * only when it differs from `text`.
+   */
+  markdown?: string;
+}>;
 export type DocsTab = Readonly<{
   tabId: string;
   bodyEndIndex: number;
@@ -31,7 +47,12 @@ export interface GoogleDocsApi {
     requests: readonly docs_v1.Schema$Request[],
     targetRevisionId?: string,
   ): Promise<DocsApiResult<BatchUpdateValue>>;
-  addDocumentTab(documentId: string, title: string): Promise<DocsApiResult<{ tabId: string }>>;
+  /** `parentTabId` nests the new tab under that one; without it the tab is top-level. */
+  addDocumentTab(
+    documentId: string,
+    title: string,
+    options?: Readonly<{ parentTabId?: string }>,
+  ): Promise<DocsApiResult<{ tabId: string }>>;
 }
 
 type DocsResource = Pick<docs_v1.Docs, "documents">;
@@ -137,11 +158,16 @@ export class GoogleApiDocsClient implements GoogleDocsApi {
     }
   }
 
-  async addDocumentTab(documentId: string, title: string): Promise<DocsApiResult<{ tabId: string }>> {
+  async addDocumentTab(
+    documentId: string,
+    title: string,
+    options: Readonly<{ parentTabId?: string }> = {},
+  ): Promise<DocsApiResult<{ tabId: string }>> {
+    const tabProperties = options.parentTabId === undefined ? { title } : { title, parentTabId: options.parentTabId };
     try {
       const response = await this.#documents.batchUpdate({
         documentId,
-        requestBody: { requests: [{ addDocumentTab: { tabProperties: { title } } }] },
+        requestBody: { requests: [{ addDocumentTab: { tabProperties } }] },
       });
       const tabId = response.data.replies?.[0]?.addDocumentTab?.tabProperties?.tabId;
       if (tabId === undefined || tabId === null || tabId.length === 0) {
@@ -165,11 +191,12 @@ const HEADING_LEVEL_BY_NAMED_STYLE: Record<string, 1 | 2 | 3> = {
 
 function toDocsTab(tab: docs_v1.Schema$Tab): DocsTab {
   const content = tab.documentTab?.body?.content ?? [];
+  const lists = tab.documentTab?.lists ?? {};
   const bodyEndIndex = content.reduce((max, element) => Math.max(max, element.endIndex ?? 0), 0);
   const paragraphs = content
     .map((element) => element.paragraph)
-    .filter((paragraph): paragraph is docs_v1.Schema$Paragraph => paragraph !== undefined)
-    .map(toDocsParagraph)
+    .filter((paragraph): paragraph is docs_v1.Schema$Paragraph => paragraph !== undefined && paragraph !== null)
+    .map((paragraph) => toDocsParagraph(paragraph, lists))
     .filter((paragraph) => paragraph.text.length > 0);
   return {
     tabId: tab.tabProperties?.tabId ?? "",
@@ -179,19 +206,98 @@ function toDocsTab(tab: docs_v1.Schema$Tab): DocsTab {
   };
 }
 
-function toDocsParagraph(paragraph: docs_v1.Schema$Paragraph): DocsParagraph {
-  const text = (paragraph.elements ?? [])
-    .map((element) => element.textRun?.content ?? "")
-    .join("")
-    .replace(/\n$/, "");
+const NUMBERED_GLYPH_TYPES = new Set(["DECIMAL", "ZERO_DECIMAL", "UPPER_ALPHA", "ALPHA", "UPPER_ROMAN", "ROMAN"]);
+
+type TextRun = Readonly<{ content: string; bold: boolean; italic: boolean; strikethrough: boolean; url?: string }>;
+
+function toDocsParagraph(
+  paragraph: docs_v1.Schema$Paragraph,
+  lists: Readonly<Record<string, docs_v1.Schema$List>>,
+): DocsParagraph {
+  const runs = mergeRuns(
+    (paragraph.elements ?? [])
+      .map((element) => element.textRun)
+      .filter((run): run is docs_v1.Schema$TextRun => run !== undefined && run !== null)
+      .map((run): TextRun => {
+        const style = run.textStyle ?? {};
+        const url = style.link?.url ?? undefined;
+        return {
+          content: run.content ?? "",
+          bold: style.bold === true,
+          italic: style.italic === true,
+          strikethrough: style.strikethrough === true,
+          ...(url === undefined || url === null ? {} : { url }),
+        };
+      }),
+  );
+  const text = runs.map((run) => run.content).join("").replace(/\n$/, "");
   const namedStyle = paragraph.paragraphStyle?.namedStyleType;
   const headingLevel =
     namedStyle !== undefined && namedStyle !== null ? HEADING_LEVEL_BY_NAMED_STYLE[namedStyle] : undefined;
+  const bullet = paragraph.bullet ?? undefined;
+  const nestingLevel = bullet?.nestingLevel ?? 0;
+  const listKind = bullet === undefined ? undefined : listKindOf(lists[bullet.listId ?? ""], nestingLevel);
+  const visible = runs.filter((run) => run.content.replace(/\n$/, "").trim().length > 0);
+  const checked = listKind === "checkbox" && visible.length > 0 && visible.every((run) => run.strikethrough);
+  const markdown = runsToMarkdown(checked ? runs.map((run) => ({ ...run, strikethrough: false })) : runs)
+    .replace(/\n$/, "");
   return {
     text,
     ...(headingLevel === undefined ? {} : { headingLevel }),
-    bullet: paragraph.bullet !== undefined,
+    bullet: bullet !== undefined,
+    ...(bullet !== undefined && nestingLevel > 0 ? { nestingLevel } : {}),
+    ...(listKind === undefined ? {} : { listKind }),
+    ...(checked ? { checked: true as const } : {}),
+    ...(markdown === text ? {} : { markdown }),
   };
+}
+
+/**
+ * A list's kind, read from its glyph at that nesting level. A numbered list has a
+ * numbering glyph type and a bulleted one a glyph symbol; a checklist has neither.
+ */
+function listKindOf(list: docs_v1.Schema$List | undefined, nestingLevel: number): DocsListKind | undefined {
+  const levels = list?.listProperties?.nestingLevels;
+  if (levels === undefined || levels === null || levels.length === 0) return undefined;
+  const level = levels[Math.min(nestingLevel, levels.length - 1)]!;
+  if (level.glyphType !== undefined && level.glyphType !== null && NUMBERED_GLYPH_TYPES.has(level.glyphType)) {
+    return "numbered";
+  }
+  if (typeof level.glyphSymbol === "string" && level.glyphSymbol.length > 0) return undefined;
+  return "checkbox";
+}
+
+function sameStyle(left: TextRun, right: TextRun): boolean {
+  return left.bold === right.bold
+    && left.italic === right.italic
+    && left.strikethrough === right.strikethrough
+    && left.url === right.url;
+}
+
+/** Docs can split one styled stretch across runs; join them so the Markdown stays clean. */
+function mergeRuns(runs: readonly TextRun[]): TextRun[] {
+  const merged: TextRun[] = [];
+  for (const run of runs) {
+    const last = merged.at(-1);
+    if (last !== undefined && sameStyle(last, run)) merged[merged.length - 1] = { ...last, content: last.content + run.content };
+    else merged.push(run);
+  }
+  return merged;
+}
+
+function runsToMarkdown(runs: readonly TextRun[]): string {
+  return mergeRuns(runs).map((run) => {
+    // Markdown markers must hug the text, so surrounding whitespace stays outside them.
+    const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(run.content)!;
+    const [, lead, core, trail] = match as unknown as [string, string, string, string];
+    if (core.length === 0) return run.content;
+    let wrapped = core;
+    if (run.url !== undefined) wrapped = `[${wrapped}](${run.url})`;
+    if (run.strikethrough) wrapped = `~~${wrapped}~~`;
+    if (run.italic) wrapped = `*${wrapped}*`;
+    if (run.bold) wrapped = `**${wrapped}**`;
+    return `${lead}${wrapped}${trail}`;
+  }).join("");
 }
 
 function toDocsApiError(error: unknown): DocsApiError {

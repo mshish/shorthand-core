@@ -23,3 +23,14 @@ export type { CredentialsReadResult, FileTokenProviderOptions, GoogleCredentials
 
 export { resolveGoogleDocsSink } from "./google/capture-sink.js";
 export type { ResolveGoogleSinkOptions, ResolveGoogleSinkResult } from "./google/capture-sink.js";
+
+export {
+  GoogleTranscriptMirror,
+  resolveGoogleTranscriptMirror,
+  transcriptSections,
+  TRANSCRIPT_TAB_TITLE,
+} from "./google/transcript-mirror.js";
+export type {
+  ResolveGoogleTranscriptMirrorOptions,
+  ResolveGoogleTranscriptMirrorResult,
+} from "./google/transcript-mirror.js";

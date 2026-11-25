@@ -120,6 +120,7 @@ export type { AppWebSocketConstructor, AppWebSocketEvent, AppWebSocketLike } fro
 export {
   DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
   DEFAULT_EDITORIAL_GUIDANCE,
+  defaultEditorialGuidance,
   DEFAULT_MEETING_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
   MAX_GUIDANCE_CHARACTERS,
@@ -136,6 +137,7 @@ export type {
   AgentQueryResponse,
   AgentTier,
   MeetingStatus,
+  NoteFormat,
   NoteTakingMode,
 } from "./agent/contract.js";
 

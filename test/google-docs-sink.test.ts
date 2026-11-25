@@ -218,7 +218,7 @@ describe("GoogleDocsNoteSink regression coverage (full renderer -> requests -> d
     const after = await sink.read();
     if (!after.ok) throw new Error("expected ok");
     expect(after.value.sections).toEqual([
-      { heading: "Decisions", markdown: "- Ship it\n- See the doc" },
+      { heading: "Decisions", markdown: "* Ship it\n* See the doc" },
     ]);
   });
 });

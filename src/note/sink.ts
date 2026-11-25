@@ -1,3 +1,4 @@
+import type { NoteFormat } from "../agent/contract.js";
 import type { Section } from "./markers.js";
 
 /**
@@ -75,6 +76,11 @@ export interface NoteSink {
   readonly agentContext?: { cwd: string };
   /** Human-readable target, for status and logs. */
   readonly describe: string;
+  /**
+   * What the target can display, which picks the presentation half of the default prompt.
+   * Absent means `"obsidian"`.
+   */
+  readonly noteFormat?: NoteFormat;
 }
 
 export function sinkError(code: SinkErrorCode, message: string, cause?: unknown): SinkError {

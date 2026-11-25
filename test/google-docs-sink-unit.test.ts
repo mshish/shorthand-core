@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { GoogleDocsNoteSink } from "../src/google/docs-sink.js";
 import type { GoogleDocsApi, GetDocumentValue, BatchUpdateValue, DocsApiResult } from "../src/google/docs-client.js";
+import { renderSections } from "../src/google/renderer.js";
+import type { DocsParagraph } from "../src/google/docs-client.js";
+import type { Section } from "../src/note/markers.js";
 
 function fakeApi(overrides: Partial<GoogleDocsApi> = {}): GoogleDocsApi {
   return {
@@ -73,9 +76,43 @@ describe("GoogleDocsNoteSink.read", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.value.sections).toEqual([
       { heading: "Summary", markdown: "Shipped Friday." },
-      { heading: "Decisions", markdown: "- Ship it\n- Skip the retro" },
+      { heading: "Decisions", markdown: "* Ship it\n* Skip the retro" },
     ]);
     expect(result.value.userNotes).toBe("");
+  });
+
+  test("keeps subheadings, list nesting and kind, ticked items, and inline styling", async () => {
+    const api = fakeApi({
+      getDocument: async () => ({
+        ok: true,
+        value: {
+          revisionId: "rev1",
+          tabs: [{
+            tabId: "owned",
+            bodyEndIndex: 1,
+            childTabs: [],
+            paragraphs: [
+              { text: "Plan", headingLevel: 2, bullet: false },
+              { text: "Steps", headingLevel: 3, bullet: false },
+              { text: "Draft", bullet: true, listKind: "numbered" },
+              { text: "Outline", bullet: true, listKind: "numbered", nestingLevel: 1 },
+              { text: "Mike sends it", markdown: "**Mike** sends it", bullet: true, listKind: "checkbox" },
+              { text: "Room booked", bullet: true, listKind: "checkbox", checked: true },
+              { text: "Takeaway: ship", markdown: "**Takeaway:** ship", bullet: false },
+            ],
+          }],
+        },
+      }),
+    });
+    const sink = new GoogleDocsNoteSink({ documentId: "d1", tabId: "owned", api });
+    const result = await sink.read();
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.sections).toEqual([
+      {
+        heading: "Plan",
+        markdown: "### Steps\n\n1. Draft\n    1. Outline\n* [ ] **Mike** sends it\n* [x] Room booked\n\n**Takeaway:** ship",
+      },
+    ]);
   });
 
   test("a missing owned tab reads as invalid-target", async () => {
@@ -248,5 +285,58 @@ describe("GoogleDocsNoteSink.write", () => {
   test("describe defaults to the document id when not supplied", () => {
     const sink = new GoogleDocsNoteSink({ documentId: "d1", tabId: "owned", api: fakeApi() });
     expect(sink.describe).toContain("d1");
+  });
+});
+
+/**
+ * Stores rendered text the way the Docs API leaves it after buildWriteRequests:
+ * one paragraph per line, list paragraphs with their leading tabs turned into a
+ * nesting level, and a struck-through checklist item reading as ticked.
+ */
+function storedParagraphs(sections: readonly Section[]): DocsParagraph[] {
+  const { text, spans } = renderSections(sections);
+  const paragraphs: DocsParagraph[] = [];
+  let offset = 0;
+  for (const line of text.split("\n").slice(0, -1)) {
+    const start = offset;
+    offset += line.length + 1;
+    const heading = spans.find((span) => span.style.kind === "heading" && span.start === start);
+    const list = spans.find((span) => span.style.kind === "list" && span.start <= start && start < span.end);
+    const preset = list?.style.kind === "list" ? list.style.preset : undefined;
+    const depth = /^\t*/.exec(line)![0].length;
+    const struck = spans.some((span) => span.style.kind === "strikethrough" && span.start === start + depth && span.end === start + line.length);
+    paragraphs.push({
+      text: line.slice(depth),
+      ...(heading?.style.kind === "heading" ? { headingLevel: heading.style.level } : {}),
+      bullet: preset !== undefined,
+      ...(depth > 0 ? { nestingLevel: depth } : {}),
+      ...(preset === "numbered" || preset === "checkbox" ? { listKind: preset } : {}),
+      ...(preset === "checkbox" && struck ? { checked: true as const } : {}),
+    });
+  }
+  return paragraphs;
+}
+
+describe("GoogleDocsNoteSink round trip", () => {
+  test("reading back a written note renders the same text, so an unchanged pass stays unchanged", async () => {
+    const sections: readonly Section[] = [
+      { heading: "Summary", markdown: "We agreed to **ship Friday**.\n\nA *second* thought." },
+      {
+        heading: "Plan",
+        markdown: "### Steps\n\n1. Draft\n2. Review\n    * Legal\n        * Contract\n\nThen a paragraph.\n\n* [ ] **Mike** sends the deck\n* [x] Room booked\n\n* An idea\n* [ ] A stray task",
+      },
+    ];
+    const paragraphs = storedParagraphs(sections);
+    const api = fakeApi({
+      getDocument: async () => ({
+        ok: true,
+        value: { revisionId: "rev1", tabs: [{ tabId: "owned", bodyEndIndex: 1, paragraphs, childTabs: [] }] },
+      }),
+    });
+    const sink = new GoogleDocsNoteSink({ documentId: "d1", tabId: "owned", api });
+    const read = await sink.read();
+    if (!read.ok) throw new Error("expected ok");
+    expect(renderSections(read.value.sections).text).toBe(renderSections(sections).text);
+    expect(await sink.write(sections, "rev1")).toEqual({ status: "unchanged", revision: "rev1" });
   });
 });

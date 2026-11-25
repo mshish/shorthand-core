@@ -1,6 +1,6 @@
 import { renderSections } from "./renderer.js";
 import { buildWriteRequests } from "./requests.js";
-import type { DocsApiError, DocsTab, GoogleDocsApi } from "./docs-client.js";
+import type { DocsApiError, DocsParagraph, DocsTab, GoogleDocsApi } from "./docs-client.js";
 import type { Section } from "../note/markers.js";
 import { busySinkError, sinkError, type NoteSink, type SinkError, type SinkReadResult, type SinkWriteResult } from "../note/sink.js";
 
@@ -25,6 +25,8 @@ export class GoogleDocsNoteSink implements NoteSink {
   // must exist on the class for `sink.agentContext` to typecheck at all.
   readonly agentContext?: { cwd: string };
   readonly describe: string;
+  /** Google Docs shows only what `renderer.ts` converts, so the prompt asks for that subset. */
+  readonly noteFormat = "google-docs" as const;
   readonly #documentId: string;
   readonly #tabId: string;
   readonly #api: GoogleDocsApi;
@@ -49,7 +51,7 @@ export class GoogleDocsNoteSink implements NoteSink {
   async write(sections: readonly Section[], expectedRevision: string): Promise<SinkWriteResult> {
     // A blank heading can't be represented as a Docs paragraph that
     // parseTabToSections could ever recover a section boundary from (its
-    // heading-detection is `headingLevel !== undefined`, not text content),
+    // section detection is a level-one or level-two heading, not text content),
     // so refuse it here rather than silently rendering an empty title.
     const blankHeading = sections.find((section) => section.heading.trim().length === 0);
     if (blankHeading !== undefined) {
@@ -83,26 +85,46 @@ export class GoogleDocsNoteSink implements NoteSink {
 }
 
 /**
- * Lossy on purpose: reconstructs headings/paragraphs/bullets from what read()
- * saw so EnhanceRunner has prior sections to revise and to check `.length > 0`
- * against (src/agent/runner.ts:213-220) — it does not reconstruct bold/link
- * markdown syntax from Docs text-run styling, since core only ever consumes
- * the reconstructed sections as prompt context, not as bytes it round-trips.
+ * Reconstructs the sections from what read() saw, as Markdown in the subset
+ * `renderer.ts` writes: level-one and level-two headings start sections,
+ * level-three headings stay inside them, and lists keep their nesting, kind and
+ * ticked state, and paragraphs their bold, italic, strikethrough and link runs.
+ * The agent revises these on its next pass, so a list that came back as plain
+ * bullets would lose its checklist or numbering one pass later.
+ *
+ * Blocks are separated by a blank line and list items by a single newline, so
+ * a paragraph after a list never reads as a continuation of its last item.
  */
 function parseTabToSections(tab: DocsTab): readonly Section[] {
   const sections: Section[] = [];
-  let current: { heading: string; lines: string[] } | undefined;
+  let current: { heading: string; markdown: string; lastWasList: boolean } | undefined;
+  const flush = (): void => {
+    if (current !== undefined) sections.push({ heading: current.heading, markdown: current.markdown });
+  };
   for (const paragraph of tab.paragraphs) {
-    if (paragraph.headingLevel !== undefined) {
-      if (current !== undefined) sections.push({ heading: current.heading, markdown: current.lines.join("\n") });
-      current = { heading: paragraph.text, lines: [] };
+    if (paragraph.headingLevel === 1 || paragraph.headingLevel === 2) {
+      flush();
+      current = { heading: paragraph.text, markdown: "", lastWasList: false };
       continue;
     }
     if (current === undefined) continue;
-    current.lines.push(paragraph.bullet ? `- ${paragraph.text}` : paragraph.text);
+    const content = paragraph.markdown ?? paragraph.text;
+    const isList = paragraph.bullet;
+    const line = paragraph.headingLevel === 3
+      ? `### ${content}`
+      : isList ? `${"    ".repeat(paragraph.nestingLevel ?? 0)}${listMarker(paragraph)}${content}` : content;
+    const separator = current.markdown.length === 0 ? "" : isList && current.lastWasList ? "\n" : "\n\n";
+    current.markdown += separator + line;
+    current.lastWasList = isList;
   }
-  if (current !== undefined) sections.push({ heading: current.heading, markdown: current.lines.join("\n") });
+  flush();
   return sections;
+}
+
+function listMarker(paragraph: DocsParagraph): string {
+  if (paragraph.listKind === "numbered") return "1. ";
+  if (paragraph.listKind === "checkbox") return paragraph.checked === true ? "* [x] " : "* [ ] ";
+  return "* ";
 }
 
 function findTab(tabs: readonly DocsTab[], tabId: string): DocsTab | undefined {

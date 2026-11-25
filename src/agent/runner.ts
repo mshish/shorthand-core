@@ -4,8 +4,7 @@ import type { Section } from "../note/markers.js";
 import type { NoteSink, SinkReadResult, SinkSnapshot, SinkWriteResult } from "../note/sink.js";
 import {
   buildSectionOutputSchema,
-  DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
-  DEFAULT_MEETING_EDITORIAL_GUIDANCE,
+  defaultEditorialGuidance,
   ENHANCEMENT_SAFETY_PREAMBLE,
   MAX_USER_NAME_CHARACTERS,
   queryForSections,
@@ -14,6 +13,7 @@ import {
   type AgentTier,
   type ContractLogger,
   type MeetingStatus,
+  type NoteFormat,
   type NoteTakingMode,
 } from "./contract.js";
 
@@ -150,7 +150,7 @@ export class EnhanceRunner {
       dryRun: options.dryRun ?? false,
       mode: options.mode ?? "meeting",
       userName: resolveUserName(options.userName),
-      guidance: resolveGuidance(options.guidance, options.mode ?? "meeting"),
+      guidance: resolveGuidance(options.guidance, options.mode ?? "meeting", options.sink.noteFormat ?? "obsidian"),
     };
     this.#now = options.now ?? Date.now;
     this.#logger = options.logger ?? console;
@@ -846,12 +846,10 @@ function isResumableSessionId(sessionId: string | undefined): sessionId is strin
   return typeof sessionId === "string" && sessionId.length > 0;
 }
 
-function resolveGuidance(guidance: string | undefined, mode: NoteTakingMode): string {
+function resolveGuidance(guidance: string | undefined, mode: NoteTakingMode, format: NoteFormat): string {
   const trimmed = guidance?.trim() ?? "";
   if (trimmed.length > 0) return trimmed;
-  return mode === "assisted-notes"
-    ? DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE
-    : DEFAULT_MEETING_EDITORIAL_GUIDANCE;
+  return defaultEditorialGuidance(mode, format);
 }
 
 function resolveUserName(userName: string | undefined): string {

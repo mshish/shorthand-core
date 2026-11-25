@@ -149,6 +149,55 @@ describe("GoogleApiDocsClient", () => {
     ]);
   });
 
+  test("reads list nesting, list kind, ticked checklist items, and inline styles", async () => {
+    const level = (glyph: Record<string, string>) => ({ listProperties: { nestingLevels: [glyph, glyph] } });
+    const paragraph = (listId: string, elements: unknown[], nestingLevel?: number) => ({
+      paragraph: { bullet: { listId, ...(nestingLevel === undefined ? {} : { nestingLevel }) }, elements },
+    });
+    const client = new GoogleApiDocsClient(okTokenProvider, {
+      documents: {
+        get: async () => ({
+          data: {
+            revisionId: "rev1",
+            tabs: [{
+              tabProperties: { tabId: "owned" },
+              documentTab: {
+                lists: {
+                  numbered: level({ glyphType: "DECIMAL" }),
+                  bullets: level({ glyphSymbol: "\u25cf" }),
+                  checks: level({ glyphType: "GLYPH_TYPE_UNSPECIFIED" }),
+                },
+                body: {
+                  content: [
+                    paragraph("numbered", [{ textRun: { content: "One\n" } }]),
+                    paragraph("bullets", [{ textRun: { content: "Deep\n" } }], 1),
+                    paragraph("checks", [{ textRun: { content: "Done\n", textStyle: { strikethrough: true } } }]),
+                    paragraph("checks", [
+                      { textRun: { content: "Mike", textStyle: { bold: true } } },
+                      { textRun: { content: " reads " } },
+                      { textRun: { content: "the doc", textStyle: { link: { url: "https://x" }, italic: true } } },
+                      { textRun: { content: "\n" } },
+                    ]),
+                  ],
+                },
+              },
+              childTabs: [],
+            }],
+          },
+        }),
+        batchUpdate: async () => { throw new Error("not used in this test"); },
+      },
+    } as never);
+    const result = await client.getDocument("doc1");
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.tabs[0]!.paragraphs).toEqual([
+      { text: "One", bullet: true, listKind: "numbered" },
+      { text: "Deep", bullet: true, nestingLevel: 1 },
+      { text: "Done", bullet: true, listKind: "checkbox", checked: true },
+      { text: "Mike reads the doc", bullet: true, listKind: "checkbox", markdown: "**Mike** reads *[the doc](https://x)*" },
+    ]);
+  });
+
   test("batchUpdate passes targetRevisionId through writeControl and returns the new revisionId", async () => {
     let capturedWriteControl: unknown;
     const client = new GoogleApiDocsClient(okTokenProvider, {

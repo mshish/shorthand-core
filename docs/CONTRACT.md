@@ -129,6 +129,8 @@ export interface NoteSink {
   readonly agentContext?: { cwd: string };
   /** Human-readable target, for status and logs. */
   readonly describe: string;
+  /** What the target can display. Absent means "obsidian". */
+  readonly noteFormat?: "obsidian" | "google-docs";
 }
 
 type SinkSnapshot = Readonly<{
@@ -242,6 +244,17 @@ tool surface pointed at something that is not the target, which is worse than th
 A non-empty human-readable label for the target — a note path, a page title, a URL. It goes
 into status text and logs. It is the only field a user ever sees, so make it identify *which*
 target, not merely what kind.
+
+### 2.6 `noteFormat` is optional
+
+Says which Markdown the target can show, and so which presentation half the default editorial
+prompt gives the agent (`defaultEditorialGuidance(mode, format)`). `"obsidian"`, the default when
+the field is absent, asks for Obsidian-flavoured Markdown: tables, callouts, highlights.
+`"google-docs"` asks only for what `GoogleDocsNoteSink`'s renderer converts to native Docs
+formatting: bulleted, numbered and nested lists, checklists, level-three headings, bold, italic,
+strikethrough, and links. A sink whose target renders some other subset should pick the format
+whose prompt asks for no more than it can show. A user's own guidance replaces the whole editorial
+half, so this field changes nothing when one is set.
 
 ---
 

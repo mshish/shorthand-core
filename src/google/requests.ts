@@ -1,6 +1,6 @@
 // See src/google/docs-client.ts for why this is the per-API package, not "googleapis".
 import type { docs_v1 } from "@googleapis/docs";
-import type { StyleSpan } from "./renderer.js";
+import type { ListPreset, StyleSpan } from "./renderer.js";
 
 export type BuildWriteRequestsOptions = Readonly<{
   tabId: string;
@@ -15,12 +15,23 @@ const NAMED_STYLE_BY_LEVEL: Record<1 | 2 | 3, string> = {
   3: "HEADING_3",
 };
 
+const BULLET_PRESET: Record<ListPreset, string> = {
+  bullet: "BULLET_DISC_CIRCLE_SQUARE",
+  numbered: "NUMBERED_DECIMAL_ALPHA_ROMAN",
+  checkbox: "BULLET_CHECKBOX",
+};
+
 /**
- * Delete-then-insert-then-style, in that literal order: style requests target
- * offsets within the text insertText is about to create, so they cannot run
- * before it. Google's "write backwards" guidance governs ordering among
- * index-shifting requests (delete/insert); the three style request types below
- * never shift indices, so their order relative to each other is irrelevant.
+ * Delete, insert, style, then make lists, in that literal order: style
+ * requests target offsets within the text insertText is about to create, so
+ * they cannot run before it.
+ *
+ * `createParagraphBullets` reads each paragraph's nesting from its leading tabs
+ * and then deletes those tabs, which shifts every later index. So the list
+ * requests run last, from the end of the text backwards: each one only moves
+ * text after it, which no remaining request touches, and the styles applied
+ * earlier move with the text they were applied to. Each list block is its own
+ * request, because one request makes one Docs list (one numbering, one glyph).
  */
 export function buildWriteRequests(options: BuildWriteRequestsOptions): docs_v1.Schema$Request[] {
   const { tabId, bodyEndIndex, text, spans } = options;
@@ -34,14 +45,23 @@ export function buildWriteRequests(options: BuildWriteRequestsOptions): docs_v1.
   if (text.length > 0) {
     requests.push({ insertText: { location: { tabId, index: 1 }, text } });
   }
-  for (const span of spans) {
-    // A zero-length span (e.g. an empty bullet item that slipped through)
-    // would become a degenerate startIndex === endIndex request; the real
-    // Docs API rejects that with a 400 that fails the entire atomic
-    // batchUpdate. renderer.ts is expected not to produce these any more,
-    // but this filter is a defensive backstop, not the only guard.
-    if (span.end === span.start) continue;
-    requests.push(styleRequest(tabId, span));
+  // A zero-length span would become a degenerate startIndex === endIndex
+  // request, which the real Docs API rejects with a 400 that fails the entire
+  // atomic batchUpdate. renderer.ts does not produce these; this is a backstop.
+  const nonEmpty = spans.filter((span) => span.end > span.start);
+  for (const span of nonEmpty) {
+    if (span.style.kind !== "list") requests.push(styleRequest(tabId, span));
+  }
+  const lists = nonEmpty
+    .filter((span): span is StyleSpan & { style: { kind: "list"; preset: ListPreset } } => span.style.kind === "list")
+    .sort((left, right) => right.start - left.start);
+  for (const span of lists) {
+    requests.push({
+      createParagraphBullets: {
+        range: { tabId, startIndex: span.start + 1, endIndex: span.end + 1 },
+        bulletPreset: BULLET_PRESET[span.style.preset],
+      },
+    });
   }
 
   for (const request of requests) assertHasTabId(request);
@@ -50,26 +70,26 @@ export function buildWriteRequests(options: BuildWriteRequestsOptions): docs_v1.
 
 function styleRequest(tabId: string, span: StyleSpan): docs_v1.Schema$Request {
   const range = { tabId, startIndex: span.start + 1, endIndex: span.end + 1 };
-  if (span.style.kind === "heading") {
-    return {
-      updateParagraphStyle: {
-        range,
-        paragraphStyle: { namedStyleType: NAMED_STYLE_BY_LEVEL[span.style.level] },
-        fields: "namedStyleType",
-      },
-    };
+  switch (span.style.kind) {
+    case "heading":
+      return {
+        updateParagraphStyle: {
+          range,
+          paragraphStyle: { namedStyleType: NAMED_STYLE_BY_LEVEL[span.style.level] },
+          fields: "namedStyleType",
+        },
+      };
+    case "bold":
+      return { updateTextStyle: { range, textStyle: { bold: true }, fields: "bold" } };
+    case "italic":
+      return { updateTextStyle: { range, textStyle: { italic: true }, fields: "italic" } };
+    case "strikethrough":
+      return { updateTextStyle: { range, textStyle: { strikethrough: true }, fields: "strikethrough" } };
+    case "link":
+      return { updateTextStyle: { range, textStyle: { link: { url: span.style.url } }, fields: "link" } };
+    case "list":
+      throw new Error("List spans are built by buildWriteRequests, not styleRequest");
   }
-  if (span.style.kind === "bullet") {
-    return {
-      createParagraphBullets: { range, bulletPreset: "BULLET_DISC_CIRCLE_SQUARE" },
-    };
-  }
-  if (span.style.kind === "bold") {
-    return { updateTextStyle: { range, textStyle: { bold: true }, fields: "bold" } };
-  }
-  return {
-    updateTextStyle: { range, textStyle: { link: { url: span.style.url } }, fields: "link" },
-  };
 }
 
 function assertHasTabId(request: docs_v1.Schema$Request): void {

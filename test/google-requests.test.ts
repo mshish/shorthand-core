@@ -38,11 +38,38 @@ describe("buildWriteRequests", () => {
     });
   });
 
-  test("a bullet span becomes createParagraphBullets over the shifted range", () => {
-    const spans: readonly StyleSpan[] = [{ start: 0, end: 4, style: { kind: "bullet" } }];
-    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "Ship", spans });
+  test("a list span becomes createParagraphBullets over the shifted range with its preset", () => {
+    const spans: readonly StyleSpan[] = [{ start: 0, end: 5, style: { kind: "list", preset: "checkbox" } }];
+    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "Ship\n", spans });
     const bullet = requests.find((request) => "createParagraphBullets" in request)!.createParagraphBullets;
-    expect(bullet).toMatchObject({ range: { tabId: "t1", startIndex: 1, endIndex: 5 } });
+    expect(bullet).toEqual({ range: { tabId: "t1", startIndex: 1, endIndex: 6 }, bulletPreset: "BULLET_CHECKBOX" });
+  });
+
+  test("list requests come after every style request, last list first", () => {
+    // createParagraphBullets removes each paragraph's leading tabs, shifting later indices.
+    const spans: readonly StyleSpan[] = [
+      { start: 0, end: 3, style: { kind: "list", preset: "bullet" } },
+      { start: 4, end: 7, style: { kind: "list", preset: "numbered" } },
+      { start: 5, end: 6, style: { kind: "italic" } },
+    ];
+    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "\ta\n\tb\n", spans });
+    expect(requests.map((request) => Object.keys(request)[0])).toEqual([
+      "insertText",
+      "updateTextStyle",
+      "createParagraphBullets",
+      "createParagraphBullets",
+    ]);
+    expect(requests[2]!.createParagraphBullets!.bulletPreset).toBe("NUMBERED_DECIMAL_ALPHA_ROMAN");
+    expect(requests[3]!.createParagraphBullets!.bulletPreset).toBe("BULLET_DISC_CIRCLE_SQUARE");
+  });
+
+  test("italic and strikethrough spans become updateTextStyle with their own field", () => {
+    const spans: readonly StyleSpan[] = [
+      { start: 0, end: 1, style: { kind: "italic" } },
+      { start: 1, end: 2, style: { kind: "strikethrough" } },
+    ];
+    const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "ab", spans });
+    expect(requests.slice(1).map((request) => request.updateTextStyle!.fields)).toEqual(["italic", "strikethrough"]);
   });
 
   test("a bold span becomes updateTextStyle with fields=bold over the shifted range", () => {
@@ -71,7 +98,7 @@ describe("buildWriteRequests", () => {
     // a degenerate createParagraphBullets request the real Docs API rejects with
     // a 400, failing the whole atomic batchUpdate.
     const spans: readonly StyleSpan[] = [
-      { start: 3, end: 3, style: { kind: "bullet" } },
+      { start: 3, end: 3, style: { kind: "list", preset: "bullet" } },
       { start: 0, end: 3, style: { kind: "bold" } },
     ];
     const requests = buildWriteRequests({ tabId: "t1", bodyEndIndex: 1, text: "abc", spans });

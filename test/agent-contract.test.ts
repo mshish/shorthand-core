@@ -3,6 +3,7 @@ import { AI_BLOCK_END, type Section } from "../src/note/markers.js";
 import {
   buildSectionOutputSchema,
   DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE,
+  defaultEditorialGuidance,
   DEFAULT_EDITORIAL_GUIDANCE,
   DEFAULT_MEETING_EDITORIAL_GUIDANCE,
   ENHANCEMENT_SAFETY_PREAMBLE,
@@ -143,7 +144,8 @@ describe("structured output schema", () => {
     const properties = node(sections, "items", "properties");
     expect(String(sections.description)).toContain("full desired state");
     expect(String(node(properties, "heading").description)).toContain("level-two heading");
-    expect(String(node(properties, "markdown").description)).toContain("Obsidian");
+    expect(String(node(properties, "markdown").description)).toContain("Markdown");
+    expect(String(node(properties, "markdown").description)).not.toContain("Obsidian");
   });
 
   test("omits the dialect declaration, which is meaningless on a nested subschema", () => {
@@ -317,6 +319,21 @@ describe("enhancement system prompt", () => {
     expect(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE).toContain("`*` for every unordered-list");
     expect(DEFAULT_EDITORIAL_GUIDANCE).not.toContain("untrusted");
     expect(DEFAULT_EDITORIAL_GUIDANCE).not.toContain("marker");
+  });
+
+  test("the Google Docs presentation asks only for what the Docs renderer converts", () => {
+    for (const mode of ["meeting", "assisted-notes"] as const) {
+      const docs = defaultEditorialGuidance(mode, "google-docs");
+      expect(docs).toContain("Google Docs presentation");
+      expect(docs).toContain("never use tables, callouts");
+      expect(docs).toContain("`* [ ]`");
+      expect(docs).not.toContain("Obsidian presentation");
+      expect(docs).not.toContain("[!summary]");
+      expect(docs).not.toContain("compact Markdown table");
+      expect(defaultEditorialGuidance(mode, "obsidian")).toContain("Obsidian presentation");
+    }
+    expect(defaultEditorialGuidance("meeting")).toBe(DEFAULT_MEETING_EDITORIAL_GUIDANCE);
+    expect(defaultEditorialGuidance("assisted-notes")).toBe(DEFAULT_ASSISTED_NOTES_EDITORIAL_GUIDANCE);
   });
 
   test("both halves reach the package entry point, since Phase B seeds a setting from the guidance", async () => {

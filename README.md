@@ -69,6 +69,8 @@ Add `--assisted-notes` to capture when the recording is Shorthand's **Assisted n
 
 During capture with `--sink google`, two small grey lines at the top of the notes tab show that notes are being taken and when they last changed; when capture ends they say whether the notes finished or stopped early, and how long the recording ran. The agent also names the session, and the notes are renamed to the date and that name, like `2026-11-25 - Q1 pricing review`. Capture prints each new name on stderr as `notes-title: <name>`. With `--google-document`, the tab keeps its name and the host renames the file.
 
+Pass `--guidance-file <path>` to capture or enhance to use your own note-taking prompt in place of the built-in one; an empty file means the built-in prompt. The safety rules around it are never replaceable. `shorthand-notes default-guidance [--assisted-notes] [--sink google]` prints the built-in prompt, to start your own from.
+
 Run `node dist/shorthand-notes.mjs` to see every command and option.
 
 The default enhancement backend uses a logged-in Claude CLI. You can also select:

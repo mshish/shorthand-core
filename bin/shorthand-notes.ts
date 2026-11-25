@@ -18,6 +18,7 @@ import {
   CodexAgentClient,
   createAppFetch,
   DEFAULT_CONFIG,
+  defaultEditorialGuidance,
   detectClaudeExecutable,
   detectCodexExecutable,
   detectCursorExecutable,
@@ -55,7 +56,7 @@ import type { GoogleTranscriptMirror } from "shorthand-core/google";
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--assisted-notes] [--sink markdown|google] [--google-document <id>] [--google-transcript] [--backend claude|llm|codex|cursor|acp] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--google-document <id>] [--backend claude|llm|codex|cursor|acp] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--assisted-notes] [--guidance-file <path>] [--sink markdown|google] [--google-document <id>] [--google-transcript] [--backend claude|llm|codex|cursor|acp] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--google-document <id>] [--backend claude|llm|codex|cursor|acp] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--cursor-exe <path>] [--cursor-model <model>] [--acp-exe <path>] [--acp-args <args>] [--acp-model <model>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n  shorthand-notes default-guidance [--assisted-notes] [--sink markdown|google]\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
   );
   return 2;
 }
@@ -71,7 +72,7 @@ const KNOWN_FLAGS = new Set([
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
   "--codex-model", "--codex-base-url", "--llm-provider", "--llm-model", "--llm-base-url",
   "--exit-after-session", "--cursor-exe", "--cursor-model", "--acp-exe", "--acp-args", "--acp-model",
-  "--google-document", "--google-transcript", "--assisted-notes",
+  "--google-document", "--google-transcript", "--assisted-notes", "--guidance-file",
 ]);
 
 class ArgumentError extends Error {}
@@ -98,6 +99,18 @@ function resolveFrom(base: string, value: string): string {
   return isAbsolute(value) ? resolve(value) : resolve(base, value);
 }
 
+/**
+ * Prints the built-in note-taking prompt, so a host can show it and let someone start their
+ * own from it. The safety rules are not part of it: no `--guidance-file` can replace them.
+ */
+function printDefaultGuidance(args: readonly string[]): number {
+  const sink = argumentValue(args, "--sink") ?? "markdown";
+  if (sink !== "markdown" && sink !== "google") return usage("--sink must be markdown or google.");
+  const mode = args.includes("--assisted-notes") ? "assisted-notes" : "meeting";
+  process.stdout.write(`${defaultEditorialGuidance(mode, sink === "google" ? "google-docs" : "obsidian")}\n`);
+  return 0;
+}
+
 export async function runCli(
   argv: readonly string[] = process.argv.slice(2),
   environment: NodeJS.ProcessEnv = process.env,
@@ -109,7 +122,8 @@ export async function runCli(
     if (command === "init-note") return await initializeNote(args);
     if (command === "read-block") return await readBlock(args);
     if (command === "set-sections") return await setSections(args);
-    return usage("Expected capture, enhance, init-note, read-block, or set-sections.");
+    if (command === "default-guidance") return printDefaultGuidance(args);
+    return usage("Expected capture, enhance, init-note, read-block, set-sections, or default-guidance.");
   } catch (error) {
     if (error instanceof ArgumentError) return usage(error.message);
     throw error;
@@ -752,6 +766,17 @@ export async function createEnhanceRunner(
   /** Set by `capture`: tells the agent when the session began, and dates the notes' name. */
   startedAt?: Date,
 ): Promise<CreateEnhanceRunnerResult> {
+  // `--guidance-file`: the person's own note-taking prompt, in place of the built-in one.
+  // Read before the agent is built, so a missing file leaves nothing open behind it.
+  const guidanceFile = argumentValue(args, "--guidance-file");
+  let guidance: string | undefined;
+  if (guidanceFile !== undefined) {
+    try {
+      guidance = await readFile(resolveFrom(process.cwd(), guidanceFile), "utf8");
+    } catch (error) {
+      return { ok: false, message: `Could not read the note-taking prompt ${guidanceFile}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
   const selected = await selectAgent(args, environment);
   if (!selected.ok) return { ok: false, message: selected.message };
   const agent = selected.agent;
@@ -804,6 +829,8 @@ export async function createEnhanceRunner(
       maxTurns: DEFAULT_CONFIG.enhancement.maxTurns,
       dryRun,
       ...(startedAt === undefined ? {} : { startedAt }),
+      // An empty file falls back to the built-in prompt (resolveGuidance in the runner).
+      ...(guidance === undefined ? {} : { guidance }),
       // `--assisted-notes`: the recording is one person thinking out loud (Shorthand's
       // Assisted notes mode), so the agent gets the assisted-notes guidance, not the
       // meeting guidance.

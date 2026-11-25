@@ -10,6 +10,7 @@ import { AppUnavailableError } from "../src/app/client.js";
 import type { AppClientLike } from "../src/app/client.js";
 import type { PassOutcome } from "../src/agent/runner.js";
 import { DEFAULT_CONFIG, requestSocketDiscoveryPath } from "../src/config.js";
+import { defaultEditorialGuidance } from "../src/agent/contract.js";
 import { SidecarWriter } from "../src/note/sidecar.js";
 import { FakeAppClient } from "./fixtures/fake-app-client.js";
 
@@ -296,7 +297,7 @@ describe("shorthand-notes CLI", () => {
     const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
     const result = await run(entry, ["google-login"], withoutGoogleOAuthEnv());
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain("Expected capture, enhance, init-note, read-block, or set-sections.");
+    expect(result.stderr).toContain("Expected capture, enhance, init-note, read-block, set-sections, or default-guidance.");
     expect(result.stderr).not.toContain("google-login");
     expect(result.stderr).not.toContain("--client-id");
   });
@@ -978,6 +979,48 @@ process.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","emi
       const request = await requestFor([]);
       expect(request).not.toContain("thoughtful note-taking partner");
     }, 10_000);
+
+    test("--guidance-file replaces the note-taking prompt but never the safety rules", async () => {
+      const directory = await mkdtemp(join(tmpdir(), ".cli-guidance-file-test-"));
+      scratchDirectories.push(directory);
+      const file = join(directory, "prompt.md");
+      await writeFile(file, "Write the notes as a haiku about pricing.", "utf8");
+      const request = await requestFor(["--guidance-file", file]);
+      expect(request).toContain("Write the notes as a haiku about pricing.");
+      expect(request).not.toContain("thoughtful note-taking partner");
+      expect(request).toContain("meetingTitle");
+    }, 10_000);
+
+    test("a missing --guidance-file is an error, not a silent default", async () => {
+      const resolved = await createEnhanceRunner(
+        "meeting.md", tmpdir(), "markdown", ["--guidance-file", join(tmpdir(), "no-such-prompt.md")], {}, false,
+        DEFAULT_CONFIG.enhancement.timeoutMs,
+      );
+      expect(resolved.ok).toBe(false);
+      if (!resolved.ok) expect(resolved.message).toContain("note-taking prompt");
+    });
+  });
+
+  describe("default-guidance", () => {
+    async function printed(args: readonly string[]): Promise<{ code: number; out: string }> {
+      const chunks: string[] = [];
+      const write = process.stdout.write;
+      process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+      try {
+        const code = await runCli(["default-guidance", ...args], {});
+        return { code, out: chunks.join("") };
+      } finally {
+        process.stdout.write = write;
+      }
+    }
+
+    test("prints the meeting prompt, or the assisted-notes one", async () => {
+      const meeting = await printed(["--sink", "google"]);
+      expect(meeting.code).toBe(0);
+      expect(meeting.out.trim()).toBe(defaultEditorialGuidance("meeting", "google-docs"));
+      const assisted = await printed(["--assisted-notes", "--sink", "google"]);
+      expect(assisted.out.trim()).toBe(defaultEditorialGuidance("assisted-notes", "google-docs"));
+    });
   });
 
   describe("createEnhanceRunner timeout wiring", () => {

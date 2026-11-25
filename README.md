@@ -61,6 +61,8 @@ node dist/shorthand-notes.mjs capture --vault "/path/to/vault" --note "Meetings/
 
 Capture keeps following the app across recordings until you stop it. Add `--exit-after-session` to end after one recording instead; that is how the Shorthand app runs capture when it fills a Google Doc for a meeting.
 
+With `--sink google`, each meeting gets a new tab in the doc named in `google-credentials.json`. Pass `--google-document <id>` to write into the first tab of that document instead; the Shorthand app does this when it makes a doc for each meeting.
+
 Run `node dist/shorthand-notes.mjs` to see every command and option.
 
 The default enhancement backend uses a logged-in Claude CLI. You can also select:

@@ -29,6 +29,12 @@ import { credentialsPath as defaultCredentialsPath, FileTokenProvider, readCrede
 
 export type ResolveGoogleSinkOptions = Readonly<{
   credentialsPath?: string;
+  /**
+   * A document that belongs to this one note, in place of the credentials file's shared
+   * `document_id`: the host made it for this meeting (the Shorthand app's "a doc per
+   * meeting" setting). Its first tab is the note's tab, so no tab is minted.
+   */
+  documentId?: string;
   capturesDirectory?: string;
   /** Test seam only; production always builds a GoogleApiDocsClient. */
   api?: GoogleDocsApi;
@@ -49,7 +55,10 @@ export async function resolveGoogleDocsSink(
   const credentials = await readCredentials(credsPath);
   if (!credentials.ok) return { ok: false, message: credentials.message };
 
-  const documentId = credentials.value.document_id;
+  const ownDocument = options.documentId !== undefined && options.documentId.trim().length > 0
+    ? options.documentId.trim()
+    : undefined;
+  const documentId = ownDocument ?? credentials.value.document_id;
   if (documentId === undefined) {
     return { ok: false, message: "No Google Doc selected; connect your Google account and choose a target document, then retry." };
   }
@@ -60,10 +69,20 @@ export async function resolveGoogleDocsSink(
 
   let tabId = await reusableTabId(statePath, documentId);
   if (tabId === undefined) {
-    const title = basename(notePath, extname(notePath));
-    const minted = await api.addDocumentTab(documentId, title);
-    if (!minted.ok) return { ok: false, message: `Could not create a Google Docs tab: ${minted.error.message}` };
-    tabId = minted.value.tabId;
+    if (ownDocument !== undefined) {
+      const read = await api.getDocument(documentId);
+      if (!read.ok) return { ok: false, message: `Could not open the meeting's Google Doc: ${read.error.message}` };
+      const first = read.value.tabs[0]?.tabId;
+      if (first === undefined || first.length === 0) {
+        return { ok: false, message: `Google Doc ${documentId} has no tab to write the notes into.` };
+      }
+      tabId = first;
+    } else {
+      const title = basename(notePath, extname(notePath));
+      const minted = await api.addDocumentTab(documentId, title);
+      if (!minted.ok) return { ok: false, message: `Could not create a Google Docs tab: ${minted.error.message}` };
+      tabId = minted.value.tabId;
+    }
     const state: CaptureState = { documentId, tabId, createdAt: new Date().toISOString() };
     await mkdir(capturesDirectory, { recursive: true });
     await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");

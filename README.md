@@ -65,6 +65,8 @@ With `--sink google`, each meeting gets a new tab in the doc named in `google-cr
 
 Add `--google-transcript` to capture to keep a copy of the transcript in the same doc: a **Transcript** tab nested under the meeting's tab, or a top-level **Transcript** tab with `--google-document`. The sidecar file is still written; the tab is rewritten from it every 10 seconds and once more when capture ends.
 
+Add `--assisted-notes` to capture when the recording is Shorthand's **Assisted notes** mode (one person thinking out loud rather than a meeting). The agent then follows the assisted-notes guidance instead of the meeting guidance.
+
 Run `node dist/shorthand-notes.mjs` to see every command and option.
 
 The default enhancement backend uses a logged-in Claude CLI. You can also select:

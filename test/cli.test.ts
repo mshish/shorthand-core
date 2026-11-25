@@ -941,6 +941,45 @@ process.stdout.write('{"t":"final","session":1,"speaker":"me","text":"done","emi
    * bound, to catch the two constants ever being swapped between call sites. The agent stub
    * resolves fast, so the real 4/10-minute timer this schedules is cleared long before it fires.
    */
+  describe("createEnhanceRunner note-taking mode", () => {
+    async function requestFor(extraArgs: readonly string[]): Promise<string> {
+      const vault = await mkdtemp(join(tmpdir(), ".cli-mode-wiring-test-"));
+      scratchDirectories.push(vault);
+      const note = join(vault, "meeting.md");
+      await writeFile(
+        note,
+        "<!-- shorthand:notes -->\n- mine\n<!-- shorthand:ai:start -->\n## Summary\nOld\n<!-- shorthand:ai:end -->",
+        "utf8",
+      );
+      const requestFile = join(vault, "request.json");
+      const agentStub = join(process.cwd(), "test", "fixtures", "recording-agent.mjs");
+      const previous = process.env.SHORTHAND_TEST_AGENT_REQUEST;
+      process.env.SHORTHAND_TEST_AGENT_REQUEST = requestFile;
+      try {
+        const resolved = await createEnhanceRunner(
+          note, vault, "markdown", ["--agent-stub", agentStub, ...extraArgs], {}, false,
+          DEFAULT_CONFIG.enhancement.timeoutMs,
+        );
+        if (!resolved.ok) throw new Error(resolved.message);
+        expect((await resolved.runner.enhanceNow("tick")).status).toBe("completed");
+      } finally {
+        if (previous === undefined) delete process.env.SHORTHAND_TEST_AGENT_REQUEST;
+        else process.env.SHORTHAND_TEST_AGENT_REQUEST = previous;
+      }
+      return await readFile(requestFile, "utf8");
+    }
+
+    test("--assisted-notes gives the agent the assisted-notes guidance", async () => {
+      const request = await requestFor(["--assisted-notes"]);
+      expect(request).toContain("thoughtful note-taking partner");
+    }, 10_000);
+
+    test("without it the agent gets the meeting guidance", async () => {
+      const request = await requestFor([]);
+      expect(request).not.toContain("thoughtful note-taking partner");
+    }, 10_000);
+  });
+
   describe("createEnhanceRunner timeout wiring", () => {
     async function scratchNote(): Promise<{ vault: string; note: string }> {
       const vault = await mkdtemp(join(tmpdir(), ".cli-timeout-wiring-test-"));

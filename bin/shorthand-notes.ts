@@ -50,7 +50,7 @@ import {
 function usage(message?: string): number {
   if (message !== undefined) console.error(message);
   console.error(
-    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
+    "Usage:\n  shorthand-notes capture --note <meeting-note.md> [--vault <path>] [--sidecar <transcript.md>] [--shorthand <path>] [--fake-stream [script-path]] [--no-reconnect] [--exit-after-session] [--enhance] [--sink markdown|google] [--backend claude|llm|codex] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes enhance --note <path> --transcript <path> [--vault <path>] [--tier tick|link] [--sink markdown|google] [--backend claude|llm|codex] [--dry-run] [--agent-stub <script>] [--claude <path>] [--codex-exe <path>] [--codex-model <model>] [--codex-base-url <url>] [--llm-provider openai|anthropic|ollama|openai-compatible] [--llm-model <model>] [--llm-base-url <url>]\n  shorthand-notes init-note --vault <path> --note <path> [--title <text>] [--sidecar <path>]\n  shorthand-notes read-block --note <path> [--vault <path>]\n  shorthand-notes set-sections --note <path> [--vault <path>] --json <file> (--expect-hash <sha256> | --force)\n\n--backend llm makes its requests through the running Shorthand app, which holds the provider key; open Shorthand before capture.",
   );
   return 2;
 }
@@ -65,6 +65,7 @@ const KNOWN_FLAGS = new Set([
   "--title", "--json", "--expect-hash", "--force", "--enhance", "--transcript",
   "--tier", "--dry-run", "--agent-stub", "--claude", "--sink", "--backend", "--codex-exe",
   "--codex-model", "--codex-base-url", "--llm-provider", "--llm-model", "--llm-base-url",
+  "--exit-after-session",
 ]);
 
 class ArgumentError extends Error {}
@@ -199,6 +200,20 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
   // "wind down the current session and finish normally", so the enhancement wait below must
   // stay unbounded for it, the same as a capture that ends without any signal at all.
   let forcedStop = false;
+  // `--exit-after-session`: a host that starts one capture per recording (the Shorthand
+  // app filling a Google Doc for one meeting, say) wants this process to end when that
+  // recording does, not to wait for the next one. The first session's terminal event asks
+  // the client to drain and stop; so does an idle `capture_state` seen before any session,
+  // which means the recording this capture was started for already ended.
+  const exitAfterSession = args.includes("--exit-after-session");
+  let sessionSeen = false;
+  let exitAfterSessionRequested = false;
+  const requestExitAfterSession = () => {
+    if (exitAfterSessionRequested) return;
+    exitAfterSessionRequested = true;
+    shutdownRequested = true;
+    client.stopAfterDrain();
+  };
 
   client.on("event", ({ generation, record }) => {
     const update = transcript.ingest(generation, record);
@@ -235,6 +250,21 @@ async function runCapture(args: readonly string[], environment: NodeJS.ProcessEn
       );
     } else if (record.t !== "hello") {
       console.log(`[generation ${generation}] ${record.t} session=${record.session}`);
+    }
+    if (exitAfterSession) {
+      if (record.t === "begin") sessionSeen = true;
+      if (record.t === "capture_state" && record.session !== undefined) sessionSeen = true;
+      const terminal = record.t === "final" || record.t === "no_speech" || record.t === "cancel" ||
+        record.t === "error";
+      if (terminal) {
+        sessionSeen = true;
+        // Deferred a turn so the client records the terminal event (and drops the session
+        // from its active set) before it is asked to drain.
+        queueMicrotask(requestExitAfterSession);
+      } else if (record.t === "capture_state" && record.session === undefined && !sessionSeen) {
+        console.error("No recording is in progress; --exit-after-session is stopping.");
+        queueMicrotask(requestExitAfterSession);
+      }
     }
   });
   client.on("connectionError", ({ record }) => {

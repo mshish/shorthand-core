@@ -59,6 +59,8 @@ Start capture and live enhancement:
 node dist/shorthand-notes.mjs capture --vault "/path/to/vault" --note "Meetings/Standup.md" --enhance
 ```
 
+Capture keeps following the app across recordings until you stop it. Add `--exit-after-session` to end after one recording instead; that is how the Shorthand app runs capture when it fills a Google Doc for a meeting.
+
 Run `node dist/shorthand-notes.mjs` to see every command and option.
 
 The default enhancement backend uses a logged-in Claude CLI. You can also select:

@@ -171,6 +171,36 @@ describe("shorthand-notes CLI", () => {
     expect(await readFile(sidecar, "utf8")).toContain("# Shorthand Transcript");
   }, 10_000);
 
+  test("capture --exit-after-session ends after the first recording on a stream that stays open", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-exit-after-session-test-"));
+    scratchDirectories.push(vault);
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    expect((await run(entry, [
+      "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
+    ])).code).toBe(0);
+    const fixture = join(process.cwd(), "test", "fixtures", "fake-stream-single-session.mjs");
+    const result = await run(entry, [
+      "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture, "--exit-after-session",
+    ]);
+    expect(result.code).toBe(0);
+    expect(await readFile(join(vault, "transcript.md"), "utf8")).toContain("Kickoff notes.");
+  }, 10_000);
+
+  test("capture --exit-after-session stops when no recording is in progress", async () => {
+    const vault = await mkdtemp(join(tmpdir(), ".cli-exit-after-session-idle-test-"));
+    scratchDirectories.push(vault);
+    const entry = join(process.cwd(), "bin", "shorthand-notes.ts");
+    expect((await run(entry, [
+      "init-note", "--vault", vault, "--note", "meeting.md", "--sidecar", "transcript.md",
+    ])).code).toBe(0);
+    const fixture = join(process.cwd(), "test", "fixtures", "fake-stream-idle.mjs");
+    const result = await run(entry, [
+      "capture", "--vault", vault, "--note", "meeting.md", "--fake-stream", fixture, "--exit-after-session",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("No recording is in progress");
+  }, 10_000);
+
   test("init-note creates a linked scaffold without overwriting an existing note", async () => {
     const vault = await mkdtemp(join(tmpdir(), ".cli-init-test-"));
     scratchDirectories.push(vault);
